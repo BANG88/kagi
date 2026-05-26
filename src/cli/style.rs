@@ -1,5 +1,18 @@
 use owo_colors::OwoColorize;
 
+/// Kawaii pastel clap help styles.
+pub fn kagi_styles() -> clap::builder::styling::Styles {
+    use clap::builder::styling::{Color, RgbColor, Style, Styles};
+    Styles::styled()
+        .header(Style::new().bold().fg_color(Some(Color::Rgb(RgbColor(135, 206, 250)))))
+        .usage(Style::new().bold().fg_color(Some(Color::Rgb(RgbColor(176, 224, 230)))))
+        .literal(Style::new().fg_color(Some(Color::Rgb(RgbColor(152, 251, 152)))))
+        .placeholder(Style::new().fg_color(Some(Color::Rgb(RgbColor(216, 191, 216)))))
+        .error(Style::new().bold().fg_color(Some(Color::Rgb(RgbColor(255, 183, 197)))))
+        .valid(Style::new().fg_color(Some(Color::Rgb(RgbColor(176, 224, 230)))))
+        .invalid(Style::new().fg_color(Some(Color::Rgb(RgbColor(255, 183, 197)))))
+}
+
 /// Japanese kawaii pastel color palette for Kagi CLI.
 /// All colors are soft, warm, and easy on the eyes.
 pub struct Palette {
