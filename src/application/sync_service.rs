@@ -43,9 +43,13 @@ impl<R: SecretRepository> SyncService<R> {
             all_entries.append(&mut source_entries);
         }
 
-        let mut merged: HashMap<String, (String, bool)> = HashMap::new();
+        let mut merged: Vec<(String, String, bool)> = Vec::new();
         for entry in all_entries {
-            merged.insert(entry.key, (entry.value, entry.is_commented));
+            if let Some(pos) = merged.iter().position(|(k, _, _)| k == &entry.key) {
+                merged[pos] = (entry.key, entry.value, entry.is_commented);
+            } else {
+                merged.push((entry.key, entry.value, entry.is_commented));
+            }
         }
 
         let mut env_reports = HashMap::new();
@@ -61,7 +65,7 @@ impl<R: SecretRepository> SyncService<R> {
             let mut commented = Vec::new();
             let mut skipped = Vec::new();
 
-            for (key, (value, is_commented)) in &merged {
+            for (key, value, is_commented) in &merged {
                 if service.secrets.contains_key(key) {
                     skipped.push(key.clone());
                     continue;

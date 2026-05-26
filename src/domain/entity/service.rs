@@ -23,10 +23,6 @@ impl Service {
     pub fn get_secret(&self, key: &str) -> Option<&Secret> {
         self.secrets.get(key)
     }
-
-    pub fn list_keys(&self) -> Vec<&String> {
-        self.secrets.keys().collect()
-    }
 }
 
 #[cfg(test)]
@@ -47,13 +43,4 @@ mod tests {
         assert_eq!(svc.get_secret("KEY").unwrap().value, "val");
     }
 
-    #[test]
-    fn test_service_list_keys() {
-        let mut svc = Service::new("api");
-        svc.set_secret(Secret::new("A", "1"));
-        svc.set_secret(Secret::new("B", "2"));
-        let mut keys = svc.list_keys();
-        keys.sort();
-        assert_eq!(keys, vec!["A", "B"]);
-    }
 }
