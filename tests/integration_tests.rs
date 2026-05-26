@@ -215,3 +215,56 @@ fn test_sync_skips_existing_keys() {
     cmd.args(["get", "dev", "API_KEY"]);
     cmd.assert().success().stdout("custom\n");
 }
+
+#[test]
+fn test_nested_disabled_rejects_child_directory() {
+    let dir = TempDir::new().unwrap();
+
+    // Init in parent
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    // Disable nested
+    let kagi_json = dir.path().join(".kagi/kagi.json");
+    std::fs::write(&kagi_json, r#"{"version":"1","services":{},"settings":{"nested":false}}"#).unwrap();
+
+    // Create child dir and try to use kagi
+    let child = dir.path().join("api");
+    std::fs::create_dir(&child).unwrap();
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&child);
+    cmd.arg("list");
+    cmd.assert().failure().stderr(predicate::str::contains("not allowed"));
+}
+
+#[test]
+fn test_nested_selective_paths() {
+    let dir = TempDir::new().unwrap();
+
+    // Init in parent with selective nested paths
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    let kagi_json = dir.path().join(".kagi/kagi.json");
+    std::fs::write(&kagi_json, r#"{"version":"1","services":{},"settings":{"nested":["api"]}}"#).unwrap();
+
+    // Allowed child path
+    let api_dir = dir.path().join("api/src");
+    std::fs::create_dir_all(&api_dir).unwrap();
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&api_dir);
+    cmd.arg("list");
+    cmd.assert().success();
+
+    // Disallowed child path
+    let web_dir = dir.path().join("web");
+    std::fs::create_dir(&web_dir).unwrap();
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&web_dir);
+    cmd.arg("list");
+    cmd.assert().failure().stderr(predicate::str::contains("not allowed"));
+}
