@@ -276,8 +276,12 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
                     draw_key_table(&items, &c);
                 }
             } else {
-                for (name, _) in items {
-                    println!("{}", c.accent(&name));
+                if items.is_empty() {
+                    println!("{}", c.muted("No services found"));
+                } else {
+                    for (name, _) in items {
+                        println!("{}", c.accent(&name));
+                    }
                 }
             }
         }
