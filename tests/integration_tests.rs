@@ -1,6 +1,7 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 use serde_json::Value;
+use std::path::Path;
 use tempfile::TempDir;
 
 #[cfg(windows)]
@@ -29,6 +30,18 @@ fn shell_print_env(name: &str) -> Vec<String> {
 #[cfg(not(windows))]
 fn shell_print_env(name: &str) -> Vec<String> {
     vec!["sh".into(), "-c".into(), format!("printf %s \"${}\"", name)]
+}
+
+fn assert_run_env(current_dir: &Path, scope: &[&str], key: &str, expected: &str) {
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(current_dir);
+    let mut args = vec!["run".to_string()];
+    args.extend(scope.iter().map(|part| part.to_string()));
+    args.extend(shell_print_env(key));
+    cmd.args(args);
+    cmd.assert()
+        .success()
+        .stdout(predicate::eq(expected.to_string()));
 }
 
 #[test]
@@ -79,7 +92,8 @@ fn test_root_command_prints_help_successfully() {
     let mut cmd = Command::cargo_bin("kagi").unwrap();
     cmd.assert()
         .success()
-        .stdout(predicate::str::contains("kagi  鍵"))
+        .stdout(predicate::str::contains("|___/   鍵"))
+        .stdout(predicate::str::contains("Core Flow"))
         .stdout(predicate::str::contains("Usage"));
 }
 
@@ -97,10 +111,7 @@ fn test_set_and_get() {
     cmd.args(["set", "api", "KEY", "val"]);
     cmd.assert().success();
 
-    let mut cmd = Command::cargo_bin("kagi").unwrap();
-    cmd.current_dir(&dir);
-    cmd.args(["get", "--allow-non-interactive", "api", "KEY"]);
-    cmd.assert().success().stdout("val\n");
+    assert_run_env(dir.path(), &["api"], "KEY", "val");
 }
 
 #[test]
@@ -118,10 +129,7 @@ fn test_set_preserves_special_characters_when_passed_as_one_argument() {
     cmd.args(["set", "dev", "DATABASE_URL", value]);
     cmd.assert().success();
 
-    let mut cmd = Command::cargo_bin("kagi").unwrap();
-    cmd.current_dir(&dir);
-    cmd.args(["get", "--allow-non-interactive", "dev", "DATABASE_URL"]);
-    cmd.assert().success().stdout(format!("{}\n", value));
+    assert_run_env(dir.path(), &["dev"], "DATABASE_URL", value);
 }
 
 #[test]
@@ -169,7 +177,7 @@ fn test_get_blocks_non_interactive_by_default() {
     cmd.args(["get", "api", "KEY"]);
     cmd.assert()
         .failure()
-        .stderr(predicate::str::contains("requires an interactive TTY"));
+        .stderr(predicate::str::contains("requires an interactive terminal"));
 }
 
 #[test]
@@ -230,27 +238,7 @@ fn test_list() {
 }
 
 #[test]
-fn test_export() {
-    let dir = TempDir::new().unwrap();
-
-    let mut cmd = Command::cargo_bin("kagi").unwrap();
-    cmd.current_dir(&dir);
-    cmd.arg("init");
-    cmd.assert().success();
-
-    let mut cmd = Command::cargo_bin("kagi").unwrap();
-    cmd.current_dir(&dir);
-    cmd.args(["set", "api", "KEY", "val"]);
-    cmd.assert().success();
-
-    let mut cmd = Command::cargo_bin("kagi").unwrap();
-    cmd.current_dir(&dir);
-    cmd.args(["export", "--allow-non-interactive", "api"]);
-    cmd.assert().success().stdout("KEY=val\n");
-}
-
-#[test]
-fn test_export_blocks_non_interactive_by_default() {
+fn test_export_blocks_non_interactive() {
     let dir = TempDir::new().unwrap();
 
     let mut cmd = Command::cargo_bin("kagi").unwrap();
@@ -268,7 +256,7 @@ fn test_export_blocks_non_interactive_by_default() {
     cmd.args(["export", "api"]);
     cmd.assert()
         .failure()
-        .stderr(predicate::str::contains("requires an interactive TTY"));
+        .stderr(predicate::str::contains("requires an interactive terminal"));
 }
 
 #[test]
@@ -313,15 +301,8 @@ fn test_import_from_file() {
     cmd.args(["import", "api", "--file", "dev.env"]);
     cmd.assert().success();
 
-    let mut cmd = Command::cargo_bin("kagi").unwrap();
-    cmd.current_dir(&dir);
-    cmd.args(["get", "--allow-non-interactive", "api", "API_KEY"]);
-    cmd.assert().success().stdout("secret\n");
-
-    let mut cmd = Command::cargo_bin("kagi").unwrap();
-    cmd.current_dir(&dir);
-    cmd.args(["get", "--allow-non-interactive", "api", "DB_URL"]);
-    cmd.assert().success().stdout("postgres://localhost\n");
+    assert_run_env(dir.path(), &["api"], "API_KEY", "secret");
+    assert_run_env(dir.path(), &["api"], "DB_URL", "postgres://localhost");
 }
 
 #[test]
@@ -345,10 +326,7 @@ fn test_import_force_overwrites() {
     cmd.args(["import", "api", "--file", "first.env"]);
     cmd.assert().success();
 
-    let mut cmd = Command::cargo_bin("kagi").unwrap();
-    cmd.current_dir(&dir);
-    cmd.args(["get", "--allow-non-interactive", "api", "API_KEY"]);
-    cmd.assert().success().stdout("old_value\n");
+    assert_run_env(dir.path(), &["api"], "API_KEY", "old_value");
 
     let mut cmd = Command::cargo_bin("kagi").unwrap();
     cmd.current_dir(&dir);
@@ -357,15 +335,8 @@ fn test_import_force_overwrites() {
         .success()
         .stdout(predicate::str::contains("overwritten"));
 
-    let mut cmd = Command::cargo_bin("kagi").unwrap();
-    cmd.current_dir(&dir);
-    cmd.args(["get", "--allow-non-interactive", "api", "API_KEY"]);
-    cmd.assert().success().stdout("new_value\n");
-
-    let mut cmd = Command::cargo_bin("kagi").unwrap();
-    cmd.current_dir(&dir);
-    cmd.args(["get", "--allow-non-interactive", "api", "EXTRA_KEY"]);
-    cmd.assert().success().stdout("extra\n");
+    assert_run_env(dir.path(), &["api"], "API_KEY", "new_value");
+    assert_run_env(dir.path(), &["api"], "EXTRA_KEY", "extra");
 }
 
 #[test]
@@ -390,20 +361,9 @@ fn test_sync_from_example() {
         .success()
         .stdout(predicate::str::contains("kagi: synced"));
 
-    let mut cmd = Command::cargo_bin("kagi").unwrap();
-    cmd.current_dir(&dir);
-    cmd.args(["get", "--allow-non-interactive", "dev", "DATABASE_URL"]);
-    cmd.assert().success().stdout("postgres://localhost\n");
-
-    let mut cmd = Command::cargo_bin("kagi").unwrap();
-    cmd.current_dir(&dir);
-    cmd.args(["get", "--allow-non-interactive", "dev", "WEBHOOK_SECRET"]);
-    cmd.assert().success().stdout("\n");
-
-    let mut cmd = Command::cargo_bin("kagi").unwrap();
-    cmd.current_dir(&dir);
-    cmd.args(["get", "--allow-non-interactive", "test", "DEBUG"]);
-    cmd.assert().success().stdout("true\n");
+    assert_run_env(dir.path(), &["dev"], "DATABASE_URL", "postgres://localhost");
+    assert_run_env(dir.path(), &["dev"], "WEBHOOK_SECRET", "");
+    assert_run_env(dir.path(), &["test"], "DEBUG", "true");
 }
 
 #[test]
@@ -429,10 +389,7 @@ fn test_sync_skips_existing_keys() {
         .success()
         .stdout(predicate::str::contains("skipped"));
 
-    let mut cmd = Command::cargo_bin("kagi").unwrap();
-    cmd.current_dir(&dir);
-    cmd.args(["get", "--allow-non-interactive", "dev", "API_KEY"]);
-    cmd.assert().success().stdout("custom\n");
+    assert_run_env(dir.path(), &["dev"], "API_KEY", "custom");
 }
 
 #[test]
@@ -527,10 +484,7 @@ fn test_set_infers_service_from_nested_dir() {
     cmd.args(["set", "KEY", "val"]);
     cmd.assert().success();
 
-    let mut cmd = Command::cargo_bin("kagi").unwrap();
-    cmd.current_dir(&api_dir);
-    cmd.args(["get", "--allow-non-interactive", "KEY"]);
-    cmd.assert().success().stdout("val\n");
+    assert_run_env(&api_dir, &[], "KEY", "val");
 }
 
 #[test]
@@ -557,14 +511,11 @@ fn test_get_infers_service_from_nested_dir() {
     cmd.args(["set", "KEY", "val"]);
     cmd.assert().success();
 
-    let mut cmd = Command::cargo_bin("kagi").unwrap();
-    cmd.current_dir(&api_dir);
-    cmd.args(["get", "--allow-non-interactive", "KEY"]);
-    cmd.assert().success().stdout("val\n");
+    assert_run_env(&api_dir, &[], "KEY", "val");
 }
 
 #[test]
-fn test_export_infers_service_from_nested_dir() {
+fn test_export_inferred_scope_blocks_non_interactive() {
     let dir = TempDir::new().unwrap();
 
     let mut cmd = Command::cargo_bin("kagi").unwrap();
@@ -589,8 +540,10 @@ fn test_export_infers_service_from_nested_dir() {
 
     let mut cmd = Command::cargo_bin("kagi").unwrap();
     cmd.current_dir(&api_dir);
-    cmd.args(["export", "--allow-non-interactive"]);
-    cmd.assert().success().stdout("KEY=val\n");
+    cmd.arg("export");
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("requires an interactive terminal"));
 }
 
 #[test]
@@ -617,10 +570,7 @@ fn test_nested_env_scope_keeps_service_shorthand() {
     cmd.args(["set", "dev", "KEY", "val"]);
     cmd.assert().success();
 
-    let mut cmd = Command::cargo_bin("kagi").unwrap();
-    cmd.current_dir(&api_dir);
-    cmd.args(["get", "--allow-non-interactive", "dev", "KEY"]);
-    cmd.assert().success().stdout("val\n");
+    assert_run_env(&api_dir, &["dev"], "KEY", "val");
 
     assert!(dir.path().join(".kagi/services/api/dev.enc").exists());
 }
@@ -721,10 +671,7 @@ fn test_explicit_service_overrides_inference() {
     cmd.assert().success();
 
     // Verify it's under 'web', not 'api'
-    let mut cmd = Command::cargo_bin("kagi").unwrap();
-    cmd.current_dir(&api_dir);
-    cmd.args(["get", "--allow-non-interactive", "--service", "web", "KEY"]);
-    cmd.assert().success().stdout("val\n");
+    assert_run_env(dir.path(), &["web"], "KEY", "val");
 }
 
 #[test]

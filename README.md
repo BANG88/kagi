@@ -61,8 +61,8 @@ kagi get dev DATABASE_URL
 # 5. Run a command with injected env vars
 kagi run dev node server.js
 
-# 6. Export for Docker or shell sourcing
-kagi export --allow-non-interactive dev > .env.dev
+# 6. Inspect masked keys
+kagi list dev
 ```
 
 ---
@@ -132,7 +132,8 @@ kagi get API_KEY             # reads from "api"
 kagi get dev API_KEY         # reads from "api/dev"
 ```
 
-When stdout is not an interactive TTY, add `--allow-non-interactive` explicitly. Prefer `kagi run` for scripts.
+`kagi get` prints decrypted data, so it requires an interactive terminal and a
+`y` confirmation. Prefer `kagi run` for scripts.
 
 ---
 
@@ -174,7 +175,9 @@ kagi export --service api prod
 # STRIPE_KEY=fake_stripe_key
 ```
 
-Use `--allow-non-interactive` when redirecting or piping output.
+`kagi export` prints decrypted data, so it requires an interactive terminal and
+a `y` confirmation. It is intended for deliberate local inspection, not CI or
+scripts.
 
 ---
 
@@ -203,7 +206,9 @@ kagi list dev              # shows keys with masked values
 kagi list --service api prod
 ```
 
-`kagi list --show-values <env>` prints decrypted values and requires an interactive TTY.
+`kagi list --show-values <env>` prints decrypted values and requires an
+interactive terminal plus confirmation. Plain `kagi list <env>` masks values and
+does not require confirmation.
 
 ---
 
@@ -289,13 +294,20 @@ Encrypted stores use a versioned XChaCha20-Poly1305 format so future format chan
 
 ### Non-interactive Access
 
-`kagi get`, `kagi export`, and `kagi list --show-values` reveal decrypted secrets. They require an interactive TTY by default; add `--allow-non-interactive` only when you intentionally need machine-readable output. For application scripts, prefer:
+`kagi get`, `kagi export`, and `kagi list --show-values` reveal decrypted
+secrets. They require an interactive terminal and a `y` confirmation. For
+application scripts, prefer:
 
 ```bash
 kagi run dev bun dev
 ```
 
-This prevents accidental secret dumps in logs, but it is not a sandbox. A process running as the same OS user and able to read `.kagi/key/master.key` can still access the same secrets. For stronger isolation, keep the key in an OS keychain, password manager, or external secret manager and avoid exposing it broadly to untrusted processes.
+This prevents accidental direct secret dumps in logs, but it is not a sandbox. A
+process launched through `kagi run` receives the selected secrets as environment
+variables and can print or exfiltrate them. A process running as the same OS user
+and able to read `.kagi/key/master.key` can also access the same secrets. For
+stronger isolation, keep the key in an OS keychain, password manager, or external
+secret manager and avoid running untrusted code with `kagi run`.
 
 ### Master Key Loss
 

@@ -164,14 +164,27 @@ fn parse_scope_target(
     }
 }
 
-fn require_interactive_read(tty: bool, operation: &str) -> anyhow::Result<()> {
-    if tty {
-        return Ok(());
+fn confirm_secret_output(tty: bool, operation: &str, c: &Palette) -> anyhow::Result<()> {
+    if !tty || !io::stdin().is_terminal() {
+        return Err(anyhow::anyhow!(
+            "{} prints decrypted secrets and requires an interactive terminal. Use `kagi run` for scripts that need secrets injected into a child process.",
+            operation
+        ));
     }
-    Err(anyhow::anyhow!(
-        "{} prints decrypted secrets and requires an interactive TTY. Use `kagi run` for scripts that need secrets injected into a child process.",
-        operation
-    ))
+
+    eprint!(
+        "{} {} {} [y/N]: ",
+        c.prefix(),
+        c.warning("warning:"),
+        c.info(&format!("{} will print decrypted secrets.", operation))
+    );
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    if input.trim().eq_ignore_ascii_case("y") {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("aborted"))
+    }
 }
 
 fn resolve_kagi_base() -> anyhow::Result<(PathBuf, Option<String>)> {
@@ -343,20 +356,17 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Commands::Get {
             service: service_name,
-            allow_non_interactive,
             env,
             key,
         } => {
-            if !allow_non_interactive {
-                require_interactive_read(tty, "kagi get")?;
-            }
+            confirm_secret_output(tty, "kagi get", &c)?;
             let (store, inferred) = resolve_store()?;
             let (scope, key) = parse_key_target(
                 inferred,
                 service_name,
                 env,
                 key,
-                "Usage: kagi get [--allow-non-interactive] [--service <service>] [env] <key>",
+                "Usage: kagi get [--service <service>] [env] <key>",
             )?;
             let get_service = GetSecretService::new(store);
             let value = get_service.execute(&scope, &key)?;
@@ -431,12 +441,9 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Commands::Export {
             service: service_name,
-            allow_non_interactive,
             env,
         } => {
-            if !allow_non_interactive {
-                require_interactive_read(tty, "kagi export")?;
-            }
+            confirm_secret_output(tty, "kagi export", &c)?;
             let (store, inferred) = resolve_store()?;
             let service_name = parse_scope_target(inferred, service_name, env)?;
             let export_service = ExportEnvService::new(store);
@@ -516,7 +523,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
             env,
         } => {
             if show_values {
-                require_interactive_read(tty, "kagi list --show-values")?;
+                confirm_secret_output(tty, "kagi list --show-values", &c)?;
             }
             let (store, inferred) = resolve_store()?;
             let list_service = ListServicesService::new(store);

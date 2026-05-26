@@ -51,10 +51,6 @@ pub enum Commands {
         #[arg(short, long)]
         service: Option<String>,
 
-        /// Allow printing the secret when stdout is not an interactive TTY
-        #[arg(long)]
-        allow_non_interactive: bool,
-
         /// Environment name. In nested mode, omit to use the inferred service without an environment.
         env: Option<String>,
 
@@ -78,10 +74,6 @@ pub enum Commands {
         /// Optional service scope (e.g., api, web). Defaults to the inferred nested directory.
         #[arg(short, long)]
         service: Option<String>,
-
-        /// Allow non-interactive export. Required when stdout is not a TTY.
-        #[arg(long)]
-        allow_non_interactive: bool,
 
         /// Environment name. In nested mode, omit to use the inferred service without an environment.
         env: Option<String>,
@@ -111,7 +103,7 @@ pub enum Commands {
         #[arg(short, long)]
         service: Option<String>,
 
-        /// Show decrypted values. Requires an interactive TTY.
+        /// Show decrypted values. Requires an interactive terminal.
         #[arg(long)]
         show_values: bool,
 

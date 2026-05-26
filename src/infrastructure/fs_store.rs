@@ -79,20 +79,20 @@ impl FileStore {
         format!("kagi:v1:{}:{}", XCHACHA20_POLY1305, service_name).into_bytes()
     }
 
-    fn set_private_file_permissions(path: &std::path::Path) -> Result<(), DomainError> {
+    fn set_private_file_permissions(_path: &std::path::Path) -> Result<(), DomainError> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+            fs::set_permissions(_path, fs::Permissions::from_mode(0o600))?;
         }
         Ok(())
     }
 
-    fn set_private_dir_permissions(path: &std::path::Path) -> Result<(), DomainError> {
+    fn set_private_dir_permissions(_path: &std::path::Path) -> Result<(), DomainError> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+            fs::set_permissions(_path, fs::Permissions::from_mode(0o700))?;
         }
         Ok(())
     }
