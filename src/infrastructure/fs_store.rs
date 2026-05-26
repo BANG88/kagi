@@ -29,7 +29,7 @@ impl FileStore {
     }
 
     fn config_path(&self) -> PathBuf {
-        self.base_path.join("config.json")
+        self.base_path.join(crate::domain::config::KAGI_CONFIG_FILE)
     }
 
     fn service_path(&self, file: &str) -> PathBuf {
@@ -116,7 +116,7 @@ mod tests {
         let base = dir.path().join(".kagi");
         fs::create_dir(&base).unwrap();
         let config = KagiConfig::new("1");
-        fs::write(base.join("config.json"), serde_json::to_string(&config).unwrap()).unwrap();
+        fs::write(base.join(crate::domain::config::KAGI_CONFIG_FILE), serde_json::to_string(&config).unwrap()).unwrap();
         FileStore::new(base, Box::new(XorEncryptor::new(0xAB)))
     }
 

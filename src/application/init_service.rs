@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
-use crate::domain::config::KagiConfig;
+use crate::domain::config::{KagiConfig, KAGI_CONFIG_FILE};
 use crate::domain::error::DomainError;
 use crate::infrastructure::key_manager::KeyManager;
 
@@ -22,7 +22,7 @@ impl InitService {
         fs::create_dir_all(self.base_path.join("services"))?;
         fs::create_dir_all(self.base_path.join("key"))?;
         let config = KagiConfig::new("1");
-        fs::write(self.base_path.join("config.json"), serde_json::to_string_pretty(&config)?)?;
+        fs::write(self.base_path.join(KAGI_CONFIG_FILE), serde_json::to_string_pretty(&config)?)?;
         self.key_manager.generate_and_save()?;
         Ok(())
     }
@@ -39,13 +39,13 @@ mod tests {
         let base = dir.path().join(".kagi");
         let service = InitService::new(base.clone());
         service.execute().unwrap();
-        assert!(base.join("config.json").exists());
+        assert!(base.join(KAGI_CONFIG_FILE).exists());
         assert!(base.join("key/master.key").exists());
         assert!(base.join("services").exists());
 
         let config: KagiConfig = serde_json::from_str(
-            &fs::read_to_string(base.join("config.json")).unwrap()
+            &fs::read_to_string(base.join(KAGI_CONFIG_FILE)).unwrap()
         ).unwrap();
-        assert!(config.settings.nested);
+        assert!(matches!(config.settings.nested, crate::domain::config::NestedMode::Bool(true)));
     }
 }

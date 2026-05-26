@@ -68,14 +68,21 @@ fn resolve_kagi_base() -> anyhow::Result<PathBuf> {
     loop {
         let kagi = current.join(".kagi");
         if kagi.is_dir() {
-            let config_path = kagi.join("config.json");
+            let config_path = kagi.join(crate::domain::config::KAGI_CONFIG_FILE);
             if let Ok(content) = std::fs::read_to_string(&config_path) {
                 if let Ok(config) = serde_json::from_str::<KagiConfig>(&content) {
-                    if !config.settings.nested {
+                    let relative = cwd.strip_prefix(current).unwrap_or(std::path::Path::new(""));
+                    let rel_str = relative.to_string_lossy();
+                    if !config.settings.nested.is_allowed(&rel_str) {
                         return Err(anyhow::anyhow!(
-                            "Found .kagi at {} but nested usage is disabled in settings. \
+                            "Found .kagi at {} but current directory is not allowed by nested settings ({}). \
                              Run `kagi init` in this directory to create a local repository.",
-                            current.display()
+                            current.display(),
+                            match &config.settings.nested {
+                                crate::domain::config::NestedMode::Bool(false) => "disabled".to_string(),
+                                crate::domain::config::NestedMode::Paths(p) => p.join(", "),
+                                _ => "enabled".to_string(),
+                            }
                         ));
                     }
                 }

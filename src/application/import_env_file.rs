@@ -70,7 +70,7 @@ mod tests {
         let base = dir.path().join(".kagi");
         std::fs::create_dir(&base).unwrap();
         let config = serde_json::json!({"version": "1", "services": {}});
-        std::fs::write(base.join("config.json"), serde_json::to_string(&config).unwrap()).unwrap();
+        std::fs::write(base.join(crate::domain::config::KAGI_CONFIG_FILE), serde_json::to_string(&config).unwrap()).unwrap();
         let store = FileStore::new(base, Box::new(XorEncryptor::new(0xAB)));
         ImportEnvFileService::new(store)
     }

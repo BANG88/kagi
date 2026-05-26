@@ -9,7 +9,7 @@ fn test_init() {
     cmd.current_dir(&dir);
     cmd.arg("init");
     cmd.assert().success().stdout(predicate::str::contains("Initialized"));
-    assert!(dir.path().join(".kagi/config.json").exists());
+    assert!(dir.path().join(".kagi/kagi.json").exists());
     assert!(dir.path().join(".kagi/key/master.key").exists());
 }
 
