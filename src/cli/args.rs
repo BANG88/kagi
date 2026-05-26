@@ -73,24 +73,15 @@ pub enum Commands {
         service: Option<String>,
     },
 
-    /// Copy secrets from one service to another
-    Copy {
-        /// Source service to copy from
-        source: String,
-
-        /// Target service to copy into
-        target: String,
-
-        /// Only copy keys that don't already exist in the target
-        #[arg(long)]
-        only_missing: bool,
-    },
-
-    /// Synchronize keys from .env.example across environments
+    /// Synchronize keys from .env.example (and optional sources) across environments
     Sync {
         /// Path to the .env.example template file
         #[arg(short, long, default_value = ".env.example")]
         example: String,
+
+        /// Additional source files to merge (comma-separated, later overrides earlier)
+        #[arg(long, value_delimiter = ',')]
+        sources: Vec<String>,
 
         /// Environments to sync (comma-separated)
         #[arg(long, value_delimiter = ',', default_value = "dev,test,staging,prod")]
