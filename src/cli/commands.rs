@@ -12,6 +12,7 @@ use crate::cli::args::{Cli, Commands};
 use crate::cli::style::Palette;
 use crate::domain::config::KagiConfig;
 use crate::domain::entity::service::Service;
+use crate::domain::error::DomainError;
 use crate::domain::repository::secret_repo::SecretRepository;
 use crate::infrastructure::aes_gcm_crypto::AesGcmEncryptor;
 use crate::infrastructure::env_injector::SystemCommandRunner;
@@ -57,12 +58,12 @@ fn draw_key_table(items: &[(String, String)], c: &Palette) {
     println!("{}", c.muted(&bottom));
 }
 
-fn resolve_kagi_base() -> anyhow::Result<PathBuf> {
+fn resolve_kagi_base() -> anyhow::Result<(PathBuf, Option<String>)> {
     let cwd = std::env::current_dir()?;
 
     let local = cwd.join(".kagi");
     if local.is_dir() {
-        return Ok(local);
+        return Ok((local, None));
     }
 
     let mut current = cwd.as_path();
@@ -70,10 +71,10 @@ fn resolve_kagi_base() -> anyhow::Result<PathBuf> {
         let kagi = current.join(".kagi");
         if kagi.is_dir() {
             let config_path = kagi.join(crate::domain::config::KAGI_CONFIG_FILE);
+            let relative = cwd.strip_prefix(current).unwrap_or(std::path::Path::new(""));
+            let rel_str = relative.to_string_lossy();
             if let Ok(content) = std::fs::read_to_string(&config_path) {
                 if let Ok(config) = serde_json::from_str::<KagiConfig>(&content) {
-                    let relative = cwd.strip_prefix(current).unwrap_or(std::path::Path::new(""));
-                    let rel_str = relative.to_string_lossy();
                     if !config.settings.nested.is_allowed(&rel_str) {
                         return Err(anyhow::anyhow!(
                             "Found .kagi at {} but current directory is not allowed by nested settings ({}). \
@@ -88,7 +89,8 @@ fn resolve_kagi_base() -> anyhow::Result<PathBuf> {
                     }
                 }
             }
-            return Ok(kagi);
+            let inferred = relative.components().next().map(|c| c.as_os_str().to_string_lossy().to_string());
+            return Ok((kagi, inferred));
         }
         match current.parent() {
             Some(parent) => current = parent,
@@ -101,8 +103,8 @@ fn resolve_kagi_base() -> anyhow::Result<PathBuf> {
     ))
 }
 
-fn resolve_store() -> anyhow::Result<FileStore> {
-    let base_path = resolve_kagi_base()?;
+fn resolve_store() -> anyhow::Result<(FileStore, Option<String>)> {
+    let (base_path, inferred_service) = resolve_kagi_base()?;
 
     let config_path = base_path.join(crate::domain::config::KAGI_CONFIG_FILE);
     if !config_path.exists() {
@@ -125,7 +127,19 @@ fn resolve_store() -> anyhow::Result<FileStore> {
         .map_err(|_| anyhow::anyhow!("Invalid master key length"))?;
     let encryptor = AesGcmEncryptor::new(&key_array);
     let store = FileStore::new(base_path, Box::new(encryptor));
-    Ok(store)
+    Ok((store, inferred_service))
+}
+
+fn resolve_service(provided: Option<String>, inferred: Option<String>) -> anyhow::Result<String> {
+    if let Some(s) = provided {
+        return Ok(s);
+    }
+    if let Some(s) = inferred {
+        return Ok(s);
+    }
+    Err(anyhow::anyhow!(
+        "No service specified. Provide a service name or run from a nested project directory."
+    ))
 }
 
 pub fn run(cli: Cli) -> anyhow::Result<()> {
@@ -162,9 +176,22 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
                 c.accent("prod"),
                 c.success("environments")
             );
+            println!("{} {}", c.warning("Note:"), c.muted(".kagi/ added to .gitignore — do not commit secrets to version control."));
         }
         Commands::Set { service: service_name, key, value } => {
-            let store = resolve_store()?;
+            let (store, inferred) = resolve_store()?;
+            let (service_name, key, value) = match (service_name, key, value) {
+                (Some(s), Some(k), Some(v)) => (s, k, v),
+                (Some(k), Some(v), None) => {
+                    if inferred.is_some() {
+                        let s = resolve_service(None, inferred)?;
+                        (s, k, v)
+                    } else {
+                        return Err(anyhow::anyhow!("Usage: kagi set [service] <key> <value>"));
+                    }
+                }
+                _ => return Err(anyhow::anyhow!("Usage: kagi set [service] <key> <value>")),
+            };
             let set_service = SetSecretService::new(store);
             set_service.execute(&service_name, &key, &value)?;
             println!(
@@ -176,31 +203,53 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
             );
         }
         Commands::Get { service: service_name, key } => {
-            let store = resolve_store()?;
+            let (store, inferred) = resolve_store()?;
+            let (service_name, key) = match (service_name, key) {
+                (Some(s), Some(k)) => (s, k),
+                (Some(k), None) => {
+                    if inferred.is_some() {
+                        let s = resolve_service(None, inferred)?;
+                        (s, k)
+                    } else {
+                        return Err(anyhow::anyhow!("Usage: kagi get [service] <key>"));
+                    }
+                }
+                _ => return Err(anyhow::anyhow!("Usage: kagi get [service] <key>")),
+            };
             let get_service = GetSecretService::new(store);
             let value = get_service.execute(&service_name, &key)?;
             println!("{}", value);
         }
-        Commands::Run { service: service_name, command } => {
-            if command.is_empty() {
+        Commands::Run { args } => {
+            if args.is_empty() {
                 return Err(anyhow::anyhow!("No command provided"));
             }
-            let store = resolve_store()?;
+            let (store, inferred) = resolve_store()?;
+            let services = store.list_services().map_err(|e| anyhow::anyhow!("Failed to list services: {}", e))?;
+            let (service_name, cmd, run_args) = if services.contains(&args[0]) {
+                if args.len() < 2 {
+                    return Err(anyhow::anyhow!("No command provided"));
+                }
+                (args[0].clone(), args[1].clone(), args[2..].to_vec())
+            } else {
+                let s = resolve_service(None, inferred)?;
+                (s, args[0].clone(), args[1..].to_vec())
+            };
             let runner = SystemCommandRunner::new();
             let run_service = RunCommandService::new(store, runner);
-            let cmd = command[0].clone();
-            let args = command[1..].to_vec();
-            let exit_code = run_service.execute(&service_name, &cmd, &args)?;
+            let exit_code = run_service.execute(&service_name, &cmd, &run_args)?;
             std::process::exit(exit_code);
         }
         Commands::Export { service: service_name } => {
-            let store = resolve_store()?;
+            let (store, inferred) = resolve_store()?;
+            let service_name = resolve_service(service_name, inferred)?;
             let export_service = ExportEnvService::new(store);
             let output = export_service.execute(&service_name)?;
             println!("{}", output);
         }
         Commands::Import { service: service_name, file, force } => {
-            let store = resolve_store()?;
+            let (store, inferred) = resolve_store()?;
+            let service_name = resolve_service(service_name, inferred)?;
             let import_service = crate::application::import_env_file::ImportEnvFileService::new(store);
 
             let preview = import_service.execute(&service_name, &file, false)?;
@@ -257,10 +306,20 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
         Commands::List { service: service_name } => {
-            let store = resolve_store()?;
+            let (store, inferred) = resolve_store()?;
             let list_service = ListServicesService::new(store);
-            let items = list_service.execute(service_name.as_deref())?;
-            if let Some(name) = service_name {
+            let (resolved_name, items) = match service_name {
+                Some(name) => (Some(name.clone()), list_service.execute(Some(&name))?),
+                None => match inferred {
+                    Some(name) => match list_service.execute(Some(&name)) {
+                        Ok(items) => (Some(name), items),
+                        Err(DomainError::ServiceNotFound(_)) => (None, list_service.execute(None)?),
+                        Err(e) => return Err(e.into()),
+                    },
+                    None => (None, list_service.execute(None)?),
+                },
+            };
+            if let Some(name) = resolved_name {
                 if items.is_empty() {
                     draw_key_table(&[], &c);
                     println!("{}", c.muted(&format!("No secrets in {}", name)));
@@ -278,7 +337,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
         Commands::Sync { example, sources, envs } => {
-            let store = resolve_store()?;
+            let (store, _) = resolve_store()?;
             let sync_service = SyncService::new(store);
             let report = sync_service.execute(&example, &sources, &envs)?;
 

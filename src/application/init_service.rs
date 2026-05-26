@@ -24,6 +24,21 @@ impl InitService {
         let config = KagiConfig::new("1");
         fs::write(self.base_path.join(KAGI_CONFIG_FILE), serde_json::to_string_pretty(&config)?)?;
         self.key_manager.generate_and_save()?;
+
+        if let Some(parent) = self.base_path.parent() {
+            let gitignore_path = parent.join(".gitignore");
+            let entry = ".kagi/";
+            if gitignore_path.exists() {
+                let content = fs::read_to_string(&gitignore_path)?;
+                if !content.lines().any(|line| line.trim() == entry) {
+                    let separator = if content.ends_with('\n') { "" } else { "\n" };
+                    fs::write(&gitignore_path, format!("{}{}{}\n", content, separator, entry))?;
+                }
+            } else {
+                fs::write(&gitignore_path, format!("{}\n", entry))?;
+            }
+        }
+
         Ok(())
     }
 }
@@ -47,5 +62,26 @@ mod tests {
             &fs::read_to_string(base.join(KAGI_CONFIG_FILE)).unwrap()
         ).unwrap();
         assert!(matches!(config.settings.nested, crate::domain::config::NestedMode::Bool(true)));
+
+        let gitignore = dir.path().join(".gitignore");
+        assert!(gitignore.exists());
+        let content = fs::read_to_string(&gitignore).unwrap();
+        assert!(content.contains(".kagi/"));
+    }
+
+    #[test]
+    fn test_init_appends_to_existing_gitignore() {
+        let dir = TempDir::new().unwrap();
+        let gitignore = dir.path().join(".gitignore");
+        fs::write(&gitignore, "/target\n").unwrap();
+
+        let base = dir.path().join(".kagi");
+        let service = InitService::new(base);
+        service.execute().unwrap();
+
+        let content = fs::read_to_string(&gitignore).unwrap();
+        assert!(content.contains("/target"));
+        assert!(content.contains(".kagi/"));
+        assert!(content.ends_with("\n"));
     }
 }

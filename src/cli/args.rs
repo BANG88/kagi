@@ -19,45 +19,42 @@ pub enum Commands {
 
     /// Store an encrypted secret for a service
     Set {
-        /// Name of the service (e.g., api, db, stripe)
-        service: String,
+        /// Name of the service (e.g., api, db, stripe). Omit to auto-detect from nested directory.
+        service: Option<String>,
 
         /// Name of the secret key
-        key: String,
+        key: Option<String>,
 
         /// Value to store (will be encrypted)
-        value: String,
+        value: Option<String>,
     },
 
     /// Retrieve and decrypt a secret value
     Get {
-        /// Name of the service
-        service: String,
+        /// Name of the service. Omit to auto-detect from nested directory.
+        service: Option<String>,
 
         /// Name of the secret key
-        key: String,
+        key: Option<String>,
     },
 
     /// Run a command with injected environment variables
     Run {
-        /// Name of the service to load secrets from
-        service: String,
-
-        /// Command and arguments to execute
-        #[arg(trailing_var_arg = true, help = "Command to run (e.g., bun dev, node server.js)")]
-        command: Vec<String>,
+        /// [service] <command>... Omit service to auto-detect from nested directory.
+        #[arg(required = false, trailing_var_arg = true)]
+        args: Vec<String>,
     },
 
     /// Export secrets as KEY=value lines (suitable for shell sourcing)
     Export {
-        /// Name of the service to export
-        service: String,
+        /// Name of the service to export. Omit to auto-detect from nested directory.
+        service: Option<String>,
     },
 
     /// Import secrets from a .env file
     Import {
-        /// Name of the service to import into
-        service: String,
+        /// Name of the service to import into. Omit to auto-detect from nested directory.
+        service: Option<String>,
 
         /// Path to the env file to import
         #[arg(short, long, default_value = ".env")]

@@ -268,3 +268,125 @@ fn test_nested_selective_paths() {
     cmd.arg("list");
     cmd.assert().failure().stderr(predicate::str::contains("not allowed"));
 }
+
+#[test]
+fn test_set_infers_service_from_nested_dir() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    let kagi_json = dir.path().join(".kagi/kagi.json");
+    std::fs::write(&kagi_json, r#"{"version":"1","services":{},"settings":{"nested":true}}"#).unwrap();
+
+    let api_dir = dir.path().join("api");
+    std::fs::create_dir_all(&api_dir).unwrap();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&api_dir);
+    cmd.args(["set", "KEY", "val"]);
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&api_dir);
+    cmd.args(["get", "KEY"]);
+    cmd.assert().success().stdout("val\n");
+}
+
+#[test]
+fn test_get_infers_service_from_nested_dir() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    let kagi_json = dir.path().join(".kagi/kagi.json");
+    std::fs::write(&kagi_json, r#"{"version":"1","services":{},"settings":{"nested":true}}"#).unwrap();
+
+    let api_dir = dir.path().join("api");
+    std::fs::create_dir_all(&api_dir).unwrap();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&api_dir);
+    cmd.args(["set", "api", "KEY", "val"]);
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&api_dir);
+    cmd.args(["get", "KEY"]);
+    cmd.assert().success().stdout("val\n");
+}
+
+#[test]
+fn test_export_infers_service_from_nested_dir() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    let kagi_json = dir.path().join(".kagi/kagi.json");
+    std::fs::write(&kagi_json, r#"{"version":"1","services":{},"settings":{"nested":true}}"#).unwrap();
+
+    let api_dir = dir.path().join("api");
+    std::fs::create_dir_all(&api_dir).unwrap();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&api_dir);
+    cmd.args(["set", "api", "KEY", "val"]);
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&api_dir);
+    cmd.arg("export");
+    cmd.assert().success().stdout("KEY=val\n");
+}
+
+#[test]
+fn test_explicit_service_overrides_inference() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    let kagi_json = dir.path().join(".kagi/kagi.json");
+    std::fs::write(&kagi_json, r#"{"version":"1","services":{},"settings":{"nested":true}}"#).unwrap();
+
+    let api_dir = dir.path().join("api");
+    std::fs::create_dir_all(&api_dir).unwrap();
+
+    // Set secret for 'web' service while in api/ directory
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&api_dir);
+    cmd.args(["set", "web", "KEY", "val"]);
+    cmd.assert().success();
+
+    // Verify it's under 'web', not 'api'
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&api_dir);
+    cmd.args(["get", "web", "KEY"]);
+    cmd.assert().success().stdout("val\n");
+}
+
+#[test]
+fn test_set_requires_service_when_no_inference() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    // In root directory (no nested inference), omitting service should fail
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["set", "KEY", "val"]);
+    cmd.assert().failure().stderr(predicate::str::contains("Usage:"));
+}
