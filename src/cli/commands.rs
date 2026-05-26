@@ -1,6 +1,5 @@
 use std::io::{self, IsTerminal};
 use std::path::PathBuf;
-use owo_colors::OwoColorize;
 use crate::application::copy_service::CopyService;
 use crate::application::export_env::ExportEnvService;
 use crate::application::sync_service::SyncService;
@@ -10,6 +9,7 @@ use crate::application::list_services::ListServicesService;
 use crate::application::run_command::RunCommandService;
 use crate::application::set_secret::SetSecretService;
 use crate::cli::args::{Cli, Commands};
+use crate::cli::style::Palette;
 use crate::domain::config::KagiConfig;
 use crate::domain::entity::service::Service;
 use crate::domain::repository::secret_repo::SecretRepository;
@@ -21,13 +21,11 @@ use crate::infrastructure::key_manager::KeyManager;
 fn resolve_kagi_base() -> anyhow::Result<PathBuf> {
     let cwd = std::env::current_dir()?;
 
-    // Check current directory first
     let local = cwd.join(".kagi");
     if local.is_dir() {
         return Ok(local);
     }
 
-    // Search upwards for .kagi
     let mut current = cwd.as_path();
     loop {
         let kagi = current.join(".kagi");
@@ -59,6 +57,7 @@ fn resolve_kagi_base() -> anyhow::Result<PathBuf> {
 
 pub fn run(cli: Cli) -> anyhow::Result<()> {
     let tty = io::stdout().is_terminal();
+    let c = Palette::new(tty);
     match cli.command {
         Commands::Init => {
             let cwd = std::env::current_dir()?;
@@ -80,19 +79,16 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
                 store.save(&svc)?;
             }
 
-            if tty {
-                println!("{} {} {} {} {} {} {}",
-                    "Initialized .kagi/".green(),
-                    "with".green(),
-                    "dev".cyan(),
-                    "test".cyan(),
-                    "staging".cyan(),
-                    "prod".cyan(),
-                    "environments".green()
-                );
-            } else {
-                println!("Initialized .kagi/ with dev test staging prod environments");
-            }
+            println!(
+                "{} {} {} {} {} {} {}",
+                c.success("Initialized .kagi/"),
+                c.muted("with"),
+                c.accent("dev"),
+                c.accent("test"),
+                c.accent("staging"),
+                c.accent("prod"),
+                c.success("environments")
+            );
         }
         Commands::Set { service: service_name, key, value } => {
             let base_path = resolve_kagi_base()?;
@@ -104,11 +100,13 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
             let store = FileStore::new(base_path, Box::new(encryptor));
             let set_service = SetSecretService::new(store);
             set_service.execute(&service_name, &key, &value)?;
-            if tty {
-                println!("{} {}.{} = {}", "Set".bright_cyan(), service_name.cyan(), key.cyan(), value.green());
-            } else {
-                println!("Set {}.{} = {}", service_name, key, value);
-            }
+            println!(
+                "{} {}.{} = {}",
+                c.info("Set"),
+                c.accent(&service_name),
+                c.key(&key),
+                c.success(&value)
+            );
         }
         Commands::Get { service: service_name, key } => {
             let base_path = resolve_kagi_base()?;
@@ -162,65 +160,57 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
             let store = FileStore::new(base_path, Box::new(encryptor));
             let import_service = crate::application::import_env_file::ImportEnvFileService::new(store);
 
-            // Dry run: check for conflicts without importing
             let preview = import_service.execute(&service_name, &file, false)?;
 
             if !preview.overwritten.is_empty() && !force {
-                if tty {
-                    eprintln!("{} the following keys already exist in {} and will be overwritten:", "Warning:".bright_yellow(), service_name.yellow());
-                } else {
-                    eprintln!("Warning: the following keys already exist in {} and will be overwritten:", service_name);
-                }
+                eprintln!(
+                    "{} the following keys already exist in {} and will be overwritten:",
+                    c.warning("Warning:"),
+                    c.accent(&service_name)
+                );
                 for key in &preview.overwritten {
-                    if tty {
-                        eprintln!("  {} {}", "-".bright_red(), key.red());
-                    } else {
-                        eprintln!("  - {}", key);
-                    }
+                    eprintln!("  {} {}", c.error("-"), c.error(key));
                 }
-                if tty {
-                    eprint!("{} [y/N]: ", "Continue?".bright_magenta());
-                } else {
-                    eprint!("Continue? [y/N]: ");
-                }
+                eprint!("{} [y/N]: ", c.prompt("Continue?"));
                 let mut input = String::new();
                 std::io::stdin().read_line(&mut input)?;
                 if !input.trim().eq_ignore_ascii_case("y") {
-                    if tty {
-                        println!("{}", "Aborted.".red());
-                    } else {
-                        println!("Aborted.");
-                    }
+                    println!("{}", c.error("Aborted."));
                     return Ok(());
                 }
             }
 
-            // Perform actual import (with force if there were conflicts)
             let report = if preview.overwritten.is_empty() {
                 preview
             } else {
                 import_service.execute(&service_name, &file, true)?
             };
 
-            if tty {
-                println!("{} {} keys from {}", "Imported".green(), report.imported.len().to_string().bright_green(), file.cyan());
-            } else {
-                println!("Imported {} keys from {}", report.imported.len(), file);
-            }
+            println!(
+                "{} {} keys from {}",
+                c.success("Imported"),
+                c.success(&report.imported.len().to_string()),
+                c.accent(&file)
+            );
             if !report.overwritten.is_empty() {
-                if tty {
-                    println!("{} {} keys overwritten", "Warning".bright_yellow(), report.overwritten.len().to_string().yellow());
-                } else {
-                    println!("Warning: {} keys overwritten", report.overwritten.len());
-                }
+                println!(
+                    "{} {} keys overwritten",
+                    c.warning("Warning"),
+                    c.warning(&report.overwritten.len().to_string())
+                );
             }
             for key in report.imported {
-                let overwritten_marker = if report.overwritten.contains(&key) { " (overwritten)" } else { "" };
-                if tty {
-                    println!("  {}.{}{}", service_name.bright_cyan(), key.cyan(), overwritten_marker.yellow());
+                let overwritten_marker = if report.overwritten.contains(&key) {
+                    c.warning(" (overwritten)")
                 } else {
-                    println!("  {}.{}{}", service_name, key, overwritten_marker);
-                }
+                    String::new()
+                };
+                println!(
+                    "  {}.{}{}",
+                    c.accent(&service_name),
+                    c.key(&key),
+                    overwritten_marker
+                );
             }
         }
         Commands::List { service: service_name } => {
@@ -234,11 +224,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
             let list_service = ListServicesService::new(store);
             let items = list_service.execute(service_name.as_deref())?;
             for item in items {
-                if tty {
-                    println!("{}", item.bright_cyan());
-                } else {
-                    println!("{}", item);
-                }
+                println!("{}", c.accent(&item));
             }
         }
         Commands::Copy { source, target, only_missing } => {
@@ -252,33 +238,29 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
             let copy_service = CopyService::new(store);
             let report = copy_service.execute(&source, &target, only_missing)?;
 
-            if tty {
-                println!("{} {} keys from {} to {}",
-                    "Copied".green(),
-                    report.copied.len().to_string().bright_green(),
-                    source.cyan(),
-                    target.cyan()
-                );
-            } else {
-                println!("Copied {} keys from {} to {}", report.copied.len(), source, target);
-            }
+            println!(
+                "{} {} keys from {} to {}",
+                c.success("Copied"),
+                c.success(&report.copied.len().to_string()),
+                c.accent(&source),
+                c.accent(&target)
+            );
             if !report.skipped.is_empty() {
-                if tty {
-                    println!("{} {} keys skipped (already exist in {})",
-                        "Info".bright_magenta(),
-                        report.skipped.len().to_string().magenta(),
-                        target.cyan()
-                    );
-                } else {
-                    println!("Info: {} keys skipped (already exist in {})", report.skipped.len(), target);
-                }
+                println!(
+                    "{} {} keys skipped (already exist in {})",
+                    c.muted("Info"),
+                    c.muted(&report.skipped.len().to_string()),
+                    c.accent(&target)
+                );
             }
             for key in report.copied {
-                if tty {
-                    println!("  {}.{} → {}.{}", source.cyan(), key.cyan(), target.cyan(), key.cyan());
-                } else {
-                    println!("  {}.{} → {}.{}", source, key, target, key);
-                }
+                println!(
+                    "  {}.{} → {}.{}",
+                    c.accent(&source),
+                    c.key(&key),
+                    c.accent(&target),
+                    c.key(&key)
+                );
             }
         }
         Commands::Sync { example, envs } => {
@@ -293,45 +275,41 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
             let report = sync_service.execute(&example, &envs)?;
 
             for (env_name, env_report) in &report.env_reports {
-                if tty {
-                    println!("{} {}", "Synced".green(), env_name.cyan());
-                } else {
-                    println!("Synced {}", env_name);
-                }
+                println!("{} {}", c.success("Synced"), c.accent(env_name));
                 if !env_report.added.is_empty() {
-                    if tty {
-                        println!("  {} {} keys added", "+".green(), env_report.added.len().to_string().green());
-                    } else {
-                        println!("  + {} keys added", env_report.added.len());
-                    }
+                    println!(
+                        "  {} {} keys added",
+                        c.success("+"),
+                        c.success(&env_report.added.len().to_string())
+                    );
                     for key in &env_report.added {
-                        if tty {
-                            println!("    {} = {}", key.cyan(), "(from example)".green());
-                        } else {
-                            println!("    {} = (from example)", key);
-                        }
+                        println!(
+                            "    {} = {}",
+                            c.key(key),
+                            c.muted("(from example)")
+                        );
                     }
                 }
                 if !env_report.commented.is_empty() {
-                    if tty {
-                        println!("  {} {} keys added (commented)", "#".magenta(), env_report.commented.len().to_string().magenta());
-                    } else {
-                        println!("  # {} keys added (commented)", env_report.commented.len());
-                    }
+                    println!(
+                        "  {} {} keys added (commented)",
+                        c.commented("#"),
+                        c.commented(&env_report.commented.len().to_string())
+                    );
                     for key in &env_report.commented {
-                        if tty {
-                            println!("    {} {}", key.cyan(), "(needs value)".magenta());
-                        } else {
-                            println!("    {} (needs value)", key);
-                        }
+                        println!(
+                            "    {} {}",
+                            c.key(key),
+                            c.commented("(needs value)")
+                        );
                     }
                 }
                 if !env_report.skipped.is_empty() {
-                    if tty {
-                        println!("  {} {} keys skipped (already exist)", "-".yellow(), env_report.skipped.len().to_string().yellow());
-                    } else {
-                        println!("  - {} keys skipped (already exist)", env_report.skipped.len());
-                    }
+                    println!(
+                        "  {} {} keys skipped (already exist)",
+                        c.muted("-"),
+                        c.muted(&env_report.skipped.len().to_string())
+                    );
                 }
             }
         }
