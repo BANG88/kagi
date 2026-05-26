@@ -1,10 +1,12 @@
 use clap::{Parser, Subcommand, ColorChoice};
 
 #[derive(Parser)]
-#[command(name = "kagi")]
-#[command(about = "Manage encrypted environment variables")]
-#[command(version)]
-#[command(color = ColorChoice::Auto)]
+#[command(
+    name = "kagi",
+    about = "Manage encrypted environment variables",
+    version,
+    color = ColorChoice::Auto
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
