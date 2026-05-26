@@ -94,6 +94,16 @@ kagi set dev STRIPE_KEY fake_stripe_key
 kagi set --service api prod DATABASE_URL postgres://prod/db
 ```
 
+If a value contains spaces or shell-special characters, quote or escape it for
+your shell so it reaches `kagi` as one argument:
+
+```bash
+kagi set dev DATABASE_URL 'postgres://u:p@localhost/db?name=dev app&sslmode=disable'
+```
+
+For multi-line values or large `.env` files, prefer `kagi import <env> --file
+.env.local`.
+
 With **nested inference** enabled via `kagi init --nested`, `kagi` infers the service from the child directory. You can either use the service-only shorthand or include an environment:
 
 ```bash
@@ -144,6 +154,12 @@ Inside a nested service directory, the first argument is treated as an environme
 kagi run bun dev             # runs with "api" secrets injected when nested is enabled
 kagi run dev bun start       # runs with "api/dev" secrets injected
 ```
+
+`kagi run` starts the command directly with Rust's process API, so executable
+launch and environment injection work across Linux, macOS, and Windows. It does
+not parse shell syntax itself. For pipes, redirects, `$VAR` expansion, or
+platform-specific shell built-ins, run the shell explicitly (`sh -c`,
+`cmd /C`, or PowerShell).
 
 ---
 

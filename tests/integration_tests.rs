@@ -3,6 +3,34 @@ use predicates::prelude::*;
 use serde_json::Value;
 use tempfile::TempDir;
 
+#[cfg(windows)]
+fn shell_print_literal(value: &str) -> Vec<String> {
+    vec![
+        "cmd".into(),
+        "/C".into(),
+        format!("<nul set /p dummy={}", value),
+    ]
+}
+
+#[cfg(not(windows))]
+fn shell_print_literal(value: &str) -> Vec<String> {
+    vec!["sh".into(), "-c".into(), format!("printf {}", value)]
+}
+
+#[cfg(windows)]
+fn shell_print_env(name: &str) -> Vec<String> {
+    vec![
+        "cmd".into(),
+        "/C".into(),
+        format!("<nul set /p dummy=%{}%", name),
+    ]
+}
+
+#[cfg(not(windows))]
+fn shell_print_env(name: &str) -> Vec<String> {
+    vec!["sh".into(), "-c".into(), format!("printf %s \"${}\"", name)]
+}
+
 #[test]
 fn test_init() {
     let dir = TempDir::new().unwrap();
@@ -73,6 +101,27 @@ fn test_set_and_get() {
     cmd.current_dir(&dir);
     cmd.args(["get", "--allow-non-interactive", "api", "KEY"]);
     cmd.assert().success().stdout("val\n");
+}
+
+#[test]
+fn test_set_preserves_special_characters_when_passed_as_one_argument() {
+    let dir = TempDir::new().unwrap();
+    let value = r#"postgres://u:p@localhost/db?sslmode=disable&name="dev app" $literal"#;
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["set", "dev", "DATABASE_URL", value]);
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["get", "--allow-non-interactive", "dev", "DATABASE_URL"]);
+    cmd.assert().success().stdout(format!("{}\n", value));
 }
 
 #[test]
@@ -407,7 +456,9 @@ fn test_nested_disabled_uses_parent_without_inference() {
 
     let mut cmd = Command::cargo_bin("kagi").unwrap();
     cmd.current_dir(&child);
-    cmd.args(["run", "sh", "-c", "printf ok"]);
+    let mut args = vec!["run".to_string()];
+    args.extend(shell_print_literal("ok"));
+    cmd.args(args);
     cmd.assert()
         .success()
         .stdout("ok")
@@ -590,9 +641,10 @@ fn test_nested_run_prefers_command_shorthand_over_root_scope_name() {
     )
     .unwrap();
 
+    let shell = shell_print_env("KEY");
     let mut cmd = Command::cargo_bin("kagi").unwrap();
     cmd.current_dir(&dir);
-    cmd.args(["set", "sh", "KEY", "root"]);
+    cmd.args(["set", shell[0].as_str(), "KEY", "root"]);
     cmd.assert().success();
 
     let api_dir = dir.path().join("api");
@@ -605,7 +657,9 @@ fn test_nested_run_prefers_command_shorthand_over_root_scope_name() {
 
     let mut cmd = Command::cargo_bin("kagi").unwrap();
     cmd.current_dir(&api_dir);
-    cmd.args(["run", "sh", "-c", "printf %s \"$KEY\""]);
+    let mut args = vec!["run".to_string()];
+    args.extend(shell);
+    cmd.args(args);
     cmd.assert().success().stdout("nested");
 }
 
@@ -630,7 +684,9 @@ fn test_nested_run_without_existing_scope_runs_without_env() {
 
     let mut cmd = Command::cargo_bin("kagi").unwrap();
     cmd.current_dir(&api_dir);
-    cmd.args(["run", "sh", "-c", "printf ok"]);
+    let mut args = vec!["run".to_string()];
+    args.extend(shell_print_literal("ok"));
+    cmd.args(args);
     cmd.assert()
         .success()
         .stdout("ok")
