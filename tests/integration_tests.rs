@@ -50,7 +50,13 @@ fn test_list() {
     let mut cmd = Command::cargo_bin("kagi").unwrap();
     cmd.current_dir(&dir);
     cmd.args(["list"]);
-    cmd.assert().success().stdout("api\n");
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("api"), "expected api in list output: {}", stdout);
+    assert!(stdout.contains("dev"), "expected dev in list output: {}", stdout);
+    assert!(stdout.contains("test"), "expected test in list output: {}", stdout);
+    assert!(stdout.contains("staging"), "expected staging in list output: {}", stdout);
+    assert!(stdout.contains("prod"), "expected prod in list output: {}", stdout);
 
     let mut cmd = Command::cargo_bin("kagi").unwrap();
     cmd.current_dir(&dir);
@@ -103,4 +109,174 @@ fn test_import_from_file() {
     cmd.current_dir(&dir);
     cmd.args(["get", "api", "DB_URL"]);
     cmd.assert().success().stdout("postgres://localhost\n");
+}
+
+#[test]
+fn test_import_force_overwrites() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    std::fs::write(dir.path().join("first.env"), "API_KEY=old_value\n").unwrap();
+    std::fs::write(dir.path().join("second.env"), "API_KEY=new_value\nEXTRA_KEY=extra\n").unwrap();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["import", "api", "--file", "first.env"]);
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["get", "api", "API_KEY"]);
+    cmd.assert().success().stdout("old_value\n");
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["import", "api", "--file", "second.env", "--force"]);
+    cmd.assert().success().stdout(predicate::str::contains("overwritten"));
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["get", "api", "API_KEY"]);
+    cmd.assert().success().stdout("new_value\n");
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["get", "api", "EXTRA_KEY"]);
+    cmd.assert().success().stdout("extra\n");
+}
+
+#[test]
+fn test_copy_all_overwrites() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["set", "dev", "A", "1"]);
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["set", "test", "A", "old"]);
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["copy", "dev", "test"]);
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["get", "test", "A"]);
+    cmd.assert().success().stdout("1\n");
+}
+
+#[test]
+fn test_copy_only_missing() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["set", "dev", "A", "1"]);
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["set", "dev", "B", "2"]);
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["set", "test", "B", "old"]);
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["copy", "dev", "test", "--only-missing"]);
+    cmd.assert().success().stdout(predicate::str::contains("skipped"));
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["get", "test", "A"]);
+    cmd.assert().success().stdout("1\n");
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["get", "test", "B"]);
+    cmd.assert().success().stdout("old\n");
+}
+
+#[test]
+fn test_sync_from_example() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    std::fs::write(
+        dir.path().join(".env.example"),
+        "DATABASE_URL=postgres://localhost\n# WEBHOOK_SECRET=\nDEBUG=true\n",
+    ).unwrap();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.arg("sync");
+    cmd.assert().success().stdout(predicate::str::contains("Synced"));
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["get", "dev", "DATABASE_URL"]);
+    cmd.assert().success().stdout("postgres://localhost\n");
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["get", "dev", "WEBHOOK_SECRET"]);
+    cmd.assert().success().stdout("\n");
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["get", "test", "DEBUG"]);
+    cmd.assert().success().stdout("true\n");
+}
+
+#[test]
+fn test_sync_skips_existing_keys() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    std::fs::write(dir.path().join(".env.example"), "API_KEY=default\n").unwrap();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["set", "dev", "API_KEY", "custom"]);
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.arg("sync");
+    cmd.assert().success().stdout(predicate::str::contains("skipped"));
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["get", "dev", "API_KEY"]);
+    cmd.assert().success().stdout("custom\n");
 }
