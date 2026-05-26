@@ -1,6 +1,5 @@
 use std::io::{self, IsTerminal};
 use std::path::PathBuf;
-use crate::application::copy_service::CopyService;
 use crate::application::export_env::ExportEnvService;
 use crate::application::sync_service::SyncService;
 use crate::application::get_secret::GetSecretService;
@@ -274,43 +273,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
                 }
             }
         }
-        Commands::Copy { source, target, only_missing } => {
-            let base_path = resolve_kagi_base()?;
-            let key_manager = KeyManager::new(base_path.clone());
-            let master_key = key_manager.load()?;
-            let key_array: [u8; 32] = master_key.as_slice().try_into()
-                .map_err(|_| anyhow::anyhow!("Invalid master key length"))?;
-            let encryptor = AesGcmEncryptor::new(&key_array);
-            let store = FileStore::new(base_path, Box::new(encryptor));
-            let copy_service = CopyService::new(store);
-            let report = copy_service.execute(&source, &target, only_missing)?;
-
-            println!(
-                "{} {} keys from {} to {}",
-                c.success("Copied"),
-                c.success(&report.copied.len().to_string()),
-                c.accent(&source),
-                c.accent(&target)
-            );
-            if !report.skipped.is_empty() {
-                println!(
-                    "{} {} keys skipped (already exist in {})",
-                    c.muted("Info"),
-                    c.muted(&report.skipped.len().to_string()),
-                    c.accent(&target)
-                );
-            }
-            for key in report.copied {
-                println!(
-                    "  {}.{} → {}.{}",
-                    c.accent(&source),
-                    c.key(&key),
-                    c.accent(&target),
-                    c.key(&key)
-                );
-            }
-        }
-        Commands::Sync { example, envs } => {
+        Commands::Sync { example, sources, envs } => {
             let base_path = resolve_kagi_base()?;
             let key_manager = KeyManager::new(base_path.clone());
             let master_key = key_manager.load()?;
@@ -319,7 +282,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
             let encryptor = AesGcmEncryptor::new(&key_array);
             let store = FileStore::new(base_path, Box::new(encryptor));
             let sync_service = SyncService::new(store);
-            let report = sync_service.execute(&example, &envs)?;
+            let report = sync_service.execute(&example, &sources, &envs)?;
 
             for (env_name, env_report) in &report.env_reports {
                 println!("{} {}", c.success("Synced"), c.accent(env_name));
