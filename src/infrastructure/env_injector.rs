@@ -1,3 +1,4 @@
+use std::process::Command;
 use crate::domain::error::DomainError;
 use crate::domain::runner::CommandRunner;
 
@@ -12,19 +13,25 @@ impl SystemCommandRunner {
 impl CommandRunner for SystemCommandRunner {
     fn run(
         &self,
-        _env_vars: &[(String, String)],
-        _command: &str,
-        _args: &[String],
+        env_vars: &[(String, String)],
+        command: &str,
+        args: &[String],
     ) -> Result<i32, DomainError> {
-        todo!()
+        let mut cmd = Command::new(command);
+        cmd.args(args);
+        for (key, value) in env_vars {
+            cmd.env(key, value);
+        }
+        let status = cmd.status()?;
+        Ok(status.code().unwrap_or(1))
     }
 }
 
 #[cfg(test)]
 pub mod mock {
+    use std::sync::{Arc, Mutex};
     use crate::domain::error::DomainError;
     use crate::domain::runner::CommandRunner;
-    use std::sync::{Arc, Mutex};
 
     #[derive(Default, Clone)]
     pub struct MockCommandRunner {
