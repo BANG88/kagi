@@ -80,6 +80,24 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
             let output = export_service.execute(&service_name)?;
             println!("{}", output);
         }
+        Commands::Import { service: service_name, file } => {
+            let key_manager = KeyManager::new(base_path.clone());
+            let master_key = key_manager.load()?;
+            let key_array: [u8; 32] = master_key.as_slice().try_into()
+                .map_err(|_| anyhow::anyhow!("Invalid master key length"))?;
+            let encryptor = AesGcmEncryptor::new(&key_array);
+            let store = FileStore::new(base_path, Box::new(encryptor));
+            let import_service = crate::application::import_env_file::ImportEnvFileService::new(store);
+            let imported = import_service.execute(&service_name, &file)?;
+            if tty {
+                println!("{} {} keys from {}", "Imported".green(), imported.len(), file);
+            } else {
+                println!("Imported {} keys from {}", imported.len(), file);
+            }
+            for key in imported {
+                println!("  {}.{} = <encrypted>", service_name, key);
+            }
+        }
         Commands::List { service: service_name } => {
             let key_manager = KeyManager::new(base_path.clone());
             let master_key = key_manager.load()?;

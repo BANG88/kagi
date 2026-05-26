@@ -28,6 +28,11 @@ pub enum Commands {
     Export {
         service: String,
     },
+    Import {
+        service: String,
+        #[arg(short, long, default_value = ".env")]
+        file: String,
+    },
     List {
         service: Option<String>,
     },

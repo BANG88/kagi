@@ -4,7 +4,6 @@ use std::path::PathBuf;
 use base64::{Engine as _, engine::general_purpose};
 use serde::{Deserialize, Serialize};
 use crate::domain::crypto::encryptor::Encryptor;
-use crate::domain::entity::secret::Secret;
 use crate::domain::entity::service::Service;
 use crate::domain::error::DomainError;
 use crate::domain::repository::secret_repo::SecretRepository;
@@ -121,6 +120,7 @@ impl SecretRepository for FileStore {
 mod tests {
     use super::*;
     use crate::domain::crypto::encryptor::mock::XorEncryptor;
+    use crate::domain::entity::secret::Secret;
     use tempfile::TempDir;
 
     fn create_store(dir: &TempDir) -> FileStore {
