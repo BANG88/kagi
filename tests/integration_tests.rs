@@ -7,9 +7,10 @@ use tempfile::TempDir;
 #[cfg(windows)]
 fn shell_print_literal(value: &str) -> Vec<String> {
     vec![
-        "cmd".into(),
-        "/C".into(),
-        format!("<nul set /p dummy={}", value),
+        "powershell".into(),
+        "-NoProfile".into(),
+        "-Command".into(),
+        format!("[Console]::Write({:?})", value),
     ]
 }
 
@@ -21,9 +22,10 @@ fn shell_print_literal(value: &str) -> Vec<String> {
 #[cfg(windows)]
 fn shell_print_env(name: &str) -> Vec<String> {
     vec![
-        "cmd".into(),
-        "/C".into(),
-        format!("<nul set /p dummy=%{}%", name),
+        "powershell".into(),
+        "-NoProfile".into(),
+        "-Command".into(),
+        format!("[Console]::Write($env:{})", name),
     ]
 }
 
