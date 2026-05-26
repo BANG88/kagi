@@ -14,11 +14,12 @@ fn main() {
     let tty = std::io::stdout().is_terminal();
     let c = cli::style::Palette::new(tty);
     let logo = format!(
-        "{}\n{}\n{}\n{}\n{}",
-        c.accent("    ╭────────────────────────────╮"),
-        c.accent("    │      🔑  Kagi 鍵           │"),
-        c.accent("    │   Encrypted Env Manager    │"),
-        c.accent("    ╰────────────────────────────╯"),
+        "{}\n{}\n{}\n{}\n{}\n{}",
+        c.accent(" _  __    _    ____  ____"),
+        c.accent("| |/ /   / \\  / ___|| __ )"),
+        c.accent("| ' /   / _ \\ | |  _|  _ \\"),
+        c.accent("| . \\  / ___ \\| |_| | |_) |"),
+        c.accent("|_|\\_\\/_/   \\_\\____|____/"),
         c.muted("    Manage encrypted environment variables"),
     );
     cmd = cmd.before_help(logo);
