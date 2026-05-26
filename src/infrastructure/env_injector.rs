@@ -33,9 +33,11 @@ pub mod mock {
     use crate::domain::error::DomainError;
     use crate::domain::runner::CommandRunner;
 
+    type CallRecord = (Vec<(String, String)>, String, Vec<String>);
+
     #[derive(Default, Clone)]
     pub struct MockCommandRunner {
-        pub calls: Arc<Mutex<Vec<(Vec<(String, String)>, String, Vec<String>)>>>,
+        pub calls: Arc<Mutex<Vec<CallRecord>>>,
         pub exit_code: i32,
     }
 
