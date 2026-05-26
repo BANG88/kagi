@@ -1,23 +1,12 @@
-use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use base64::{Engine as _, engine::general_purpose};
 use serde::{Deserialize, Serialize};
+use crate::domain::config::{KagiConfig, ServiceConfig};
 use crate::domain::crypto::encryptor::Encryptor;
 use crate::domain::entity::service::Service;
 use crate::domain::error::DomainError;
 use crate::domain::repository::secret_repo::SecretRepository;
-
-#[derive(Serialize, Deserialize)]
-struct Config {
-    version: String,
-    services: HashMap<String, ServiceConfig>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct ServiceConfig {
-    file: String,
-}
 
 #[derive(Serialize, Deserialize)]
 struct EncryptedService {
@@ -47,13 +36,13 @@ impl FileStore {
         self.base_path.join(file)
     }
 
-    fn load_config(&self) -> Result<Config, DomainError> {
+    fn load_config(&self) -> Result<KagiConfig, DomainError> {
         let content = fs::read_to_string(self.config_path())?;
-        let config: Config = serde_json::from_str(&content)?;
+        let config: KagiConfig = serde_json::from_str(&content)?;
         Ok(config)
     }
 
-    fn save_config(&self, config: &Config) -> Result<(), DomainError> {
+    fn save_config(&self, config: &KagiConfig) -> Result<(), DomainError> {
         let content = serde_json::to_string_pretty(config)?;
         fs::write(self.config_path(), content)?;
         Ok(())
@@ -126,10 +115,7 @@ mod tests {
     fn create_store(dir: &TempDir) -> FileStore {
         let base = dir.path().join(".kagi");
         fs::create_dir(&base).unwrap();
-        let config = Config {
-            version: "1".into(),
-            services: HashMap::new(),
-        };
+        let config = KagiConfig::new("1");
         fs::write(base.join("config.json"), serde_json::to_string(&config).unwrap()).unwrap();
         FileStore::new(base, Box::new(XorEncryptor::new(0xAB)))
     }
