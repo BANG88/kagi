@@ -270,6 +270,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
             let items = list_service.execute(service_name.as_deref())?;
             if let Some(name) = service_name {
                 if items.is_empty() {
+                    draw_key_table(&[], &c);
                     println!("{}", c.muted(&format!("No secrets in {}", name)));
                 } else {
                     draw_key_table(&items, &c);
