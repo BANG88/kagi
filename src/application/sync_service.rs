@@ -27,20 +27,22 @@ impl<R: SecretRepository> SyncService<R> {
     pub fn execute(&self, example_path: &str, sources: &[String], target_envs: &[String]) -> Result<SyncReport, DomainError> {
         let mut all_entries = Vec::new();
 
-        let example_content = std::fs::read_to_string(example_path)?;
-        let mut entries = parse_env_example(&example_content);
-        if entries.is_empty() {
-            return Err(DomainError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(".env.example at {} contains no valid entries", example_path),
-            )));
+        if let Ok(example_content) = std::fs::read_to_string(example_path) {
+            let mut entries = parse_env_example(&example_content);
+            all_entries.append(&mut entries);
         }
-        all_entries.append(&mut entries);
 
         for source_path in sources {
             let source_content = std::fs::read_to_string(source_path)?;
             let mut source_entries = parse_env_example(&source_content);
             all_entries.append(&mut source_entries);
+        }
+
+        if all_entries.is_empty() {
+            return Err(DomainError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "No valid entries found in .env.example or source files".to_string(),
+            )));
         }
 
         let mut merged: Vec<(String, String, bool)> = Vec::new();
@@ -183,6 +185,26 @@ mod tests {
 
         let result = svc.execute(example.to_str().unwrap(), &[], &["dev".into()]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_sync_without_example_uses_sources_only() {
+        let dir = TempDir::new().unwrap();
+        let svc = setup(&dir);
+        // deliberately do NOT create .env.example
+        let source = dir.path().join(".env.local");
+        std::fs::write(&source, "FEATURE_FLAG=true\n").unwrap();
+
+        let report = svc.execute(
+            ".env.example",
+            &[source.to_str().unwrap().into()],
+            &["dev".into()],
+        ).unwrap();
+        let dev = report.env_reports.get("dev").unwrap();
+        assert_eq!(dev.added, vec!["FEATURE_FLAG"]);
+
+        let loaded = svc.repo.load("dev").unwrap();
+        assert_eq!(loaded.get_secret("FEATURE_FLAG").unwrap().value, "true");
     }
 
     #[test]
