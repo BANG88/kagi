@@ -24,15 +24,28 @@ impl<R: SecretRepository> SyncService<R> {
         Self { repo }
     }
 
-    pub fn execute(&self, example_path: &str, target_envs: &[String]) -> Result<SyncReport, DomainError> {
-        let content = std::fs::read_to_string(example_path)?;
-        let entries = parse_env_example(&content);
+    pub fn execute(&self, example_path: &str, sources: &[String], target_envs: &[String]) -> Result<SyncReport, DomainError> {
+        let mut all_entries = Vec::new();
 
+        let example_content = std::fs::read_to_string(example_path)?;
+        let mut entries = parse_env_example(&example_content);
         if entries.is_empty() {
             return Err(DomainError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(".env.example at {} contains no valid entries", example_path),
             )));
+        }
+        all_entries.append(&mut entries);
+
+        for source_path in sources {
+            let source_content = std::fs::read_to_string(source_path)?;
+            let mut source_entries = parse_env_example(&source_content);
+            all_entries.append(&mut source_entries);
+        }
+
+        let mut merged: HashMap<String, (String, bool)> = HashMap::new();
+        for entry in all_entries {
+            merged.insert(entry.key, (entry.value, entry.is_commented));
         }
 
         let mut env_reports = HashMap::new();
@@ -48,17 +61,17 @@ impl<R: SecretRepository> SyncService<R> {
             let mut commented = Vec::new();
             let mut skipped = Vec::new();
 
-            for entry in &entries {
-                if service.secrets.contains_key(&entry.key) {
-                    skipped.push(entry.key.clone());
+            for (key, (value, is_commented)) in &merged {
+                if service.secrets.contains_key(key) {
+                    skipped.push(key.clone());
                     continue;
                 }
-                if entry.is_commented {
-                    service.set_secret(Secret::new(&entry.key, ""));
-                    commented.push(entry.key.clone());
+                if *is_commented {
+                    service.set_secret(Secret::new(key, ""));
+                    commented.push(key.clone());
                 } else {
-                    service.set_secret(Secret::new(&entry.key, &entry.value));
-                    added.push(entry.key.clone());
+                    service.set_secret(Secret::new(key, value));
+                    added.push(key.clone());
                 }
             }
 
@@ -96,7 +109,7 @@ mod tests {
         let example = dir.path().join(".env.example");
         std::fs::write(&example, "API_KEY=secret\nDEBUG=true\n").unwrap();
 
-        let report = svc.execute(example.to_str().unwrap(), &["dev".into()]).unwrap();
+        let report = svc.execute(example.to_str().unwrap(), &[], &["dev".into()]).unwrap();
         let dev = report.env_reports.get("dev").unwrap();
         assert_eq!(dev.added, vec!["API_KEY", "DEBUG"]);
         assert!(dev.commented.is_empty());
@@ -114,7 +127,7 @@ mod tests {
         let example = dir.path().join(".env.example");
         std::fs::write(&example, "# WEBHOOK_SECRET=\n").unwrap();
 
-        let report = svc.execute(example.to_str().unwrap(), &["dev".into()]).unwrap();
+        let report = svc.execute(example.to_str().unwrap(), &[], &["dev".into()]).unwrap();
         let dev = report.env_reports.get("dev").unwrap();
         assert!(dev.added.is_empty());
         assert_eq!(dev.commented, vec!["WEBHOOK_SECRET"]);
@@ -135,7 +148,7 @@ mod tests {
         pre.set_secret(Secret::new("API_KEY", "existing"));
         svc.repo.save(&pre).unwrap();
 
-        let report = svc.execute(example.to_str().unwrap(), &["dev".into()]).unwrap();
+        let report = svc.execute(example.to_str().unwrap(), &[], &["dev".into()]).unwrap();
         let dev = report.env_reports.get("dev").unwrap();
         assert!(dev.added.is_empty());
         assert!(dev.commented.is_empty());
@@ -152,7 +165,7 @@ mod tests {
         let example = dir.path().join(".env.example");
         std::fs::write(&example, "DB_URL=postgres\n").unwrap();
 
-        let report = svc.execute(example.to_str().unwrap(), &["dev".into(), "test".into()]).unwrap();
+        let report = svc.execute(example.to_str().unwrap(), &[], &["dev".into(), "test".into()]).unwrap();
         assert!(report.env_reports.contains_key("dev"));
         assert!(report.env_reports.contains_key("test"));
     }
@@ -164,7 +177,53 @@ mod tests {
         let example = dir.path().join(".env.example");
         std::fs::write(&example, "# This is just a comment\n").unwrap();
 
-        let result = svc.execute(example.to_str().unwrap(), &["dev".into()]);
+        let result = svc.execute(example.to_str().unwrap(), &[], &["dev".into()]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_sync_sources_override_example() {
+        let dir = TempDir::new().unwrap();
+        let svc = setup(&dir);
+        let example = dir.path().join(".env.example");
+        std::fs::write(&example, "API_KEY=from_example\nDEBUG=true\n").unwrap();
+
+        let override_file = dir.path().join(".env.override");
+        std::fs::write(&override_file, "API_KEY=from_override\n").unwrap();
+
+        let report = svc.execute(
+            example.to_str().unwrap(),
+            &[override_file.to_str().unwrap().into()],
+            &["dev".into()],
+        ).unwrap();
+        let dev = report.env_reports.get("dev").unwrap();
+        assert_eq!(dev.added, vec!["API_KEY", "DEBUG"]);
+
+        let loaded = svc.repo.load("dev").unwrap();
+        assert_eq!(loaded.get_secret("API_KEY").unwrap().value, "from_override");
+        assert_eq!(loaded.get_secret("DEBUG").unwrap().value, "true");
+    }
+
+    #[test]
+    fn test_sync_sources_add_new_keys() {
+        let dir = TempDir::new().unwrap();
+        let svc = setup(&dir);
+        let example = dir.path().join(".env.example");
+        std::fs::write(&example, "API_KEY=default\n").unwrap();
+
+        let extra = dir.path().join(".env.local");
+        std::fs::write(&extra, "DB_URL=postgres\n").unwrap();
+
+        let report = svc.execute(
+            example.to_str().unwrap(),
+            &[extra.to_str().unwrap().into()],
+            &["dev".into()],
+        ).unwrap();
+        let dev = report.env_reports.get("dev").unwrap();
+        assert_eq!(dev.added, vec!["API_KEY", "DB_URL"]);
+
+        let loaded = svc.repo.load("dev").unwrap();
+        assert_eq!(loaded.get_secret("API_KEY").unwrap().value, "default");
+        assert_eq!(loaded.get_secret("DB_URL").unwrap().value, "postgres");
     }
 }
