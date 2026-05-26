@@ -146,36 +146,42 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
     let tty = io::stdout().is_terminal();
     let c = Palette::new(tty);
     match cli.command {
-        Commands::Init => {
+        Commands::Init { envs, force } => {
             let cwd = std::env::current_dir()?;
             let local = cwd.join(".kagi");
-            if local.is_dir() {
-                return Err(anyhow::anyhow!(".kagi/ already exists in this directory."));
+            if local.is_dir() && !force {
+                return Err(anyhow::anyhow!(".kagi/ already exists in this directory. Use --force to overwrite."));
+            }
+            if local.is_dir() && force {
+                let services_dir = local.join("services");
+                if services_dir.is_dir() {
+                    let has_enc = std::fs::read_dir(&services_dir)?
+                        .filter_map(|e| e.ok())
+                        .any(|e| e.path().extension().map_or(false, |ext| ext == "enc"));
+                    if has_enc {
+                        eprintln!("{} {}", c.warning("Warning:"), c.warning("Overwriting existing .kagi/ will delete all stored secrets."));
+                    }
+                }
+                std::fs::remove_dir_all(&local)?;
             }
             let service = InitService::new(local.clone());
             service.execute()?;
 
-            let key_manager = KeyManager::new(local.clone());
-            let master_key = key_manager.load()?;
-            let key_array: [u8; 32] = master_key.as_slice().try_into()
-                .map_err(|_| anyhow::anyhow!("Invalid master key length"))?;
-            let encryptor = AesGcmEncryptor::new(&key_array);
-            let store = FileStore::new(local, Box::new(encryptor));
-            for env_name in &["dev", "test", "staging", "prod"] {
-                let svc = Service::new(*env_name);
-                store.save(&svc).context(format!("Failed to create default '{}' environment", env_name))?;
+            if !envs.is_empty() {
+                let key_manager = KeyManager::new(local.clone());
+                let master_key = key_manager.load()?;
+                let key_array: [u8; 32] = master_key.as_slice().try_into()
+                    .map_err(|_| anyhow::anyhow!("Invalid master key length"))?;
+                let encryptor = AesGcmEncryptor::new(&key_array);
+                let store = FileStore::new(local, Box::new(encryptor));
+                for env_name in &envs {
+                    let svc = Service::new(env_name);
+                    store.save(&svc).context(format!("Failed to create '{}' environment", env_name))?;
+                }
+                println!("{} {} {}", c.success("Initialized .kagi/"), c.muted("with"), c.accent(&envs.join(", ")));
+            } else {
+                println!("{}", c.success("Initialized .kagi/"));
             }
-
-            println!(
-                "{} {} {} {} {} {} {}",
-                c.success("Initialized .kagi/"),
-                c.muted("with"),
-                c.accent("dev"),
-                c.accent("test"),
-                c.accent("staging"),
-                c.accent("prod"),
-                c.success("environments")
-            );
             println!("{} {}", c.warning("Note:"), c.muted(".kagi/ added to .gitignore — do not commit secrets to version control."));
         }
         Commands::Set { service: service_name, key, value } => {

@@ -15,7 +15,15 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Commands {
     /// Initialize a new kagi repository in the current directory
-    Init,
+    Init {
+        /// Environments to create (comma-separated, e.g., dev,test)
+        #[arg(short, long, value_delimiter = ',')]
+        envs: Vec<String>,
+
+        /// Overwrite existing .kagi/ directory
+        #[arg(long)]
+        force: bool,
+    },
 
     /// Store an encrypted secret for a service
     Set {

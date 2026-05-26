@@ -26,9 +26,11 @@ fn main() {
     cmd = cmd.before_help(logo);
 
     let cmd_ref = format!(
-        "{}\n  {}\n    {}\n  {} {} {} {}\n    {}\n  {} {} {}\n    {}\n  {} {} {} {}\n    {}\n  {} {}\n    {}\n  {} {} {} {}\n    {}\n  {} {}\n    {}\n  {} {} {} {}\n    {}",
+        "{}\n  {} {} {}\n    {}\n  {} {} {} {}\n    {}\n  {} {} {}\n    {}\n  {} {} {} {}\n    {}\n  {} {}\n    {}\n  {} {} {} {}\n    {}\n  {} {}\n    {}\n  {} {} {} {}\n    {}",
         c.info("Command Reference:"),
         c.accent("init"),
+        c.info("[--envs <envs>]"),
+        c.info("[--force]"),
         c.muted("Initialize a new kagi repository in the current directory"),
         c.accent("set"),
         c.info("[service]"),

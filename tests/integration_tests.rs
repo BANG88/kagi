@@ -53,10 +53,6 @@ fn test_list() {
     let assert = cmd.assert().success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(stdout.contains("api"), "expected api in list output: {}", stdout);
-    assert!(stdout.contains("dev"), "expected dev in list output: {}", stdout);
-    assert!(stdout.contains("test"), "expected test in list output: {}", stdout);
-    assert!(stdout.contains("staging"), "expected staging in list output: {}", stdout);
-    assert!(stdout.contains("prod"), "expected prod in list output: {}", stdout);
 
     let mut cmd = Command::cargo_bin("kagi").unwrap();
     cmd.current_dir(&dir);
