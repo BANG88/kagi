@@ -18,6 +18,45 @@ use crate::infrastructure::env_injector::SystemCommandRunner;
 use crate::infrastructure::fs_store::FileStore;
 use crate::infrastructure::key_manager::KeyManager;
 
+fn draw_key_table(items: &[(String, String)], c: &Palette) {
+    let max_key = items.iter().map(|(k, _)| k.len()).max().unwrap_or(0).max(3);
+    let max_val = items.iter()
+        .map(|(_, v)| if v.is_empty() { 7 } else { v.len() })
+        .max().unwrap_or(0).max(5);
+
+    let border = format!("┌─{:─<width1$}─┬─{:─<width2$}─┐", "", "", width1 = max_key, width2 = max_val);
+    println!("{}", c.muted(&border));
+
+    let header = format!("│ {: <width1$} │ {: <width2$} │", "Key", "Value", width1 = max_key, width2 = max_val);
+    println!("{}", c.info(&header));
+
+    let sep = format!("├─{:─<width1$}─┼─{:─<width2$}─┤", "", "", width1 = max_key, width2 = max_val);
+    println!("{}", c.muted(&sep));
+
+    for (key, value) in items {
+        let left = format!("│ {: <width1$} │ ", key, width1 = max_key);
+        print!("{}", c.muted(&left));
+        if value.is_empty() {
+            print!("{}", c.commented("(empty)"));
+            let padding = max_val.saturating_sub(7);
+            if padding > 0 {
+                print!("{}", c.muted(&" ".repeat(padding)));
+            }
+            println!("{}", c.muted(" │"));
+        } else {
+            print!("{}", c.success(value));
+            let padding = max_val.saturating_sub(value.len());
+            if padding > 0 {
+                print!("{}", c.muted(&" ".repeat(padding)));
+            }
+            println!("{}", c.muted(" │"));
+        }
+    }
+
+    let bottom = format!("└─{:─<width1$}─┴─{:─<width2$}─┘", "", "", width1 = max_key, width2 = max_val);
+    println!("{}", c.muted(&bottom));
+}
+
 fn resolve_kagi_base() -> anyhow::Result<PathBuf> {
     let cwd = std::env::current_dir()?;
 
@@ -223,8 +262,16 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
             let store = FileStore::new(base_path, Box::new(encryptor));
             let list_service = ListServicesService::new(store);
             let items = list_service.execute(service_name.as_deref())?;
-            for item in items {
-                println!("{}", c.accent(&item));
+            if let Some(name) = service_name {
+                if items.is_empty() {
+                    println!("{}", c.muted(&format!("No secrets in {}", name)));
+                } else {
+                    draw_key_table(&items, &c);
+                }
+            } else {
+                for (name, _) in items {
+                    println!("{}", c.accent(&name));
+                }
             }
         }
         Commands::Copy { source, target, only_missing } => {

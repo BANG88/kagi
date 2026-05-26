@@ -61,7 +61,12 @@ fn test_list() {
     let mut cmd = Command::cargo_bin("kagi").unwrap();
     cmd.current_dir(&dir);
     cmd.args(["list", "api"]);
-    cmd.assert().success().stdout("KEY\n");
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("Key"), "expected table header in list api: {}", stdout);
+    assert!(stdout.contains("Value"), "expected table header in list api: {}", stdout);
+    assert!(stdout.contains("KEY"), "expected KEY in list api: {}", stdout);
+    assert!(stdout.contains("val"), "expected val in list api: {}", stdout);
 }
 
 #[test]

@@ -10,18 +10,22 @@ impl<R: SecretRepository> ListServicesService<R> {
         Self { repo }
     }
 
-    pub fn execute(&self, service_name: Option<&str>) -> Result<Vec<String>, DomainError> {
+    /// When service_name is None, returns list of service names (value is empty).
+    /// When service_name is Some, returns list of (key, value) pairs for that service.
+    pub fn execute(&self, service_name: Option<&str>) -> Result<Vec<(String, String)>, DomainError> {
         match service_name {
             Some(name) => {
                 let service = self.repo.load(name)?;
-                let mut keys: Vec<_> = service.list_keys().into_iter().cloned().collect();
-                keys.sort();
-                Ok(keys)
+                let mut items: Vec<_> = service.secrets.iter()
+                    .map(|(k, v)| (k.clone(), v.value.clone()))
+                    .collect();
+                items.sort_by(|a, b| a.0.cmp(&b.0));
+                Ok(items)
             }
             None => {
                 let mut services = self.repo.list_services()?;
                 services.sort();
-                Ok(services)
+                Ok(services.into_iter().map(|s| (s, String::new())).collect())
             }
         }
     }
@@ -54,7 +58,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let svc = setup(&dir);
         let list = svc.execute(None).unwrap();
-        assert_eq!(list, vec!["api"]);
+        assert_eq!(list, vec![("api".into(), "".into())]);
     }
 
     #[test]
@@ -62,6 +66,6 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let svc = setup(&dir);
         let keys = svc.execute(Some("api")).unwrap();
-        assert_eq!(keys, vec!["A", "B"]);
+        assert_eq!(keys, vec![("A".into(), "1".into()), ("B".into(), "2".into())]);
     }
 }
