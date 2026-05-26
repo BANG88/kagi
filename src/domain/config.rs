@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 pub const KAGI_CONFIG_FILE: &str = "kagi.json";
 
@@ -28,7 +28,10 @@ impl NestedMode {
         match self {
             NestedMode::Bool(v) => *v,
             NestedMode::Paths(paths) => {
-                let rel = relative_path.replace('\\', "/").trim_end_matches('/').to_string();
+                let rel = relative_path
+                    .replace('\\', "/")
+                    .trim_end_matches('/')
+                    .to_string();
                 paths.iter().any(|p| {
                     let p_norm = p.replace('\\', "/").trim_end_matches('/').to_string();
                     rel == p_norm || rel.starts_with(&(p_norm.clone() + "/"))
@@ -40,22 +43,14 @@ impl NestedMode {
 
 impl Default for NestedMode {
     fn default() -> Self {
-        NestedMode::Bool(true)
+        NestedMode::Bool(false)
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
 pub struct Settings {
     #[serde(default)]
     pub nested: NestedMode,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            nested: NestedMode::default(),
-        }
-    }
 }
 
 impl KagiConfig {
@@ -64,6 +59,14 @@ impl KagiConfig {
             version: version.into(),
             services: HashMap::new(),
             settings: Settings::default(),
+        }
+    }
+
+    pub fn new_with_nested(version: impl Into<String>, nested: NestedMode) -> Self {
+        Self {
+            version: version.into(),
+            services: HashMap::new(),
+            settings: Settings { nested },
         }
     }
 }
@@ -75,14 +78,14 @@ mod tests {
     #[test]
     fn test_config_default_nested() {
         let config = KagiConfig::new("1");
-        assert!(matches!(config.settings.nested, NestedMode::Bool(true)));
+        assert!(matches!(config.settings.nested, NestedMode::Bool(false)));
     }
 
     #[test]
     fn test_config_deserialize_missing_settings() {
         let json = r#"{"version":"1","services":{}}"#;
         let config: KagiConfig = serde_json::from_str(json).unwrap();
-        assert!(matches!(config.settings.nested, NestedMode::Bool(true)));
+        assert!(matches!(config.settings.nested, NestedMode::Bool(false)));
     }
 
     #[test]

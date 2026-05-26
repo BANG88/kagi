@@ -32,10 +32,13 @@ mod tests {
     fn test_parse_basic() {
         let content = "API_KEY=secret\nDB_URL=postgres://localhost\n";
         let vars = parse_dotenv(content);
-        assert_eq!(vars, vec![
-            ("API_KEY".into(), "secret".into()),
-            ("DB_URL".into(), "postgres://localhost".into()),
-        ]);
+        assert_eq!(
+            vars,
+            vec![
+                ("API_KEY".into(), "secret".into()),
+                ("DB_URL".into(), "postgres://localhost".into()),
+            ]
+        );
     }
 
     #[test]

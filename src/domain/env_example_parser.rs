@@ -11,8 +11,8 @@ pub fn parse_env_example(content: &str) -> Vec<ExampleEntry> {
         if trimmed.is_empty() {
             continue;
         }
-        if trimmed.starts_with('#') {
-            let after_hash = trimmed[1..].trim();
+        if let Some(commented) = trimmed.strip_prefix('#') {
+            let after_hash = commented.trim();
             if let Some(eq_pos) = after_hash.find('=') {
                 let key = after_hash[..eq_pos].trim();
                 if is_valid_key(key) {

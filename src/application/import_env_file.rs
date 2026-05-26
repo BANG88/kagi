@@ -1,10 +1,10 @@
-use std::collections::HashSet;
-use std::fs;
 use crate::domain::entity::secret::Secret;
 use crate::domain::entity::service::Service;
 use crate::domain::env_parser::parse_dotenv;
 use crate::domain::error::DomainError;
 use crate::domain::repository::secret_repo::SecretRepository;
+use std::collections::HashSet;
+use std::fs;
 
 pub struct ImportReport {
     pub imported: Vec<String>,
@@ -20,7 +20,12 @@ impl<R: SecretRepository> ImportEnvFileService<R> {
         Self { repo }
     }
 
-    pub fn execute(&self, service_name: &str, file_path: &str, force: bool) -> Result<ImportReport, DomainError> {
+    pub fn execute(
+        &self,
+        service_name: &str,
+        file_path: &str,
+        force: bool,
+    ) -> Result<ImportReport, DomainError> {
         let content = fs::read_to_string(file_path)?;
         let vars = parse_dotenv(&content);
 
@@ -41,7 +46,10 @@ impl<R: SecretRepository> ImportEnvFileService<R> {
 
         // If conflicts exist and not forced, return preview without writing
         if !overwritten.is_empty() && !force {
-            return Ok(ImportReport { imported, overwritten });
+            return Ok(ImportReport {
+                imported,
+                overwritten,
+            });
         }
 
         // Do actual import
@@ -55,7 +63,10 @@ impl<R: SecretRepository> ImportEnvFileService<R> {
             self.repo.save(&service)?;
         }
 
-        Ok(ImportReport { imported, overwritten })
+        Ok(ImportReport {
+            imported,
+            overwritten,
+        })
     }
 }
 
@@ -70,7 +81,11 @@ mod tests {
         let base = dir.path().join(".kagi");
         std::fs::create_dir(&base).unwrap();
         let config = serde_json::json!({"version": "1", "services": {}});
-        std::fs::write(base.join(crate::domain::config::KAGI_CONFIG_FILE), serde_json::to_string(&config).unwrap()).unwrap();
+        std::fs::write(
+            base.join(crate::domain::config::KAGI_CONFIG_FILE),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
         let store = FileStore::new(base, Box::new(XorEncryptor::new(0xAB)));
         ImportEnvFileService::new(store)
     }
@@ -81,7 +96,9 @@ mod tests {
         let svc = setup(&dir);
         let env_file = dir.path().join("test.env");
         std::fs::write(&env_file, "KEY1=val1\nKEY2=val2\n").unwrap();
-        let report = svc.execute("api", env_file.to_str().unwrap(), false).unwrap();
+        let report = svc
+            .execute("api", env_file.to_str().unwrap(), false)
+            .unwrap();
         assert_eq!(report.imported, vec!["KEY1", "KEY2"]);
         assert!(report.overwritten.is_empty());
     }
@@ -92,11 +109,14 @@ mod tests {
         let svc = setup(&dir);
         let env_file = dir.path().join("test.env");
         std::fs::write(&env_file, "KEY1=val1\nKEY2=val2\n").unwrap();
-        svc.execute("api", env_file.to_str().unwrap(), false).unwrap();
+        svc.execute("api", env_file.to_str().unwrap(), false)
+            .unwrap();
 
         let env_file2 = dir.path().join("test2.env");
         std::fs::write(&env_file2, "KEY1=newval\nKEY3=val3\n").unwrap();
-        let report = svc.execute("api", env_file2.to_str().unwrap(), false).unwrap();
+        let report = svc
+            .execute("api", env_file2.to_str().unwrap(), false)
+            .unwrap();
         assert_eq!(report.imported, vec!["KEY1", "KEY3"]);
         assert_eq!(report.overwritten, vec!["KEY1"]);
 
@@ -111,11 +131,14 @@ mod tests {
         let svc = setup(&dir);
         let env_file = dir.path().join("test.env");
         std::fs::write(&env_file, "KEY1=val1\n").unwrap();
-        svc.execute("api", env_file.to_str().unwrap(), false).unwrap();
+        svc.execute("api", env_file.to_str().unwrap(), false)
+            .unwrap();
 
         let env_file2 = dir.path().join("test2.env");
         std::fs::write(&env_file2, "KEY1=newval\n").unwrap();
-        let report = svc.execute("api", env_file2.to_str().unwrap(), true).unwrap();
+        let report = svc
+            .execute("api", env_file2.to_str().unwrap(), true)
+            .unwrap();
         assert_eq!(report.overwritten, vec!["KEY1"]);
 
         // Verify value IS overwritten (force=true)

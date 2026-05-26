@@ -1,6 +1,6 @@
-use std::collections::HashMap;
-use serde::{Deserialize, Serialize};
 use super::secret::Secret;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Service {
@@ -42,5 +42,4 @@ mod tests {
         svc.set_secret(Secret::new("KEY", "val"));
         assert_eq!(svc.get_secret("KEY").unwrap().value, "val");
     }
-
 }

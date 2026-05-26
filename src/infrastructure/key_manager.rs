@@ -1,7 +1,7 @@
+use crate::domain::error::DomainError;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
-use crate::domain::error::DomainError;
 use zeroize::Zeroizing;
 
 pub struct KeyManager {
@@ -42,7 +42,7 @@ fn decode_hex(s: &str) -> Result<Zeroizing<Vec<u8>>, DomainError> {
     }
     let mut result = Vec::with_capacity(32);
     for i in 0..32 {
-        let byte = u8::from_str_radix(&s[i*2..i*2+2], 16)
+        let byte = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16)
             .map_err(|_| DomainError::InvalidMasterKey)?;
         result.push(byte);
     }

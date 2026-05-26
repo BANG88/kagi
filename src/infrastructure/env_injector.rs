@@ -1,6 +1,6 @@
-use std::process::Command;
 use crate::domain::error::DomainError;
 use crate::domain::runner::CommandRunner;
+use std::process::Command;
 
 pub struct SystemCommandRunner;
 
@@ -29,9 +29,9 @@ impl CommandRunner for SystemCommandRunner {
 
 #[cfg(test)]
 pub mod mock {
-    use std::sync::{Arc, Mutex};
     use crate::domain::error::DomainError;
     use crate::domain::runner::CommandRunner;
+    use std::sync::{Arc, Mutex};
 
     type CallRecord = (Vec<(String, String)>, String, Vec<String>);
 

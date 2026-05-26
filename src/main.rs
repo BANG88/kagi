@@ -9,62 +9,85 @@ mod infrastructure;
 fn main() {
     let mut cmd = cli::args::Cli::command();
     cmd = cmd.styles(cli::style::kagi_styles());
-    cmd = cmd.help_template("{before-help}\n{usage-heading} {usage}\n\n{all-args}");
 
     let tty = std::io::stdout().is_terminal();
     let c = cli::style::Palette::new(tty);
-    let logo = format!(
-        "{}\n{}\n{}\n{}\n{}\n{}\n{}",
-        c.accent(" _  __    _    ____  ____"),
-        c.accent("| |/ /   / \\  / ___|| __ )"),
-        c.accent("| ' /   / _ \\ | |  _|  _ \\"),
-        c.accent("| . \\  / ___ \\| |_| | |_) |"),
-        c.accent("|_|\\_\\/_/   \\_\\____|____/"),
-        c.muted(""),
-        c.muted("Manage encrypted environment variables"),
-    );
-    cmd = cmd.before_help(logo);
-
     let cmd_ref = format!(
-        "{}\n  {} {} {}\n    {}\n  {} {} {} {}\n    {}\n  {} {} {}\n    {}\n  {} {} {} {}\n    {}\n  {} {}\n    {}\n  {} {} {} {}\n    {}\n  {} {}\n    {}\n  {} {} {} {}\n    {}",
-        c.info("Command Reference:"),
+        "{}\n{}\n{}\n{}\n\n{}\n  {}  {}\n  {}  {}\n\n{}\n  {} {} {} {}\n      {}\n  {} {} {} {} {}\n      {}\n  {} {} {} {} {}\n      {}\n  {} {} {} {} {}\n      {}\n  {} {} {} {}\n      {}\n  {} {} {} {} {}\n      {}\n  {} {} {} {}\n      {}\n  {} {} {} {} {}\n      {}\n\n{}\n  {}\n  {}\n  {}\n  {}\n\n{}\n  {}",
+        c.accent("◜ kagi  鍵 ◞"),
+        c.warning("────────────o╼"),
+        c.info("A small Rust CLI for encrypted environment variables."),
+        c.info("日々の開発に、静かな鍵を。"),
+        c.warning("Usage"),
+        c.accent("kagi"),
+        c.key("<command>"),
+        c.accent("kagi"),
+        c.key("<command> --help"),
+        c.warning("Commands"),
         c.accent("init"),
         c.info("[--envs <envs>]"),
+        c.info("[--nested]"),
         c.info("[--force]"),
-        c.muted("Initialize a new kagi repository in the current directory"),
+        c.info("Create .kagi/ and the local master key"),
         c.accent("set"),
-        c.info("[service]"),
+        c.info("[--service <service>]"),
+        c.info("[env]"),
         c.key("<key>"),
         c.key("<value>"),
-        c.muted("Store an encrypted secret for a service"),
+        c.info("Store one encrypted value"),
         c.accent("get"),
-        c.info("[service]"),
+        c.info("[--service <service>]"),
+        c.info("[--allow-non-interactive]"),
+        c.info("[env]"),
         c.key("<key>"),
-        c.muted("Retrieve and decrypt a secret value"),
+        c.info("Print one decrypted value"),
         c.accent("run"),
-        c.info("[service]"),
+        c.info("[--service <service>]"),
+        c.info("[env]"),
         c.key("<command>"),
         c.muted("..."),
-        c.muted("Run a command with injected environment variables"),
+        c.info("Run a child process with injected env vars"),
         c.accent("export"),
-        c.key("<service>"),
-        c.muted("Export secrets as KEY=value lines (suitable for shell sourcing)"),
+        c.info("[--service <service>]"),
+        c.info("[--allow-non-interactive]"),
+        c.key("[env]"),
+        c.info("Write KEY=value lines"),
         c.accent("import"),
-        c.key("<service>"),
+        c.info("[--service <service>]"),
+        c.key("[env]"),
         c.info("[--file <path>]"),
         c.info("[--force]"),
-        c.muted("Import secrets from a .env file"),
+        c.info("Import values from a .env file"),
         c.accent("list"),
-        c.key("[service]"),
-        c.muted("List all services or secrets within a service"),
+        c.info("[--service <service>]"),
+        c.info("[--show-values]"),
+        c.key("[env]"),
+        c.info("List scopes or masked keys"),
         c.accent("sync"),
+        c.info("[--service <service>]"),
         c.info("[--example <path>]"),
         c.info("[--sources <files>]"),
         c.info("[--envs <envs>]"),
-        c.muted("Synchronize keys from .env.example across environments"),
+        c.info("Sync keys from .env.example"),
+        c.warning("Examples"),
+        c.muted("kagi init --envs dev,prod"),
+        c.muted("kagi set dev DATABASE_URL postgres://localhost/dev"),
+        c.muted("kagi run bun dev"),
+        c.muted("kagi set --service api prod API_KEY fake_api_key"),
+        c.warning("Note"),
+        c.muted("Use kagi run for scripts; get/export need explicit non-interactive opt-in."),
     );
-    cmd = cmd.after_help(cmd_ref);
-    cmd = cmd.help_template("{before-help}\n{usage-heading} {usage}\n{after-help}");
+    cmd = cmd.before_help(cmd_ref);
+    cmd = cmd.help_template("{before-help}");
+
+    if std::env::args_os().len() == 1 {
+        if let Err(e) = cmd.print_help() {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+        println!();
+        return;
+    }
 
     let matches = cmd.get_matches();
     let cli = match cli::args::Cli::from_arg_matches(&matches) {
@@ -74,7 +97,7 @@ fn main() {
     if let Err(e) = cli::commands::run(cli) {
         let tty = std::io::stdout().is_terminal();
         let c = cli::style::Palette::new(tty);
-        eprintln!("{} {}", c.error("Error:"), c.error(&e.to_string()));
+        eprintln!("{} {}", c.prefix(), c.error(&format!("error: {}", e)));
         std::process::exit(1);
     }
 }

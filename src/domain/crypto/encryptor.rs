@@ -1,8 +1,8 @@
 use crate::domain::error::DomainError;
 
 pub trait Encryptor: Send + Sync {
-    fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>, DomainError>;
-    fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>, DomainError>;
+    fn encrypt(&self, plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>, DomainError>;
+    fn decrypt(&self, ciphertext: &[u8], aad: &[u8]) -> Result<Vec<u8>, DomainError>;
 }
 
 #[cfg(test)]
@@ -20,12 +20,21 @@ pub mod mock {
     }
 
     impl Encryptor for XorEncryptor {
-        fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>, DomainError> {
-            Ok(plaintext.iter().map(|b| b ^ self.key).collect())
+        fn encrypt(&self, plaintext: &[u8], _aad: &[u8]) -> Result<Vec<u8>, DomainError> {
+            let mut output = vec![0; 24];
+            output.extend(plaintext.iter().map(|b| b ^ self.key));
+            output.extend_from_slice(&[0; 16]);
+            Ok(output)
         }
 
-        fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>, DomainError> {
-            self.encrypt(ciphertext)
+        fn decrypt(&self, ciphertext: &[u8], aad: &[u8]) -> Result<Vec<u8>, DomainError> {
+            let payload = if ciphertext.len() >= 40 {
+                &ciphertext[24..ciphertext.len() - 16]
+            } else {
+                ciphertext
+            };
+            let _ = aad;
+            Ok(payload.iter().map(|b| b ^ self.key).collect())
         }
     }
 }

@@ -2,12 +2,17 @@
 name = "kagi"
 version = "0.1.0"
 edition = "2024"
+description = "A small Rust CLI for encrypted environment variables"
+license = "MIT"
+repository = "https://github.com/BANG88/kagi"
+readme = "README.md"
+keywords = ["cli", "env", "secrets", "encryption"]
+categories = ["command-line-utilities", "config"]
 
 [dependencies]
-aead = "0.5.2"
-aes-gcm = "0.10.3"
 anyhow = "1.0.102"
 base64 = "0.22.1"
+chacha20poly1305 = "0.10.1"
 clap = { version = "4.6.1", features = ["derive", "color"] }
 hex = "0.4.3"
 owo-colors = "4.3.0"

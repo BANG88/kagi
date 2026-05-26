@@ -1,9 +1,9 @@
-use std::collections::HashMap;
 use crate::domain::entity::secret::Secret;
 use crate::domain::entity::service::Service;
 use crate::domain::env_example_parser::parse_env_example;
 use crate::domain::error::DomainError;
 use crate::domain::repository::secret_repo::SecretRepository;
+use std::collections::HashMap;
 
 pub struct EnvSyncReport {
     pub added: Vec<String>,
@@ -24,7 +24,12 @@ impl<R: SecretRepository> SyncService<R> {
         Self { repo }
     }
 
-    pub fn execute(&self, example_path: &str, sources: &[String], target_envs: &[String]) -> Result<SyncReport, DomainError> {
+    pub fn execute(
+        &self,
+        example_path: &str,
+        sources: &[String],
+        target_envs: &[String],
+    ) -> Result<SyncReport, DomainError> {
         let mut all_entries = Vec::new();
 
         if let Ok(example_content) = std::fs::read_to_string(example_path) {
@@ -84,7 +89,11 @@ impl<R: SecretRepository> SyncService<R> {
             self.repo.save(&service)?;
             env_reports.insert(
                 env_name.clone(),
-                EnvSyncReport { added, commented, skipped },
+                EnvSyncReport {
+                    added,
+                    commented,
+                    skipped,
+                },
             );
         }
 
@@ -103,7 +112,11 @@ mod tests {
         let base = dir.path().join(".kagi");
         std::fs::create_dir(&base).unwrap();
         let config = crate::domain::config::KagiConfig::new("1");
-        std::fs::write(base.join(crate::domain::config::KAGI_CONFIG_FILE), serde_json::to_string(&config).unwrap()).unwrap();
+        std::fs::write(
+            base.join(crate::domain::config::KAGI_CONFIG_FILE),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
         let store = FileStore::new(base, Box::new(XorEncryptor::new(0xAB)));
         SyncService::new(store)
     }
@@ -115,7 +128,9 @@ mod tests {
         let example = dir.path().join(".env.example");
         std::fs::write(&example, "API_KEY=secret\nDEBUG=true\n").unwrap();
 
-        let report = svc.execute(example.to_str().unwrap(), &[], &["dev".into()]).unwrap();
+        let report = svc
+            .execute(example.to_str().unwrap(), &[], &["dev".into()])
+            .unwrap();
         let dev = report.env_reports.get("dev").unwrap();
         assert_eq!(dev.added, vec!["API_KEY", "DEBUG"]);
         assert!(dev.commented.is_empty());
@@ -133,7 +148,9 @@ mod tests {
         let example = dir.path().join(".env.example");
         std::fs::write(&example, "# WEBHOOK_SECRET=\n").unwrap();
 
-        let report = svc.execute(example.to_str().unwrap(), &[], &["dev".into()]).unwrap();
+        let report = svc
+            .execute(example.to_str().unwrap(), &[], &["dev".into()])
+            .unwrap();
         let dev = report.env_reports.get("dev").unwrap();
         assert!(dev.added.is_empty());
         assert_eq!(dev.commented, vec!["WEBHOOK_SECRET"]);
@@ -154,7 +171,9 @@ mod tests {
         pre.set_secret(Secret::new("API_KEY", "existing"));
         svc.repo.save(&pre).unwrap();
 
-        let report = svc.execute(example.to_str().unwrap(), &[], &["dev".into()]).unwrap();
+        let report = svc
+            .execute(example.to_str().unwrap(), &[], &["dev".into()])
+            .unwrap();
         let dev = report.env_reports.get("dev").unwrap();
         assert!(dev.added.is_empty());
         assert!(dev.commented.is_empty());
@@ -171,7 +190,13 @@ mod tests {
         let example = dir.path().join(".env.example");
         std::fs::write(&example, "DB_URL=postgres\n").unwrap();
 
-        let report = svc.execute(example.to_str().unwrap(), &[], &["dev".into(), "test".into()]).unwrap();
+        let report = svc
+            .execute(
+                example.to_str().unwrap(),
+                &[],
+                &["dev".into(), "test".into()],
+            )
+            .unwrap();
         assert!(report.env_reports.contains_key("dev"));
         assert!(report.env_reports.contains_key("test"));
     }
@@ -195,11 +220,13 @@ mod tests {
         let source = dir.path().join(".env.local");
         std::fs::write(&source, "FEATURE_FLAG=true\n").unwrap();
 
-        let report = svc.execute(
-            ".env.example",
-            &[source.to_str().unwrap().into()],
-            &["dev".into()],
-        ).unwrap();
+        let report = svc
+            .execute(
+                ".env.example",
+                &[source.to_str().unwrap().into()],
+                &["dev".into()],
+            )
+            .unwrap();
         let dev = report.env_reports.get("dev").unwrap();
         assert_eq!(dev.added, vec!["FEATURE_FLAG"]);
 
@@ -217,11 +244,13 @@ mod tests {
         let override_file = dir.path().join(".env.override");
         std::fs::write(&override_file, "API_KEY=from_override\n").unwrap();
 
-        let report = svc.execute(
-            example.to_str().unwrap(),
-            &[override_file.to_str().unwrap().into()],
-            &["dev".into()],
-        ).unwrap();
+        let report = svc
+            .execute(
+                example.to_str().unwrap(),
+                &[override_file.to_str().unwrap().into()],
+                &["dev".into()],
+            )
+            .unwrap();
         let dev = report.env_reports.get("dev").unwrap();
         assert_eq!(dev.added, vec!["API_KEY", "DEBUG"]);
 
@@ -240,11 +269,13 @@ mod tests {
         let extra = dir.path().join(".env.local");
         std::fs::write(&extra, "DB_URL=postgres\n").unwrap();
 
-        let report = svc.execute(
-            example.to_str().unwrap(),
-            &[extra.to_str().unwrap().into()],
-            &["dev".into()],
-        ).unwrap();
+        let report = svc
+            .execute(
+                example.to_str().unwrap(),
+                &[extra.to_str().unwrap().into()],
+                &["dev".into()],
+            )
+            .unwrap();
         let dev = report.env_reports.get("dev").unwrap();
         assert_eq!(dev.added, vec!["API_KEY", "DB_URL"]);
 

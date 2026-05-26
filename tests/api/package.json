@@ -1,0 +1,14 @@
+{
+	"name": "api",
+	"module": "index.ts",
+	"type": "module",
+	"scripts": {
+		"dev": "kagi run dev bun run index.ts"
+	},
+	"devDependencies": {
+		"@types/bun": "latest"
+	},
+	"peerDependencies": {
+		"typescript": "^5"
+	}
+}

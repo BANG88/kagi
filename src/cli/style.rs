@@ -1,20 +1,31 @@
 use owo_colors::OwoColorize;
 
-/// Kawaii pastel clap help styles.
+/// Japanese-inspired terminal styles with high-contrast colors.
 pub fn kagi_styles() -> clap::builder::styling::Styles {
     use clap::builder::styling::{Color, RgbColor, Style, Styles};
     Styles::styled()
-        .header(Style::new().bold().fg_color(Some(Color::Rgb(RgbColor(135, 206, 250)))))
-        .usage(Style::new().bold().fg_color(Some(Color::Rgb(RgbColor(176, 224, 230)))))
-        .literal(Style::new().fg_color(Some(Color::Rgb(RgbColor(152, 251, 152)))))
-        .placeholder(Style::new().fg_color(Some(Color::Rgb(RgbColor(216, 191, 216)))))
-        .error(Style::new().bold().fg_color(Some(Color::Rgb(RgbColor(255, 183, 197)))))
-        .valid(Style::new().fg_color(Some(Color::Rgb(RgbColor(176, 224, 230)))))
-        .invalid(Style::new().fg_color(Some(Color::Rgb(RgbColor(255, 183, 197)))))
+        .header(
+            Style::new()
+                .bold()
+                .fg_color(Some(Color::Rgb(RgbColor(188, 111, 35)))),
+        )
+        .usage(
+            Style::new()
+                .bold()
+                .fg_color(Some(Color::Rgb(RgbColor(45, 93, 145)))),
+        )
+        .literal(Style::new().fg_color(Some(Color::Rgb(RgbColor(72, 121, 78)))))
+        .placeholder(Style::new().fg_color(Some(Color::Rgb(RgbColor(164, 74, 61)))))
+        .error(
+            Style::new()
+                .bold()
+                .fg_color(Some(Color::Rgb(RgbColor(190, 55, 43)))),
+        )
+        .valid(Style::new().fg_color(Some(Color::Rgb(RgbColor(72, 121, 78)))))
+        .invalid(Style::new().fg_color(Some(Color::Rgb(RgbColor(190, 55, 43)))))
 }
 
-/// Japanese kawaii pastel color palette for Kagi CLI.
-/// All colors are soft, warm, and easy on the eyes.
+/// Low-saturation Japanese color palette for Kagi CLI.
 pub struct Palette {
     tty: bool,
 }
@@ -26,54 +37,63 @@ impl Palette {
 
     fn apply(&self, text: &str, rgb: (u8, u8, u8)) -> String {
         if self.tty {
-            text.truecolor(rgb.0, rgb.1, rgb.2).to_string()
+            text.truecolor(rgb.0, rgb.1, rgb.2).bold().to_string()
         } else {
             text.to_string()
         }
     }
 
-    /// Success / done — pastel mint green (パステルミント)
+    fn plain(&self, text: &str) -> String {
+        text.to_string()
+    }
+
+    /// Log prefix for human-facing status lines.
+    pub fn prefix(&self) -> String {
+        self.apply("kagi:", (35, 82, 133))
+    }
+
+    /// Success / done — matcha green.
     pub fn success(&self, text: &str) -> String {
-        self.apply(text, (152, 251, 152))
+        self.apply(text, (72, 121, 78))
     }
 
-    /// Info / normal messages — powder blue (パウダーブルー)
+    /// Info / normal messages — muted indigo.
     pub fn info(&self, text: &str) -> String {
-        self.apply(text, (176, 224, 230))
+        self.plain(text)
     }
 
-    /// Warning / overwrite — peach puff (ピーチパフ)
+    /// Warning / overwrite — old gold.
     pub fn warning(&self, text: &str) -> String {
-        self.apply(text, (255, 218, 185))
+        self.apply(text, (188, 111, 35))
     }
 
-    /// Error / abort — sakura pink (桜色)
+    /// Error / abort — vermilion.
     pub fn error(&self, text: &str) -> String {
-        self.apply(text, (255, 183, 197))
+        self.apply(text, (190, 55, 43))
     }
 
-    /// Accent / service names — light sky blue (ライトスカイブルー)
+    /// Accent / scope names — indigo.
     pub fn accent(&self, text: &str) -> String {
-        self.apply(text, (135, 206, 250))
+        self.apply(text, (35, 82, 133))
     }
 
-    /// Secret key names — lavender (ラベンダー)
+    /// Secret key names — sakura clay.
     pub fn key(&self, text: &str) -> String {
-        self.apply(text, (230, 230, 250))
+        self.apply(text, (164, 74, 61))
     }
 
-    /// Interactive prompt — lemon chiffon (レモンシフォン)
+    /// Interactive prompt — warm gold.
     pub fn prompt(&self, text: &str) -> String {
-        self.apply(text, (255, 250, 205))
+        self.apply(text, (176, 105, 31))
     }
 
-    /// Muted / secondary — thistle (シスル)
+    /// Muted / secondary — sumi gray.
     pub fn muted(&self, text: &str) -> String {
-        self.apply(text, (216, 191, 216))
+        self.plain(text)
     }
 
-    /// Commented / needs value — light pink (ライトピンク)
+    /// Commented / needs value — soft sakura.
     pub fn commented(&self, text: &str) -> String {
-        self.apply(text, (255, 182, 193))
+        self.apply(text, (150, 82, 86))
     }
 }

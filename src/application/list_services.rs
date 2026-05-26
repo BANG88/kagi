@@ -12,11 +12,16 @@ impl<R: SecretRepository> ListServicesService<R> {
 
     /// When service_name is None, returns list of service names (value is empty).
     /// When service_name is Some, returns list of (key, value) pairs for that service.
-    pub fn execute(&self, service_name: Option<&str>) -> Result<Vec<(String, String)>, DomainError> {
+    pub fn execute(
+        &self,
+        service_name: Option<&str>,
+    ) -> Result<Vec<(String, String)>, DomainError> {
         match service_name {
             Some(name) => {
                 let service = self.repo.load(name)?;
-                let mut items: Vec<_> = service.secrets.iter()
+                let mut items: Vec<_> = service
+                    .secrets
+                    .iter()
                     .map(|(k, v)| (k.clone(), v.value.clone()))
                     .collect();
                 items.sort_by(|a, b| a.0.cmp(&b.0));
@@ -44,7 +49,11 @@ mod tests {
         let base = dir.path().join(".kagi");
         std::fs::create_dir(&base).unwrap();
         let config = serde_json::json!({"version": "1", "services": {}});
-        std::fs::write(base.join(crate::domain::config::KAGI_CONFIG_FILE), serde_json::to_string(&config).unwrap()).unwrap();
+        std::fs::write(
+            base.join(crate::domain::config::KAGI_CONFIG_FILE),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
         let store = FileStore::new(base, Box::new(XorEncryptor::new(0xAB)));
         let mut svc = Service::new("api");
         svc.set_secret(Secret::new("A", "1"));
@@ -66,6 +75,9 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let svc = setup(&dir);
         let keys = svc.execute(Some("api")).unwrap();
-        assert_eq!(keys, vec![("A".into(), "1".into()), ("B".into(), "2".into())]);
+        assert_eq!(
+            keys,
+            vec![("A".into(), "1".into()), ("B".into(), "2".into())]
+        );
     }
 }

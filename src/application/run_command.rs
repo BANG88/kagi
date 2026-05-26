@@ -12,7 +12,12 @@ impl<R: SecretRepository, C: CommandRunner> RunCommandService<R, C> {
         Self { repo, runner }
     }
 
-    pub fn execute(&self, service_name: &str, command: &str, args: &[String]) -> Result<i32, DomainError> {
+    pub fn execute(
+        &self,
+        service_name: &str,
+        command: &str,
+        args: &[String],
+    ) -> Result<i32, DomainError> {
         let service = self.repo.load(service_name)?;
         let env_vars: Vec<_> = service
             .secrets
@@ -33,11 +38,20 @@ mod tests {
     use crate::infrastructure::fs_store::FileStore;
     use tempfile::TempDir;
 
-    fn setup(dir: &TempDir) -> (RunCommandService<FileStore, MockCommandRunner>, MockCommandRunner) {
+    fn setup(
+        dir: &TempDir,
+    ) -> (
+        RunCommandService<FileStore, MockCommandRunner>,
+        MockCommandRunner,
+    ) {
         let base = dir.path().join(".kagi");
         std::fs::create_dir(&base).unwrap();
         let config = serde_json::json!({"version": "1", "services": {}});
-        std::fs::write(base.join(crate::domain::config::KAGI_CONFIG_FILE), serde_json::to_string(&config).unwrap()).unwrap();
+        std::fs::write(
+            base.join(crate::domain::config::KAGI_CONFIG_FILE),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
         let store = FileStore::new(base, Box::new(XorEncryptor::new(0xAB)));
         let mut svc = Service::new("api");
         svc.set_secret(Secret::new("KEY", "val"));
