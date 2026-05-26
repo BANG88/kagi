@@ -1,5 +1,6 @@
 use std::io::{self, IsTerminal};
 use std::path::PathBuf;
+use anyhow::Context;
 use crate::application::export_env::ExportEnvService;
 use crate::application::sync_service::SyncService;
 use crate::application::get_secret::GetSecretService;
@@ -96,8 +97,35 @@ fn resolve_kagi_base() -> anyhow::Result<PathBuf> {
     }
 
     Err(anyhow::anyhow!(
-        "No .kagi directory found. Run `kagi init` to create one."
+        "No .kagi directory found in current or parent directories. Run `kagi init` to create one."
     ))
+}
+
+fn resolve_store() -> anyhow::Result<FileStore> {
+    let base_path = resolve_kagi_base()?;
+
+    let config_path = base_path.join(crate::domain::config::KAGI_CONFIG_FILE);
+    if !config_path.exists() {
+        return Err(anyhow::anyhow!(
+            "Found .kagi at {} but {} is missing. \
+             This may be an old repository or it was created manually. \
+             Run `kagi init` to create a proper repository.",
+            base_path.display(),
+            crate::domain::config::KAGI_CONFIG_FILE
+        ));
+    }
+
+    let key_manager = KeyManager::new(base_path.clone());
+    let master_key = key_manager.load().context(
+        "Failed to load master key. \
+         Did you run `kagi init`? \
+         If this is a shared repository, ask the owner for the master key or set KAGI_MASTER_KEY."
+    )?;
+    let key_array: [u8; 32] = master_key.as_slice().try_into()
+        .map_err(|_| anyhow::anyhow!("Invalid master key length"))?;
+    let encryptor = AesGcmEncryptor::new(&key_array);
+    let store = FileStore::new(base_path, Box::new(encryptor));
+    Ok(store)
 }
 
 pub fn run(cli: Cli) -> anyhow::Result<()> {
@@ -121,7 +149,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
             let store = FileStore::new(local, Box::new(encryptor));
             for env_name in &["dev", "test", "staging", "prod"] {
                 let svc = Service::new(*env_name);
-                store.save(&svc)?;
+                store.save(&svc).context(format!("Failed to create default '{}' environment", env_name))?;
             }
 
             println!(
@@ -136,13 +164,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
             );
         }
         Commands::Set { service: service_name, key, value } => {
-            let base_path = resolve_kagi_base()?;
-            let key_manager = KeyManager::new(base_path.clone());
-            let master_key = key_manager.load()?;
-            let key_array: [u8; 32] = master_key.as_slice().try_into()
-                .map_err(|_| anyhow::anyhow!("Invalid master key length"))?;
-            let encryptor = AesGcmEncryptor::new(&key_array);
-            let store = FileStore::new(base_path, Box::new(encryptor));
+            let store = resolve_store()?;
             let set_service = SetSecretService::new(store);
             set_service.execute(&service_name, &key, &value)?;
             println!(
@@ -154,13 +176,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
             );
         }
         Commands::Get { service: service_name, key } => {
-            let base_path = resolve_kagi_base()?;
-            let key_manager = KeyManager::new(base_path.clone());
-            let master_key = key_manager.load()?;
-            let key_array: [u8; 32] = master_key.as_slice().try_into()
-                .map_err(|_| anyhow::anyhow!("Invalid master key length"))?;
-            let encryptor = AesGcmEncryptor::new(&key_array);
-            let store = FileStore::new(base_path, Box::new(encryptor));
+            let store = resolve_store()?;
             let get_service = GetSecretService::new(store);
             let value = get_service.execute(&service_name, &key)?;
             println!("{}", value);
@@ -169,13 +185,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
             if command.is_empty() {
                 return Err(anyhow::anyhow!("No command provided"));
             }
-            let base_path = resolve_kagi_base()?;
-            let key_manager = KeyManager::new(base_path.clone());
-            let master_key = key_manager.load()?;
-            let key_array: [u8; 32] = master_key.as_slice().try_into()
-                .map_err(|_| anyhow::anyhow!("Invalid master key length"))?;
-            let encryptor = AesGcmEncryptor::new(&key_array);
-            let store = FileStore::new(base_path, Box::new(encryptor));
+            let store = resolve_store()?;
             let runner = SystemCommandRunner::new();
             let run_service = RunCommandService::new(store, runner);
             let cmd = command[0].clone();
@@ -184,25 +194,13 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
             std::process::exit(exit_code);
         }
         Commands::Export { service: service_name } => {
-            let base_path = resolve_kagi_base()?;
-            let key_manager = KeyManager::new(base_path.clone());
-            let master_key = key_manager.load()?;
-            let key_array: [u8; 32] = master_key.as_slice().try_into()
-                .map_err(|_| anyhow::anyhow!("Invalid master key length"))?;
-            let encryptor = AesGcmEncryptor::new(&key_array);
-            let store = FileStore::new(base_path, Box::new(encryptor));
+            let store = resolve_store()?;
             let export_service = ExportEnvService::new(store);
             let output = export_service.execute(&service_name)?;
             println!("{}", output);
         }
         Commands::Import { service: service_name, file, force } => {
-            let base_path = resolve_kagi_base()?;
-            let key_manager = KeyManager::new(base_path.clone());
-            let master_key = key_manager.load()?;
-            let key_array: [u8; 32] = master_key.as_slice().try_into()
-                .map_err(|_| anyhow::anyhow!("Invalid master key length"))?;
-            let encryptor = AesGcmEncryptor::new(&key_array);
-            let store = FileStore::new(base_path, Box::new(encryptor));
+            let store = resolve_store()?;
             let import_service = crate::application::import_env_file::ImportEnvFileService::new(store);
 
             let preview = import_service.execute(&service_name, &file, false)?;
@@ -259,13 +257,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
         Commands::List { service: service_name } => {
-            let base_path = resolve_kagi_base()?;
-            let key_manager = KeyManager::new(base_path.clone());
-            let master_key = key_manager.load()?;
-            let key_array: [u8; 32] = master_key.as_slice().try_into()
-                .map_err(|_| anyhow::anyhow!("Invalid master key length"))?;
-            let encryptor = AesGcmEncryptor::new(&key_array);
-            let store = FileStore::new(base_path, Box::new(encryptor));
+            let store = resolve_store()?;
             let list_service = ListServicesService::new(store);
             let items = list_service.execute(service_name.as_deref())?;
             if let Some(name) = service_name {
@@ -286,13 +278,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
         Commands::Sync { example, sources, envs } => {
-            let base_path = resolve_kagi_base()?;
-            let key_manager = KeyManager::new(base_path.clone());
-            let master_key = key_manager.load()?;
-            let key_array: [u8; 32] = master_key.as_slice().try_into()
-                .map_err(|_| anyhow::anyhow!("Invalid master key length"))?;
-            let encryptor = AesGcmEncryptor::new(&key_array);
-            let store = FileStore::new(base_path, Box::new(encryptor));
+            let store = resolve_store()?;
             let sync_service = SyncService::new(store);
             let report = sync_service.execute(&example, &sources, &envs)?;
 
