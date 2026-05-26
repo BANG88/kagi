@@ -1,0 +1,20 @@
+{
+  "version": "1",
+  "services": {
+    "test": {
+      "file": "services/test.enc"
+    },
+    "dev": {
+      "file": "services/dev.enc"
+    },
+    "staging": {
+      "file": "services/staging.enc"
+    },
+    "prod": {
+      "file": "services/prod.enc"
+    }
+  },
+  "settings": {
+    "nested": true
+  }
+}

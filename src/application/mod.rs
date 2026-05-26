@@ -1,4 +1,3 @@
-pub mod copy_service;
 pub mod export_env;
 pub mod get_secret;
 pub mod import_env_file;
