@@ -398,8 +398,28 @@ fn test_get_lists_masked_service_envs_and_keys() {
         stdout
     );
     assert!(
-        !stdout.contains("KEY"),
-        "plain get should show service/env layout, not key tables: {}",
+        stdout.contains("Key"),
+        "expected table header in get output: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Value"),
+        "expected table header in get output: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("KEY"),
+        "expected KEY in get output: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("********"),
+        "expected masked value in get output: {}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("val"),
+        "get should not reveal values by default: {}",
         stdout
     );
 

@@ -185,16 +185,14 @@ fn draw_all_service_envs(
         println!("  {}", c.accent(env));
 
         let items = list_service.execute(Some(&scope))?;
-        if show_values {
-            if items.is_empty() {
-                println!(
-                    "    {} {}",
-                    c.prefix(),
-                    c.muted(&format!("no secrets in {}", env))
-                );
-            } else {
-                draw_key_table_with_indent(&items, true, c, "    ");
-            }
+        if items.is_empty() {
+            println!(
+                "    {} {}",
+                c.prefix(),
+                c.muted(&format!("no secrets in {}", env))
+            );
+        } else {
+            draw_key_table_with_indent(&items, show_values, c, "    ");
         }
     }
 
