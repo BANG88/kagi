@@ -16,9 +16,9 @@ pub struct Cli {
 pub enum Commands {
     /// Initialize a new kagi repository in the current directory
     Init {
-        /// Environments to create (comma-separated, e.g., dev,test)
-        #[arg(short, long, value_delimiter = ',')]
-        envs: Vec<String>,
+        /// Default environments for services (comma-separated, e.g., development,test)
+        #[arg(short, long, value_delimiter = ',', num_args = 0..=1, default_missing_value = "")]
+        envs: Option<Vec<String>>,
 
         /// Enable nested service inference from subdirectories
         #[arg(long)]
@@ -35,27 +35,37 @@ pub enum Commands {
         #[arg(short, long)]
         service: Option<String>,
 
-        /// Environment name (e.g., dev, staging, prod). In nested mode, omit to use the inferred service without an environment.
-        env: Option<String>,
+        /// Service or environment name
+        first: Option<String>,
 
-        /// Name of the secret key
-        key: Option<String>,
+        /// Environment name or secret key
+        second: Option<String>,
 
-        /// Value to store (will be encrypted)
-        value: Option<String>,
+        /// Secret key or value
+        third: Option<String>,
+
+        /// Value to store (will be encrypted), when service and env are both provided positionally
+        fourth: Option<String>,
     },
 
-    /// Retrieve and decrypt a secret value
+    /// Get service/env/key information or decrypt one secret value
     Get {
         /// Optional service scope (e.g., api, web). Defaults to the inferred nested directory.
         #[arg(short, long)]
         service: Option<String>,
 
-        /// Environment name. In nested mode, omit to use the inferred service without an environment.
-        env: Option<String>,
+        /// Show decrypted values when listing. Requires an interactive terminal.
+        #[arg(long)]
+        show_values: bool,
 
-        /// Name of the secret key
-        key: Option<String>,
+        /// Service or environment name
+        first: Option<String>,
+
+        /// Environment name or secret key
+        second: Option<String>,
+
+        /// Secret key, when service and env are both provided positionally
+        third: Option<String>,
     },
 
     /// Run a command with injected environment variables
@@ -75,8 +85,15 @@ pub enum Commands {
         #[arg(short, long)]
         service: Option<String>,
 
-        /// Environment name. In nested mode, omit to use the inferred service without an environment.
-        env: Option<String>,
+        /// Directory to write one .env file per environment when exporting a service
+        #[arg(short, long)]
+        out: Option<String>,
+
+        /// Service or environment name
+        first: Option<String>,
+
+        /// Environment name, when service is provided positionally
+        second: Option<String>,
     },
 
     /// Import secrets from a .env file
@@ -85,8 +102,11 @@ pub enum Commands {
         #[arg(short, long)]
         service: Option<String>,
 
-        /// Environment name. In nested mode, omit to use the inferred service without an environment.
-        env: Option<String>,
+        /// Service or environment name
+        first: Option<String>,
+
+        /// Environment name, when service is provided positionally
+        second: Option<String>,
 
         /// Path to the env file to import
         #[arg(short, long, default_value = ".env")]
@@ -95,21 +115,6 @@ pub enum Commands {
         /// Overwrite existing keys without prompting
         #[arg(long)]
         force: bool,
-    },
-
-    /// List all services or secrets within a service
-    List {
-        /// Optional service scope (e.g., api, web). Defaults to the inferred nested directory.
-        #[arg(short, long)]
-        service: Option<String>,
-
-        /// Show decrypted values. Requires an interactive terminal.
-        #[arg(long)]
-        show_values: bool,
-
-        /// Optional environment name to list keys for
-        #[arg(help = "Environment name to list keys for (omit to list all scopes)")]
-        env: Option<String>,
     },
 
     /// Synchronize keys from .env.example (and optional sources) across environments
@@ -127,7 +132,44 @@ pub enum Commands {
         sources: Vec<String>,
 
         /// Environments to sync (comma-separated)
-        #[arg(long, value_delimiter = ',', default_value = "dev,test,staging,prod")]
+        #[arg(
+            long,
+            value_delimiter = ',',
+            default_value = "development,test,staging,production"
+        )]
         envs: Vec<String>,
+    },
+
+    /// Manage default environments
+    Env {
+        #[command(subcommand)]
+        command: EnvCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum EnvCommands {
+    /// List configured default environments
+    List,
+
+    /// Add an environment to every service
+    Add {
+        /// Environment name to add
+        env: String,
+    },
+
+    /// Rename an environment across every service
+    Rename {
+        /// Existing environment name
+        old: String,
+
+        /// New environment name
+        new: String,
+    },
+
+    /// Delete an environment from every service
+    Del {
+        /// Environment name to delete
+        env: String,
     },
 }

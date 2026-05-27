@@ -63,6 +63,46 @@ fn test_init() {
         serde_json::from_str(&std::fs::read_to_string(dir.path().join(".kagi/kagi.json")).unwrap())
             .unwrap();
     assert_eq!(config["settings"]["nested"], false);
+    assert_eq!(
+        config["settings"]["envs"],
+        serde_json::json!(["development"])
+    );
+}
+
+#[test]
+fn test_init_envs_configures_defaults_without_creating_service_scopes() {
+    let dir = TempDir::new().unwrap();
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["init", "--envs", "development,test,production"]);
+    cmd.assert().success();
+
+    let config: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join(".kagi/kagi.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        config["settings"]["envs"],
+        serde_json::json!(["development", "test", "production"])
+    );
+    assert!(config["services"].as_object().unwrap().is_empty());
+    assert!(!dir.path().join(".kagi/envs/development.enc").exists());
+}
+
+#[test]
+fn test_init_envs_without_values_uses_standard_envs() {
+    let dir = TempDir::new().unwrap();
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.arg("init").arg("--envs");
+    cmd.assert().success();
+
+    let config: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join(".kagi/kagi.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        config["settings"]["envs"],
+        serde_json::json!(["development", "test", "production"])
+    );
 }
 
 #[test]
@@ -128,10 +168,10 @@ fn test_set_preserves_special_characters_when_passed_as_one_argument() {
 
     let mut cmd = Command::cargo_bin("kagi").unwrap();
     cmd.current_dir(&dir);
-    cmd.args(["set", "dev", "DATABASE_URL", value]);
+    cmd.args(["set", "development", "DATABASE_URL", value]);
     cmd.assert().success();
 
-    assert_run_env(dir.path(), &["dev"], "DATABASE_URL", value);
+    assert_run_env(dir.path(), &["development"], "DATABASE_URL", value);
 }
 
 #[test]
@@ -149,7 +189,7 @@ fn test_set_does_not_print_secret_value() {
     let assert = cmd.assert().success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(
-        stdout.contains("api.API_KEY"),
+        stdout.contains("api/development.API_KEY"),
         "expected key in set output: {}",
         stdout
     );
@@ -183,7 +223,7 @@ fn test_get_blocks_non_interactive_by_default() {
 }
 
 #[test]
-fn test_list() {
+fn test_get_show_values_blocks_non_interactive() {
     let dir = TempDir::new().unwrap();
 
     let mut cmd = Command::cargo_bin("kagi").unwrap();
@@ -198,45 +238,87 @@ fn test_list() {
 
     let mut cmd = Command::cargo_bin("kagi").unwrap();
     cmd.current_dir(&dir);
-    cmd.args(["list"]);
+    cmd.args(["get", "api", "--show-values"]);
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("requires an interactive terminal"));
+}
+
+#[test]
+fn test_get_lists_masked_service_envs_and_keys() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["set", "api", "KEY", "val"]);
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["get"]);
     let assert = cmd.assert().success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(
         stdout.contains("api"),
-        "expected api in list output: {}",
+        "expected api in get output: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("  development"),
+        "expected development env under api: {}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("KEY"),
+        "plain get should show service/env layout, not key tables: {}",
         stdout
     );
 
     let mut cmd = Command::cargo_bin("kagi").unwrap();
     cmd.current_dir(&dir);
-    cmd.args(["list", "api"]);
+    cmd.args(["get", "api"]);
     let assert = cmd.assert().success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(
+        stdout.contains("api\n  development"),
+        "expected service/env layout in get api: {}",
+        stdout
+    );
+    assert!(
         stdout.contains("Key"),
-        "expected table header in list api: {}",
+        "expected table header in get api: {}",
         stdout
     );
     assert!(
         stdout.contains("Value"),
-        "expected table header in list api: {}",
+        "expected table header in get api: {}",
         stdout
     );
     assert!(
         stdout.contains("KEY"),
-        "expected KEY in list api: {}",
+        "expected KEY in get api: {}",
         stdout
     );
     assert!(
         stdout.contains("********"),
-        "expected masked value in list api: {}",
+        "expected masked value in get api: {}",
         stdout
     );
     assert!(
         !stdout.contains("val"),
-        "list should not reveal values by default: {}",
+        "get should not reveal values by default: {}",
         stdout
     );
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["list"]);
+    cmd.assert().failure();
 }
 
 #[test]
@@ -262,6 +344,72 @@ fn test_export_blocks_non_interactive() {
 }
 
 #[test]
+fn test_export_service_env_shorthand_blocks_non_interactive() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["init", "--envs", "development,production"]);
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["set", "api", "production", "KEY", "val"]);
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["export", "api", "production"]);
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("requires an interactive terminal"));
+}
+
+#[test]
+fn test_export_service_all_envs_blocks_non_interactive() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["init", "--envs", "development,production"]);
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["set", "api", "production", "KEY", "val"]);
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["export", "api"]);
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("requires an interactive terminal"));
+}
+
+#[test]
+fn test_export_service_all_envs_requires_out_even_after_confirmation_guard() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["init", "--envs", "development,production"]);
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["set", "api", "production", "KEY", "val"]);
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["export", "api", "--out", "envs"]);
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("requires an interactive terminal"));
+}
+
+#[test]
 fn test_encrypted_store_uses_versioned_xchacha_format() {
     let dir = TempDir::new().unwrap();
 
@@ -275,7 +423,8 @@ fn test_encrypted_store_uses_versioned_xchacha_format() {
     cmd.args(["set", "api", "KEY", "val"]);
     cmd.assert().success();
 
-    let content = std::fs::read_to_string(dir.path().join(".kagi/services/api.enc")).unwrap();
+    let content =
+        std::fs::read_to_string(dir.path().join(".kagi/services/api/development.enc")).unwrap();
     let json: Value = serde_json::from_str(&content).unwrap();
     assert_eq!(json["version"], 1);
     assert_eq!(json["algorithm"], "XCHACHA20-POLY1305");
@@ -293,18 +442,37 @@ fn test_import_from_file() {
     cmd.assert().success();
 
     std::fs::write(
-        dir.path().join("dev.env"),
+        dir.path().join("development.env"),
         "API_KEY=secret\nDB_URL=postgres://localhost\n",
     )
     .unwrap();
 
     let mut cmd = Command::cargo_bin("kagi").unwrap();
     cmd.current_dir(&dir);
-    cmd.args(["import", "api", "--file", "dev.env"]);
+    cmd.args(["import", "api", "--file", "development.env"]);
     cmd.assert().success();
 
     assert_run_env(dir.path(), &["api"], "API_KEY", "secret");
     assert_run_env(dir.path(), &["api"], "DB_URL", "postgres://localhost");
+}
+
+#[test]
+fn test_import_service_env_shorthand() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["init", "--envs", "development,production"]);
+    cmd.assert().success();
+
+    std::fs::write(dir.path().join("production.env"), "API_KEY=secret\n").unwrap();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["import", "api", "production", "--file", "production.env"]);
+    cmd.assert().success();
+
+    assert_run_env(dir.path(), &["api", "production"], "API_KEY", "secret");
 }
 
 #[test]
@@ -363,8 +531,13 @@ fn test_sync_from_example() {
         .success()
         .stdout(predicate::str::contains("kagi: synced"));
 
-    assert_run_env(dir.path(), &["dev"], "DATABASE_URL", "postgres://localhost");
-    assert_run_env(dir.path(), &["dev"], "WEBHOOK_SECRET", "");
+    assert_run_env(
+        dir.path(),
+        &["development"],
+        "DATABASE_URL",
+        "postgres://localhost",
+    );
+    assert_run_env(dir.path(), &["development"], "WEBHOOK_SECRET", "");
     assert_run_env(dir.path(), &["test"], "DEBUG", "true");
 }
 
@@ -381,7 +554,7 @@ fn test_sync_skips_existing_keys() {
 
     let mut cmd = Command::cargo_bin("kagi").unwrap();
     cmd.current_dir(&dir);
-    cmd.args(["set", "dev", "API_KEY", "custom"]);
+    cmd.args(["set", "development", "API_KEY", "custom"]);
     cmd.assert().success();
 
     let mut cmd = Command::cargo_bin("kagi").unwrap();
@@ -391,7 +564,7 @@ fn test_sync_skips_existing_keys() {
         .success()
         .stdout(predicate::str::contains("skipped"));
 
-    assert_run_env(dir.path(), &["dev"], "API_KEY", "custom");
+    assert_run_env(dir.path(), &["development"], "API_KEY", "custom");
 }
 
 #[test]
@@ -408,7 +581,7 @@ fn test_nested_disabled_uses_parent_without_inference() {
 
     let mut cmd = Command::cargo_bin("kagi").unwrap();
     cmd.current_dir(&child);
-    cmd.arg("list");
+    cmd.arg("get");
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("no services found"));
@@ -448,7 +621,7 @@ fn test_nested_selective_paths() {
     std::fs::create_dir_all(&api_dir).unwrap();
     let mut cmd = Command::cargo_bin("kagi").unwrap();
     cmd.current_dir(&api_dir);
-    cmd.arg("list");
+    cmd.arg("get");
     cmd.assert().success();
 
     // Disallowed child path still uses the parent .kagi, but does not infer "web".
@@ -456,7 +629,7 @@ fn test_nested_selective_paths() {
     std::fs::create_dir(&web_dir).unwrap();
     let mut cmd = Command::cargo_bin("kagi").unwrap();
     cmd.current_dir(&web_dir);
-    cmd.arg("list");
+    cmd.arg("get");
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("no services found"));
@@ -569,12 +742,177 @@ fn test_nested_env_scope_keeps_service_shorthand() {
 
     let mut cmd = Command::cargo_bin("kagi").unwrap();
     cmd.current_dir(&api_dir);
-    cmd.args(["set", "dev", "KEY", "val"]);
+    cmd.args(["set", "development", "KEY", "val"]);
     cmd.assert().success();
 
-    assert_run_env(&api_dir, &["dev"], "KEY", "val");
+    assert_run_env(&api_dir, &["development"], "KEY", "val");
 
-    assert!(dir.path().join(".kagi/services/api/dev.enc").exists());
+    assert!(
+        dir.path()
+            .join(".kagi/services/api/development.enc")
+            .exists()
+    );
+}
+
+#[test]
+fn test_service_defaults_to_development_and_precreates_configured_envs() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["init", "--envs", "development,test,production"]);
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["set", "--service", "api", "KEY", "val"]);
+    cmd.assert().success();
+
+    assert_run_env(dir.path(), &["api"], "KEY", "val");
+    assert!(
+        dir.path()
+            .join(".kagi/services/api/development.enc")
+            .exists()
+    );
+    assert!(dir.path().join(".kagi/services/api/test.enc").exists());
+    assert!(
+        dir.path()
+            .join(".kagi/services/api/production.enc")
+            .exists()
+    );
+}
+
+#[test]
+fn test_root_service_env_shorthand() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["init", "--envs", "development,test,production"]);
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["set", "api", "production", "KEY", "production-value"]);
+    cmd.assert().success();
+
+    assert_run_env(
+        dir.path(),
+        &["api", "production"],
+        "KEY",
+        "production-value",
+    );
+}
+
+#[test]
+fn test_env_add_and_rename_updates_service_envs() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["init", "--envs", "development,test"]);
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["set", "api", "KEY", "development-value"]);
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["env", "add", "staging"]);
+    cmd.assert().success();
+    assert!(dir.path().join(".kagi/services/api/staging.enc").exists());
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["set", "api", "staging", "KEY", "staging-value"]);
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["env", "rename", "staging", "qa"]);
+    cmd.assert().success();
+
+    assert!(!dir.path().join(".kagi/services/api/staging.enc").exists());
+    assert!(dir.path().join(".kagi/services/api/qa.enc").exists());
+    assert_run_env(dir.path(), &["api", "qa"], "KEY", "staging-value");
+}
+
+#[test]
+fn test_get_service_groups_environment_scopes() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["init", "--envs", "development,production"]);
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["set", "api", "production", "KEY", "production-value"]);
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["get", "api"]);
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("api\n  development"),
+        "expected api/development layout: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("  production"),
+        "expected api/production layout: {}",
+        stdout
+    );
+    assert!(stdout.contains("KEY"), "expected key: {}", stdout);
+    assert!(
+        !stdout.contains("production-value"),
+        "get should mask values by default: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_env_del_requires_interactive_confirmation() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["init", "--envs", "development,staging"]);
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["env", "del", "staging"]);
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("requires an interactive terminal"));
+}
+
+#[test]
+fn test_env_add_rejects_existing_service_name() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["set", "api", "KEY", "value"]);
+    cmd.assert().success();
+
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.current_dir(&dir);
+    cmd.args(["env", "add", "api"]);
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("conflicts with existing service"));
 }
 
 #[test]

@@ -1,4 +1,6 @@
-use crate::domain::config::{KAGI_CONFIG_FILE, KagiConfig, NestedMode};
+use crate::domain::config::{
+    DEFAULT_ENV_NAME, KAGI_CONFIG_FILE, KagiConfig, NestedMode, STANDARD_ENV_NAMES,
+};
 use crate::domain::error::DomainError;
 use crate::infrastructure::key_manager::KeyManager;
 use std::fs;
@@ -8,18 +10,55 @@ pub struct InitService {
     key_manager: KeyManager,
     base_path: PathBuf,
     nested: bool,
+    envs: Vec<String>,
 }
 
 impl InitService {
+    #[cfg(test)]
     pub fn new(base_path: PathBuf) -> Self {
         Self::with_nested(base_path, false)
     }
 
+    #[cfg(test)]
     pub fn with_nested(base_path: PathBuf, nested: bool) -> Self {
+        Self::with_nested_and_envs(base_path, nested, None)
+    }
+
+    pub fn with_nested_and_envs(
+        base_path: PathBuf,
+        nested: bool,
+        envs: Option<Vec<String>>,
+    ) -> Self {
+        let envs = match envs {
+            Some(envs) => {
+                let envs: Vec<String> = envs
+                    .into_iter()
+                    .filter(|env| !env.trim().is_empty())
+                    .collect();
+                if envs.is_empty() {
+                    STANDARD_ENV_NAMES
+                        .iter()
+                        .map(|env| (*env).to_string())
+                        .collect()
+                } else {
+                    envs
+                }
+            }
+            None => vec![DEFAULT_ENV_NAME.to_string()],
+        };
+        let envs = if envs.iter().any(|env| env == DEFAULT_ENV_NAME) {
+            envs
+        } else {
+            let mut with_default = vec![DEFAULT_ENV_NAME.to_string()];
+            with_default.extend(envs);
+            with_default
+        };
+
         Self {
             key_manager: KeyManager::new(base_path.clone()),
             base_path,
             nested,
+            envs,
         }
     }
 
@@ -28,13 +67,12 @@ impl InitService {
         set_private_dir_permissions(&self.base_path)?;
         fs::create_dir_all(self.base_path.join("services"))?;
         set_private_dir_permissions(&self.base_path.join("services"))?;
+        fs::create_dir_all(self.base_path.join("envs"))?;
+        set_private_dir_permissions(&self.base_path.join("envs"))?;
         fs::create_dir_all(self.base_path.join("key"))?;
         set_private_dir_permissions(&self.base_path.join("key"))?;
-        let config = if self.nested {
-            KagiConfig::new_with_nested("1", NestedMode::Bool(true))
-        } else {
-            KagiConfig::new("1")
-        };
+        let config =
+            KagiConfig::new_with_settings("1", NestedMode::Bool(self.nested), self.envs.clone());
         let config_path = self.base_path.join(KAGI_CONFIG_FILE);
         fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
         set_private_file_permissions(&config_path)?;
@@ -105,6 +143,7 @@ mod tests {
         assert!(base.join(KAGI_CONFIG_FILE).exists());
         assert!(base.join("key/master.key").exists());
         assert!(base.join("services").exists());
+        assert!(base.join("envs").exists());
 
         let config: KagiConfig =
             serde_json::from_str(&fs::read_to_string(base.join(KAGI_CONFIG_FILE)).unwrap())

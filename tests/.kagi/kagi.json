@@ -1,11 +1,15 @@
 {
   "version": "1",
   "services": {
-    "dev": {
-      "file": "services/dev.enc"
+    "api/development": {
+      "file": "services/api/development.enc"
     }
   },
   "settings": {
-    "nested": false
+    "nested": true,
+    "envs": [
+      "development"
+    ],
+    "default_env": "development"
   }
 }

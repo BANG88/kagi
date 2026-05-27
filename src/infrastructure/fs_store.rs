@@ -56,11 +56,31 @@ impl FileStore {
                 service_name
             )));
         }
-        Ok(format!("services/{}.enc", service_name))
+        if service_name.contains('/') {
+            Ok(format!("services/{}.enc", service_name))
+        } else {
+            Ok(format!("envs/{}.enc", service_name))
+        }
+    }
+
+    fn validate_env_name(env_name: &str) -> Result<(), DomainError> {
+        if env_name.is_empty()
+            || env_name.starts_with('/')
+            || env_name.contains('/')
+            || env_name.contains('\\')
+            || env_name == "."
+            || env_name == ".."
+        {
+            return Err(DomainError::StoreCorrupted(format!(
+                "invalid environment name: {}",
+                env_name
+            )));
+        }
+        Ok(())
     }
 
     fn validate_configured_file(file: &str) -> Result<(), DomainError> {
-        if !file.starts_with("services/")
+        if !(file.starts_with("services/") || file.starts_with("envs/"))
             || file.starts_with('/')
             || file.contains('\\')
             || file
@@ -110,6 +130,194 @@ impl FileStore {
         Self::set_private_file_permissions(&path)?;
         Ok(())
     }
+
+    pub fn default_envs(&self) -> Result<Vec<String>, DomainError> {
+        Ok(self.load_config()?.settings.envs)
+    }
+
+    pub fn default_env(&self) -> Result<String, DomainError> {
+        Ok(self.load_config()?.settings.default_env)
+    }
+
+    pub fn ensure_service_envs(&self, service_name: &str) -> Result<(), DomainError> {
+        for env_name in self.default_envs()? {
+            let scope = format!("{}/{}", service_name, env_name);
+            match self.load(&scope) {
+                Ok(_) => {}
+                Err(DomainError::ServiceNotFound(_)) => self.save(&Service::new(scope))?,
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+
+    pub fn add_env(&self, env_name: &str) -> Result<(), DomainError> {
+        Self::validate_env_name(env_name)?;
+        let mut config = self.load_config()?;
+        let service_names = service_names_from_config(&config);
+        if service_names.iter().any(|service| service == env_name) {
+            return Err(DomainError::StoreCorrupted(format!(
+                "environment name conflicts with existing service: {}",
+                env_name
+            )));
+        }
+        if !config.settings.envs.iter().any(|env| env == env_name) {
+            config.settings.envs.push(env_name.to_string());
+            self.save_config(&config)?;
+        }
+
+        for service_name in service_names {
+            self.ensure_service_envs(&service_name)?;
+        }
+        Ok(())
+    }
+
+    pub fn rename_env(&self, old_env: &str, new_env: &str) -> Result<(), DomainError> {
+        Self::validate_env_name(old_env)?;
+        Self::validate_env_name(new_env)?;
+        if old_env == new_env {
+            return Ok(());
+        }
+
+        let config = self.load_config()?;
+        if !config.settings.envs.iter().any(|env| env == old_env) {
+            return Err(DomainError::StoreCorrupted(format!(
+                "environment not configured: {}",
+                old_env
+            )));
+        }
+        if config.settings.envs.iter().any(|env| env == new_env) {
+            return Err(DomainError::StoreCorrupted(format!(
+                "environment already exists: {}",
+                new_env
+            )));
+        }
+
+        let mut renames = Vec::new();
+        for scope in config.services.keys() {
+            if scope == old_env {
+                renames.push((scope.clone(), new_env.to_string()));
+            } else if let Some((service, env)) = scope.split_once('/')
+                && env == old_env
+            {
+                renames.push((scope.clone(), format!("{}/{}", service, new_env)));
+            }
+        }
+
+        for (_, new_scope) in &renames {
+            if config.services.contains_key(new_scope) {
+                return Err(DomainError::StoreCorrupted(format!(
+                    "scope already exists: {}",
+                    new_scope
+                )));
+            }
+        }
+
+        for (old_scope, new_scope) in renames {
+            self.rename_scope(&old_scope, &new_scope)?;
+        }
+
+        let mut config = self.load_config()?;
+        for env in &mut config.settings.envs {
+            if env == old_env {
+                *env = new_env.to_string();
+            }
+        }
+        if config.settings.default_env == old_env {
+            config.settings.default_env = new_env.to_string();
+        }
+        self.save_config(&config)?;
+        Ok(())
+    }
+
+    pub fn delete_env(&self, env_name: &str) -> Result<(), DomainError> {
+        Self::validate_env_name(env_name)?;
+        let config = self.load_config()?;
+        if config.settings.default_env == env_name {
+            return Err(DomainError::StoreCorrupted(format!(
+                "cannot delete default environment: {}",
+                env_name
+            )));
+        }
+        if !config.settings.envs.iter().any(|env| env == env_name) {
+            return Err(DomainError::StoreCorrupted(format!(
+                "environment not configured: {}",
+                env_name
+            )));
+        }
+
+        let delete_scopes: Vec<(String, String)> = config
+            .services
+            .iter()
+            .filter_map(|(scope, svc)| {
+                if scope == env_name {
+                    Some((scope.clone(), svc.file.clone()))
+                } else if let Some((_, env)) = scope.split_once('/')
+                    && env == env_name
+                {
+                    Some((scope.clone(), svc.file.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let mut config = self.load_config()?;
+        for (scope, file) in delete_scopes {
+            config.services.remove(&scope);
+            let path = self.service_path(&file);
+            if path.exists() {
+                fs::remove_file(path)?;
+            }
+        }
+        config.settings.envs.retain(|env| env != env_name);
+        self.save_config(&config)?;
+        Ok(())
+    }
+
+    fn rename_scope(&self, old_scope: &str, new_scope: &str) -> Result<(), DomainError> {
+        let config = self.load_config()?;
+        let old_file = config
+            .services
+            .get(old_scope)
+            .ok_or_else(|| DomainError::ServiceNotFound(old_scope.to_string()))?
+            .file
+            .clone();
+        if config.services.contains_key(new_scope) {
+            return Err(DomainError::StoreCorrupted(format!(
+                "scope already exists: {}",
+                new_scope
+            )));
+        }
+
+        let mut service = self.load(old_scope)?;
+        service.name = new_scope.to_string();
+        self.save(&service)?;
+
+        let mut config = self.load_config()?;
+        config.services.remove(old_scope);
+        self.save_config(&config)?;
+
+        let old_path = self.service_path(&old_file);
+        if old_path.exists() {
+            fs::remove_file(old_path)?;
+        }
+        Ok(())
+    }
+}
+
+fn service_names_from_config(config: &KagiConfig) -> Vec<String> {
+    config
+        .services
+        .keys()
+        .filter_map(|scope| {
+            scope
+                .split_once('/')
+                .map(|(service, _)| service.to_string())
+        })
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 impl SecretRepository for FileStore {

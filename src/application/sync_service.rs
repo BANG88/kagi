@@ -129,14 +129,14 @@ mod tests {
         std::fs::write(&example, "API_KEY=secret\nDEBUG=true\n").unwrap();
 
         let report = svc
-            .execute(example.to_str().unwrap(), &[], &["dev".into()])
+            .execute(example.to_str().unwrap(), &[], &["development".into()])
             .unwrap();
-        let dev = report.env_reports.get("dev").unwrap();
-        assert_eq!(dev.added, vec!["API_KEY", "DEBUG"]);
-        assert!(dev.commented.is_empty());
-        assert!(dev.skipped.is_empty());
+        let development = report.env_reports.get("development").unwrap();
+        assert_eq!(development.added, vec!["API_KEY", "DEBUG"]);
+        assert!(development.commented.is_empty());
+        assert!(development.skipped.is_empty());
 
-        let loaded = svc.repo.load("dev").unwrap();
+        let loaded = svc.repo.load("development").unwrap();
         assert_eq!(loaded.get_secret("API_KEY").unwrap().value, "secret");
         assert_eq!(loaded.get_secret("DEBUG").unwrap().value, "true");
     }
@@ -149,14 +149,14 @@ mod tests {
         std::fs::write(&example, "# WEBHOOK_SECRET=\n").unwrap();
 
         let report = svc
-            .execute(example.to_str().unwrap(), &[], &["dev".into()])
+            .execute(example.to_str().unwrap(), &[], &["development".into()])
             .unwrap();
-        let dev = report.env_reports.get("dev").unwrap();
-        assert!(dev.added.is_empty());
-        assert_eq!(dev.commented, vec!["WEBHOOK_SECRET"]);
-        assert!(dev.skipped.is_empty());
+        let development = report.env_reports.get("development").unwrap();
+        assert!(development.added.is_empty());
+        assert_eq!(development.commented, vec!["WEBHOOK_SECRET"]);
+        assert!(development.skipped.is_empty());
 
-        let loaded = svc.repo.load("dev").unwrap();
+        let loaded = svc.repo.load("development").unwrap();
         assert_eq!(loaded.get_secret("WEBHOOK_SECRET").unwrap().value, "");
     }
 
@@ -167,19 +167,19 @@ mod tests {
         let example = dir.path().join(".env.example");
         std::fs::write(&example, "API_KEY=default\n").unwrap();
 
-        let mut pre = Service::new("dev");
+        let mut pre = Service::new("development");
         pre.set_secret(Secret::new("API_KEY", "existing"));
         svc.repo.save(&pre).unwrap();
 
         let report = svc
-            .execute(example.to_str().unwrap(), &[], &["dev".into()])
+            .execute(example.to_str().unwrap(), &[], &["development".into()])
             .unwrap();
-        let dev = report.env_reports.get("dev").unwrap();
-        assert!(dev.added.is_empty());
-        assert!(dev.commented.is_empty());
-        assert_eq!(dev.skipped, vec!["API_KEY"]);
+        let development = report.env_reports.get("development").unwrap();
+        assert!(development.added.is_empty());
+        assert!(development.commented.is_empty());
+        assert_eq!(development.skipped, vec!["API_KEY"]);
 
-        let loaded = svc.repo.load("dev").unwrap();
+        let loaded = svc.repo.load("development").unwrap();
         assert_eq!(loaded.get_secret("API_KEY").unwrap().value, "existing");
     }
 
@@ -194,10 +194,10 @@ mod tests {
             .execute(
                 example.to_str().unwrap(),
                 &[],
-                &["dev".into(), "test".into()],
+                &["development".into(), "test".into()],
             )
             .unwrap();
-        assert!(report.env_reports.contains_key("dev"));
+        assert!(report.env_reports.contains_key("development"));
         assert!(report.env_reports.contains_key("test"));
     }
 
@@ -208,7 +208,7 @@ mod tests {
         let example = dir.path().join(".env.example");
         std::fs::write(&example, "# This is just a comment\n").unwrap();
 
-        let result = svc.execute(example.to_str().unwrap(), &[], &["dev".into()]);
+        let result = svc.execute(example.to_str().unwrap(), &[], &["development".into()]);
         assert!(result.is_err());
     }
 
@@ -224,13 +224,13 @@ mod tests {
             .execute(
                 ".env.example",
                 &[source.to_str().unwrap().into()],
-                &["dev".into()],
+                &["development".into()],
             )
             .unwrap();
-        let dev = report.env_reports.get("dev").unwrap();
-        assert_eq!(dev.added, vec!["FEATURE_FLAG"]);
+        let development = report.env_reports.get("development").unwrap();
+        assert_eq!(development.added, vec!["FEATURE_FLAG"]);
 
-        let loaded = svc.repo.load("dev").unwrap();
+        let loaded = svc.repo.load("development").unwrap();
         assert_eq!(loaded.get_secret("FEATURE_FLAG").unwrap().value, "true");
     }
 
@@ -248,13 +248,13 @@ mod tests {
             .execute(
                 example.to_str().unwrap(),
                 &[override_file.to_str().unwrap().into()],
-                &["dev".into()],
+                &["development".into()],
             )
             .unwrap();
-        let dev = report.env_reports.get("dev").unwrap();
-        assert_eq!(dev.added, vec!["API_KEY", "DEBUG"]);
+        let development = report.env_reports.get("development").unwrap();
+        assert_eq!(development.added, vec!["API_KEY", "DEBUG"]);
 
-        let loaded = svc.repo.load("dev").unwrap();
+        let loaded = svc.repo.load("development").unwrap();
         assert_eq!(loaded.get_secret("API_KEY").unwrap().value, "from_override");
         assert_eq!(loaded.get_secret("DEBUG").unwrap().value, "true");
     }
@@ -273,13 +273,13 @@ mod tests {
             .execute(
                 example.to_str().unwrap(),
                 &[extra.to_str().unwrap().into()],
-                &["dev".into()],
+                &["development".into()],
             )
             .unwrap();
-        let dev = report.env_reports.get("dev").unwrap();
-        assert_eq!(dev.added, vec!["API_KEY", "DB_URL"]);
+        let development = report.env_reports.get("development").unwrap();
+        assert_eq!(development.added, vec!["API_KEY", "DB_URL"]);
 
-        let loaded = svc.repo.load("dev").unwrap();
+        let loaded = svc.repo.load("development").unwrap();
         assert_eq!(loaded.get_secret("API_KEY").unwrap().value, "default");
         assert_eq!(loaded.get_secret("DB_URL").unwrap().value, "postgres");
     }

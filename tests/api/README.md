@@ -7,6 +7,6 @@ the committed fake `.kagi` repository in `tests/.kagi`.
 bun dev
 ```
 
-`bun dev` calls `kagi run dev bun run index.ts` and reads the committed fake
-`dev.MESSAGE` value from `tests/.kagi`. The values in `tests/.kagi` are
+`bun dev` calls `kagi run bun run index.ts` and reads the committed fake
+`api/development.MESSAGE` value from `tests/.kagi`. The values in `tests/.kagi` are
 test-only and safe to commit; do not copy this pattern for real project secrets.

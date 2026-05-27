@@ -64,9 +64,13 @@ mod tests {
     fn test_roundtrip_with_aad() {
         let key = [42u8; 32];
         let encryptor = XChaChaEncryptor::new(&key);
-        let encrypted = encryptor.encrypt(b"hello secrets", b"kagi:v1:dev").unwrap();
+        let encrypted = encryptor
+            .encrypt(b"hello secrets", b"kagi:v1:development")
+            .unwrap();
         assert_ne!(encrypted, b"hello secrets".to_vec());
-        let decrypted = encryptor.decrypt(&encrypted, b"kagi:v1:dev").unwrap();
+        let decrypted = encryptor
+            .decrypt(&encrypted, b"kagi:v1:development")
+            .unwrap();
         assert_eq!(decrypted, b"hello secrets");
     }
 
@@ -74,8 +78,10 @@ mod tests {
     fn test_decrypt_wrong_aad_fails() {
         let key = [42u8; 32];
         let encryptor = XChaChaEncryptor::new(&key);
-        let encrypted = encryptor.encrypt(b"hello secrets", b"kagi:v1:dev").unwrap();
-        let result = encryptor.decrypt(&encrypted, b"kagi:v1:prod");
+        let encrypted = encryptor
+            .encrypt(b"hello secrets", b"kagi:v1:development")
+            .unwrap();
+        let result = encryptor.decrypt(&encrypted, b"kagi:v1:production");
         assert!(result.is_err());
     }
 }

@@ -2,6 +2,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 pub const KAGI_CONFIG_FILE: &str = "kagi.json";
+pub const DEFAULT_ENV_NAME: &str = "development";
+pub const STANDARD_ENV_NAMES: &[&str] = &["development", "test", "production"];
+
+fn default_env_name() -> String {
+    DEFAULT_ENV_NAME.to_string()
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct KagiConfig {
@@ -51,22 +57,38 @@ impl Default for NestedMode {
 pub struct Settings {
     #[serde(default)]
     pub nested: NestedMode,
+    #[serde(default)]
+    pub envs: Vec<String>,
+    #[serde(default = "default_env_name")]
+    pub default_env: String,
 }
 
 impl KagiConfig {
+    #[cfg(test)]
     pub fn new(version: impl Into<String>) -> Self {
         Self {
             version: version.into(),
             services: HashMap::new(),
-            settings: Settings::default(),
+            settings: Settings {
+                default_env: DEFAULT_ENV_NAME.to_string(),
+                ..Settings::default()
+            },
         }
     }
 
-    pub fn new_with_nested(version: impl Into<String>, nested: NestedMode) -> Self {
+    pub fn new_with_settings(
+        version: impl Into<String>,
+        nested: NestedMode,
+        envs: Vec<String>,
+    ) -> Self {
         Self {
             version: version.into(),
             services: HashMap::new(),
-            settings: Settings { nested },
+            settings: Settings {
+                nested,
+                envs,
+                default_env: DEFAULT_ENV_NAME.to_string(),
+            },
         }
     }
 }
