@@ -662,6 +662,13 @@ fn store_from_project_key(base_path: PathBuf, project_key: &[u8]) -> anyhow::Res
 
 fn recover_pending_rotation(base_path: &Path) -> anyhow::Result<bool> {
     let key_manager = KeyManager::new(base_path.to_path_buf());
+    recover_pending_rotation_with_key_manager(base_path, &key_manager)
+}
+
+fn recover_pending_rotation_with_key_manager(
+    base_path: &Path,
+    key_manager: &KeyManager,
+) -> anyhow::Result<bool> {
     let journal_path = key_manager.rotation_journal_path()?;
     if !journal_path.exists() {
         return Ok(false);
@@ -1395,7 +1402,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::application::init_service::InitService;
+    use crate::domain::config::KAGI_CONFIG_FILE;
     use crate::domain::entity::secret::Secret;
     use crate::domain::entity::service::Service;
     use crate::domain::repository::secret_repo::SecretRepository;
@@ -1415,10 +1422,26 @@ mod tests {
     #[test]
     fn test_rotation_journal_is_local_and_recoverable() {
         let dir = TempDir::new().unwrap();
+        let local = TempDir::new().unwrap();
 
         let base = dir.path().join(".kagi");
-        InitService::new(base.clone()).execute().unwrap();
-        let key_manager = KeyManager::new(base.clone());
+        fs::create_dir(&base).unwrap();
+        let config = KagiConfig {
+            version: "2".into(),
+            project_id: "kgp_test".into(),
+            services: Default::default(),
+            settings: Default::default(),
+        };
+        fs::write(
+            base.join(KAGI_CONFIG_FILE),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
+        let key_manager =
+            KeyManager::new_with_local_data_dir(base.clone(), local.path().to_path_buf());
+        key_manager
+            .initialize_project("kgp_test", "kgm_test")
+            .unwrap();
         let old_key = key_manager.load().unwrap();
         let old_store = store_from_project_key(base.clone(), &old_key).unwrap();
         let mut service = Service::new("api/development");
@@ -1441,7 +1464,7 @@ mod tests {
         assert!(!journal_path.starts_with(&base));
         assert!(!base.join("rotation.json").exists());
 
-        recover_pending_rotation(&base).unwrap();
+        recover_pending_rotation_with_key_manager(&base, &key_manager).unwrap();
         assert!(!journal_path.exists());
 
         let recovered_store = store_from_project_key(base, &new_key).unwrap();

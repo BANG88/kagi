@@ -49,11 +49,25 @@ impl Default for AccessState {
 
 pub struct KeyManager {
     base_path: PathBuf,
+    #[cfg(test)]
+    local_data_dir: Option<PathBuf>,
 }
 
 impl KeyManager {
     pub fn new(base_path: PathBuf) -> Self {
-        Self { base_path }
+        Self {
+            base_path,
+            #[cfg(test)]
+            local_data_dir: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn new_with_local_data_dir(base_path: PathBuf, local_data_dir: PathBuf) -> Self {
+        Self {
+            base_path,
+            local_data_dir: Some(local_data_dir),
+        }
     }
 
     pub fn generate_project_id() -> String {
@@ -193,7 +207,9 @@ impl KeyManager {
     }
 
     pub fn rotation_journal_path(&self) -> Result<PathBuf, DomainError> {
-        Ok(local_data_dir()?.join(format!("projects/{}.rotation.json", self.project_id()?)))
+        Ok(self
+            .local_data_dir()?
+            .join(format!("projects/{}.rotation.json", self.project_id()?)))
     }
 
     pub fn cache_project_key(&self, key: &[u8]) -> Result<(), DomainError> {
@@ -308,14 +324,14 @@ impl KeyManager {
     }
 
     fn load_identity(&self) -> Result<x25519::Identity, DomainError> {
-        let path = local_data_dir()?.join("identities/default.agekey");
+        let path = self.local_data_dir()?.join("identities/default.agekey");
         let content = fs::read_to_string(path)?;
         x25519::Identity::from_str(content.trim())
             .map_err(|e| DomainError::StoreCorrupted(format!("invalid local identity key: {}", e)))
     }
 
     fn save_identity(&self, identity: &x25519::Identity) -> Result<(), DomainError> {
-        let path = local_data_dir()?.join("identities/default.agekey");
+        let path = self.local_data_dir()?.join("identities/default.agekey");
         fs::create_dir_all(path.parent().unwrap())?;
         set_private_dir_permissions(path.parent().unwrap())?;
         fs::write(&path, identity.to_string().expose_secret())?;
@@ -323,15 +339,17 @@ impl KeyManager {
         Ok(())
     }
 
-    fn local_project_key_path(project_id: &str) -> Result<PathBuf, DomainError> {
-        Ok(local_data_dir()?.join(format!("projects/{}.key", project_id)))
+    fn local_project_key_path(&self, project_id: &str) -> Result<PathBuf, DomainError> {
+        Ok(self
+            .local_data_dir()?
+            .join(format!("projects/{}.key", project_id)))
     }
 
     fn load_local_project_key(
         &self,
         project_id: &str,
     ) -> Result<Option<Zeroizing<Vec<u8>>>, DomainError> {
-        let path = Self::local_project_key_path(project_id)?;
+        let path = self.local_project_key_path(project_id)?;
         if !path.exists() {
             return Ok(None);
         }
@@ -344,7 +362,7 @@ impl KeyManager {
             return Ok(());
         }
 
-        let path = Self::local_project_key_path(project_id)?;
+        let path = self.local_project_key_path(project_id)?;
         fs::create_dir_all(path.parent().unwrap())?;
         set_private_dir_permissions(path.parent().unwrap())?;
         fs::write(&path, hex::encode(key))?;
@@ -377,6 +395,14 @@ impl KeyManager {
             .set_password(&hex::encode(key))
             .map_err(|e| DomainError::StoreCorrupted(format!("keyring unavailable: {}", e)))?;
         Ok(())
+    }
+
+    fn local_data_dir(&self) -> Result<PathBuf, DomainError> {
+        #[cfg(test)]
+        if let Some(path) = &self.local_data_dir {
+            return Ok(path.clone());
+        }
+        local_data_dir()
     }
 }
 
@@ -516,9 +542,6 @@ mod tests {
     fn test_initialize_and_load_project_key() {
         let dir = TempDir::new().unwrap();
         let local = TempDir::new().unwrap();
-        unsafe {
-            env::set_var(LOCAL_HOME_ENV, local.path());
-        }
         fs::create_dir(dir.path().join(".kagi")).unwrap();
         let config = KagiConfig {
             version: "2".into(),
@@ -532,7 +555,10 @@ mod tests {
         )
         .unwrap();
 
-        let km = KeyManager::new(dir.path().join(".kagi"));
+        let km = KeyManager::new_with_local_data_dir(
+            dir.path().join(".kagi"),
+            local.path().to_path_buf(),
+        );
         let key = km.initialize_project("kgp_test", "kgm_test").unwrap();
         assert_eq!(key.len(), 32);
         let loaded = km.load().unwrap();
@@ -547,9 +573,6 @@ mod tests {
         assert!(access["members"][0]["wrapped_key"].as_str().unwrap().len() > 20);
         assert!(local.path().join("projects/kgp_test.key").exists());
         assert!(local.path().join("identities/default.agekey").exists());
-        unsafe {
-            env::remove_var(LOCAL_HOME_ENV);
-        }
     }
 
     #[test]
