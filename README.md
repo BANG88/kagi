@@ -10,7 +10,8 @@ A CLI tool for managing encrypted environment variables with per-service isolati
 
 ## Features
 
-- **XChaCha20-Poly1305 encryption** — Every secret is authenticated and encrypted with a master key before touching disk.
+- **XChaCha20-Poly1305 encryption** — Every secret is authenticated and encrypted with a project key before touching disk.
+- **Team-ready by default** — A solo user is the first member; new devices or teammates join through committed access requests.
 - **Service-first environments** — Store secrets per service and environment (`api/development`, `web/production`), with `development` as the default environment.
 - **Opt-in nested project support** — Infer the current service from your directory structure when enabled.
 - **Shell-safe export** — Emit `KEY=value` lines for sourcing or Docker `--env-file`.
@@ -54,15 +55,14 @@ kagi init --envs development,test,production
 # 3. Store a service secret in the default development environment
 kagi set api DATABASE_URL postgres://localhost/development
 
-# 4. Retrieve it
-kagi get api DATABASE_URL
-# → postgres://localhost/development
+# 4. Inspect masked keys
+kagi get api
 
 # 5. Run a command with injected env vars
 kagi run api node server.js
 
-# 6. Inspect masked keys
-kagi get api
+# 6. Reveal one value only after terminal confirmation
+kagi get api DATABASE_URL
 ```
 
 ---
@@ -71,7 +71,7 @@ kagi get api
 
 ### `init`
 
-Create a `.kagi/` directory in the current project. This stores the master key, config, encrypted root environments, and encrypted service environments.
+Create a `.kagi/` directory in the current project. This stores project config, member metadata, access wrappers, and encrypted root/service environments. The project key is stored outside the repository in the OS keychain when available, or in the trusted-device local store.
 
 ```bash
 kagi init
@@ -82,7 +82,7 @@ kagi init --force              # overwrite existing .kagi/
 
 `--envs` records the default environments for every service. It does not create `development`, `test`, or `production` as services. If `development` is omitted, kagi still adds it so service commands can use the default environment. Passing `--envs` without a value initializes the standard set: `development`, `test`, and `production`.
 
-**Note:** If `kagi init` runs inside a Git repository, `.kagi/` is added to the repository `.gitignore`. Do **not** commit it.
+**Note:** If `kagi init` runs inside a Git repository, broad `.kagi/` ignore rules are removed and real `.env` patterns are added to `.gitignore`. Commit `.kagi/`; local identities and project keys stay on each user's device.
 
 ---
 
@@ -229,6 +229,47 @@ The default environment is `development`; kagi prevents deleting it. Environment
 
 ---
 
+### `join`
+
+Request access for a new device or teammate.
+
+```bash
+kagi join
+kagi join --name alice
+```
+
+This records a pending entry in `.kagi/access.json`. Commit or open a PR with that change, then an existing member approves it.
+
+---
+
+### `member`
+
+List, approve, and remove members.
+
+```bash
+kagi member list
+kagi member approve <member_id>
+kagi member remove <member_id>
+```
+
+`member approve` reads a pending entry from `.kagi/access.json`, encrypts the project key to that member's public recipient, and marks the member active in the same file.
+
+`member remove` requires interactive confirmation, removes that member's access wrapper, and rotates the project key so future committed secrets are encrypted under a key only active members receive. It cannot erase secrets that the removed member already had from old Git history.
+
+---
+
+### `key`
+
+Rotate the project key and re-encrypt all stored secrets.
+
+```bash
+kagi key rotate
+```
+
+Use this after access changes or when you suspect the project key was exposed. Rotation requires interactive confirmation.
+
+---
+
 ### `sync`
 
 Synchronize keys from `.env.example` across environments. Useful when you add a new required variable and want every environment to have it (commented if it has no default value).
@@ -260,8 +301,8 @@ When multiple services live in subdirectories under a single repository, **neste
 # In the root
 kagi init --nested
 
-# Or allow only specific paths
-echo '{"version":"1","services":{},"settings":{"nested":["api","web"],"envs":["development","test","production"],"default_env":"development"}}' > .kagi/kagi.json
+# Or edit .kagi/kagi.json to allow only specific paths
+# Keep the generated project_id unchanged.
 ```
 
 Directory structure:
@@ -300,14 +341,37 @@ kagi set --service web development DB_HOST localhost    # stored under "web/deve
 ### Encryption
 
 - Algorithm: **XChaCha20-Poly1305** for new writes
-- Key: 256-bit master key
+- Key: 256-bit project key
 - Nonce: random 192-bit generated per encryption
 - Tag: 128-bit authentication tag
 - Associated data: format version, algorithm, and scope name are authenticated so encrypted stores cannot be silently moved between scopes
 
-The master key is stored as hex in `.kagi/key/master.key` with file mode `0o600` (read/write owner only). `.kagi/`, `.kagi/key/`, `.kagi/envs/`, and `.kagi/services/` are created with owner-only directory permissions on Unix. The key is loaded into a `zeroize::Zeroizing` buffer that scrubs memory on drop.
+The project key is not stored in the repository. `kagi init` creates a public `project_id`, a local age identity, one active member file, and one encrypted access wrapper. The project key is saved in the OS keychain when available. If a keychain is unavailable, kagi falls back to a trusted-device local store under the platform data directory, such as `~/.local/share/kagi/projects/<project_id>.key` on Linux.
+
+CI and container-only environments can inject the key explicitly:
+
+```bash
+KAGI_PROJECT_KEY_FILE=/run/secrets/kagi_project_key kagi run api bun dev
+```
+
+`KAGI_PROJECT_KEY=<64-hex-chars>` is also supported for CI systems that cannot mount a secret file, but prefer `KAGI_PROJECT_KEY_FILE` when possible.
 
 Encrypted stores use a versioned XChaCha20-Poly1305 format so future format changes can be detected explicitly.
+
+### Members and Access
+
+The repository contains only shareable access material:
+
+```text
+.kagi/kagi.json
+.kagi/access.json
+.kagi/secrets/<service>/<env>.enc
+.kagi/secrets/<env>.enc
+```
+
+`access.json` contains member metadata, pending join requests, and each active member's encrypted project-key wrapper. A new teammate or device runs `kagi join`, commits the `access.json` change, and an existing member runs `kagi member approve <member_id>`.
+
+When a member leaves, run `kagi member remove <member_id>`. This removes their future access and rotates the project key. It does not retroactively revoke secrets from old commits they could already decrypt.
 
 ### Non-interactive Access
 
@@ -322,31 +386,31 @@ kagi run api bun dev
 This prevents accidental direct secret dumps in logs, but it is not a sandbox. A
 process launched through `kagi run` receives the selected secrets as environment
 variables and can print or exfiltrate them. A process running as the same OS user
-and able to read `.kagi/key/master.key` can also access the same secrets. For
-stronger isolation, keep the key in an OS keychain, password manager, or external
-secret manager and avoid running untrusted code with `kagi run`.
+and able to read the local project key store can also access the same secrets.
+Avoid running untrusted code with `kagi run`.
 
-### Master Key Loss
+### Project Key Loss
 
-If the master key is lost, **all encrypted secrets are permanently unrecoverable**. There is no backdoor, escrow, or recovery mechanism by design.
+If the project key is lost for every active member, **all encrypted secrets are permanently unrecoverable**. There is no backdoor, escrow, or recovery mechanism by design.
 
 Ways to mitigate:
 
-- Back up `.kagi/key/master.key` in a password manager or HSM.
-- Share the key with teammates via a secure channel (1Password, Vault, etc.).
-- Set `KAGI_MASTER_KEY` as an environment variable to avoid relying on the file.
+- Keep at least two active members approved.
+- Store CI keys in a secret manager and inject via `KAGI_PROJECT_KEY` or `KAGI_PROJECT_KEY_FILE`.
+- Rotate with `kagi key rotate` if the key is exposed.
 
 ### What to Commit
 
 | Commit | Do **not** commit |
 |--------|-------------------|
-| `.env.example` | `.kagi/` |
-| Application code | `.kagi/key/master.key` |
-| Documentation | Encrypted `.enc` files |
+| `.kagi/kagi.json` | Local project keys |
+| `.kagi/access.json` | Local age identities / private keys |
+| `.kagi/secrets/**/*.enc` | `KAGI_PROJECT_KEY` values |
+| `.env.example` | `KAGI_PROJECT_KEY` values |
+| Documentation | Real `.env` / `.env.*` files |
+| Application code | Shell history, logs, or screenshots containing secrets |
 
-When `kagi init` runs inside a Git repository, `.kagi/` is appended to that repository's `.gitignore`.
-
-The only repository exception is `tests/.kagi/`, which is a fake fixture with a fixed test master key and no real secrets. It exists so examples under `tests/api` can exercise kagi behavior consistently.
+When `kagi init` runs inside a Git repository, it removes broad `.kagi/` ignore rules and appends `.env`, `.env.*`, and `!.env.example`.
 
 ---
 
@@ -374,8 +438,11 @@ cargo test
 # Run integration tests only
 cargo test --test integration_tests
 
-# Try the Bun fixture
-cd tests/api
+# Try the Bun example
+cd tests
+kagi init --nested
+cd api
+kagi set MESSAGE "from kagi"
 bun dev
 
 # Install locally

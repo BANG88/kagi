@@ -6,8 +6,8 @@ pub enum DomainError {
     ServiceNotFound(String),
     #[error("Secret not found: {0}")]
     SecretNotFound(String),
-    #[error("Invalid master key")]
-    InvalidMasterKey,
+    #[error("Invalid project key")]
+    InvalidProjectKey,
     #[error("Encrypt failed: {0}")]
     EncryptFailed(String),
     #[error("Decrypt failed: {0}")]

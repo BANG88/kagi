@@ -12,6 +12,7 @@ fn default_env_name() -> String {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct KagiConfig {
     pub version: String,
+    pub project_id: String,
     pub services: HashMap<String, ServiceConfig>,
     #[serde(default)]
     pub settings: Settings,
@@ -65,9 +66,10 @@ pub struct Settings {
 
 impl KagiConfig {
     #[cfg(test)]
-    pub fn new(version: impl Into<String>) -> Self {
+    pub fn new(version: impl Into<String>, project_id: impl Into<String>) -> Self {
         Self {
             version: version.into(),
+            project_id: project_id.into(),
             services: HashMap::new(),
             settings: Settings {
                 default_env: DEFAULT_ENV_NAME.to_string(),
@@ -78,11 +80,13 @@ impl KagiConfig {
 
     pub fn new_with_settings(
         version: impl Into<String>,
+        project_id: impl Into<String>,
         nested: NestedMode,
         envs: Vec<String>,
     ) -> Self {
         Self {
             version: version.into(),
+            project_id: project_id.into(),
             services: HashMap::new(),
             settings: Settings {
                 nested,
@@ -99,27 +103,28 @@ mod tests {
 
     #[test]
     fn test_config_default_nested() {
-        let config = KagiConfig::new("1");
+        let config = KagiConfig::new("2", "kgp_test");
         assert!(matches!(config.settings.nested, NestedMode::Bool(false)));
     }
 
     #[test]
     fn test_config_deserialize_missing_settings() {
-        let json = r#"{"version":"1","services":{}}"#;
+        let json = r#"{"version":"2","project_id":"kgp_test","services":{}}"#;
         let config: KagiConfig = serde_json::from_str(json).unwrap();
         assert!(matches!(config.settings.nested, NestedMode::Bool(false)));
     }
 
     #[test]
     fn test_config_deserialize_explicit_false() {
-        let json = r#"{"version":"1","services":{},"settings":{"nested":false}}"#;
+        let json =
+            r#"{"version":"2","project_id":"kgp_test","services":{},"settings":{"nested":false}}"#;
         let config: KagiConfig = serde_json::from_str(json).unwrap();
         assert!(matches!(config.settings.nested, NestedMode::Bool(false)));
     }
 
     #[test]
     fn test_config_deserialize_nested_paths() {
-        let json = r#"{"version":"1","services":{},"settings":{"nested":["api","web/frontend"]}}"#;
+        let json = r#"{"version":"2","project_id":"kgp_test","services":{},"settings":{"nested":["api","web/frontend"]}}"#;
         let config: KagiConfig = serde_json::from_str(json).unwrap();
         assert!(matches!(config.settings.nested, NestedMode::Paths(_)));
         let paths = match &config.settings.nested {

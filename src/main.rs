@@ -21,7 +21,7 @@ fn main() {
             |___/   鍵"#,
     );
     let cmd_ref = format!(
-        "{logo}\n{rule}\n{tagline}\n{jp}\n\n{usage}\n  {kagi} {command}\n  {kagi} {command_help}\n\n{flow}\n  {init_cmd}\n  {set_cmd}\n  {run_cmd}\n\n{commands}\n  {init:<10} {init_desc}\n  {set:<10} {set_desc}\n  {run:<10} {run_desc}\n  {get:<10} {get_desc}\n  {export:<10} {export_desc}\n  {import:<10} {import_desc}\n  {sync:<10} {sync_desc}\n  {env:<10} {env_desc}\n\n{security}\n  {security_note}",
+        "{logo}\n{rule}\n{tagline}\n{jp}\n\n{usage}\n  {kagi} {command}\n  {kagi} {command_help}\n\n{flow}\n  {init_cmd}\n  {set_cmd}\n  {run_cmd}\n\n{commands}\n  {init:<10} {init_desc}\n  {set:<10} {set_desc}\n  {run:<10} {run_desc}\n  {get:<10} {get_desc}\n  {export:<10} {export_desc}\n  {import:<10} {import_desc}\n  {sync:<10} {sync_desc}\n  {env:<10} {env_desc}\n  {join:<10} {join_desc}\n  {member:<10} {member_desc}\n  {key:<10} {key_desc}\n\n{security}\n  {security_note}",
         rule = c.warning("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"),
         tagline = c.info("Encrypted envs, scoped safely."),
         jp = c.info("日々の開発に、静かな鍵を。"),
@@ -35,7 +35,7 @@ fn main() {
         run_cmd = c.muted("kagi run api bun dev"),
         commands = c.warning("Commands"),
         init = c.accent("init"),
-        init_desc = c.info("create .kagi/ and the local master key"),
+        init_desc = c.info("create a team-ready encrypted project"),
         set = c.accent("set"),
         set_desc = c.info("store one encrypted value"),
         run = c.accent("run"),
@@ -50,6 +50,12 @@ fn main() {
         sync_desc = c.info("sync keys from .env.example"),
         env = c.accent("env"),
         env_desc = c.info("manage default environments"),
+        join = c.accent("join"),
+        join_desc = c.info("request access for this device/member"),
+        member = c.accent("member"),
+        member_desc = c.info("list, approve, or remove members"),
+        key = c.accent("key"),
+        key_desc = c.info("rotate the project key"),
         security = c.warning("Security"),
         security_note = c
             .muted("Use kagi run for scripts. get --show-values/export require a terminal prompt."),

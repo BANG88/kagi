@@ -1,5 +1,5 @@
 /target
 /docs/superpowers/plans
-.kagi/
-!tests/.kagi/
-!tests/.kagi/**
+.env
+.env.*
+!.env.example

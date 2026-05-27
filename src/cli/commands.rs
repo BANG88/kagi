@@ -5,7 +5,7 @@ use crate::application::list_services::ListServicesService;
 use crate::application::run_command::RunCommandService;
 use crate::application::set_secret::SetSecretService;
 use crate::application::sync_service::SyncService;
-use crate::cli::args::{Cli, Commands, EnvCommands};
+use crate::cli::args::{Cli, Commands, EnvCommands, KeyCommands, MemberCommands};
 use crate::cli::style::Palette;
 use crate::domain::config::{DEFAULT_ENV_NAME, KagiConfig};
 use crate::domain::repository::secret_repo::SecretRepository;
@@ -226,6 +226,24 @@ fn write_export_file(out_dir: &Path, scope: &str, content: &str) -> anyhow::Resu
     let path = out_dir.join(env_file_name(scope)?);
     fs::write(&path, content)?;
     Ok(path)
+}
+
+fn has_encrypted_store(path: &Path) -> anyhow::Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            if has_encrypted_store(&path)? {
+                return Ok(true);
+            }
+        } else if path.extension().is_some_and(|ext| ext == "enc") {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn scope_name(service: Option<&str>, env: &str) -> String {
@@ -510,6 +528,55 @@ fn confirm_env_delete(tty: bool, env: &str, c: &Palette) -> anyhow::Result<()> {
     }
 }
 
+fn confirm_member_remove(tty: bool, member_id: &str, c: &Palette) -> anyhow::Result<()> {
+    if !tty || !io::stdin().is_terminal() {
+        return Err(anyhow::anyhow!(
+            "kagi member remove changes project access and requires an interactive terminal."
+        ));
+    }
+
+    eprintln!(
+        "{} {} {}",
+        c.prefix(),
+        c.warning("warning:"),
+        c.info(&format!(
+            "this will remove member '{}' and rotate the project key. Type '{}' to confirm.",
+            member_id, member_id
+        ))
+    );
+    eprint!("{} {} ", c.prefix(), c.prompt("confirm:"));
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    if input.trim() == member_id {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("aborted"))
+    }
+}
+
+fn confirm_key_rotate(tty: bool, c: &Palette) -> anyhow::Result<()> {
+    if !tty || !io::stdin().is_terminal() {
+        return Err(anyhow::anyhow!(
+            "kagi key rotate re-encrypts stored secrets and requires an interactive terminal."
+        ));
+    }
+
+    eprintln!(
+        "{} {} {}",
+        c.prefix(),
+        c.warning("warning:"),
+        c.info("this will rotate the project key and rewrite all encrypted stores. Type 'rotate' to confirm.")
+    );
+    eprint!("{} {} ", c.prefix(), c.prompt("confirm:"));
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    if input.trim() == "rotate" {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("aborted"))
+    }
+}
+
 fn resolve_kagi_base() -> anyhow::Result<(PathBuf, Option<String>)> {
     let cwd = std::env::current_dir()?;
 
@@ -564,20 +631,91 @@ fn resolve_store() -> anyhow::Result<(FileStore, Option<String>)> {
             crate::domain::config::KAGI_CONFIG_FILE
         ));
     }
+    validate_v2_config(&config_path)?;
 
-    let key_manager = KeyManager::new(base_path.clone());
-    let master_key = key_manager.load().context(
-        "Failed to load master key. \
-         Did you run `kagi init`? \
-         If this is a shared repository, ask the owner for the master key or set KAGI_MASTER_KEY.",
-    )?;
-    let key_array: [u8; 32] = master_key
-        .as_slice()
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("Invalid master key length"))?;
-    let encryptor = XChaChaEncryptor::new(&key_array);
-    let store = FileStore::new(base_path, Box::new(encryptor));
+    let project_key = load_project_key(&base_path)?;
+    let store = store_from_project_key(base_path, &project_key)?;
     Ok((store, inferred_service))
+}
+
+fn validate_v2_config(config_path: &Path) -> anyhow::Result<()> {
+    let content = fs::read_to_string(config_path)?;
+    let value: serde_json::Value = serde_json::from_str(&content)?;
+    if value.get("version").and_then(|v| v.as_str()) != Some("2")
+        || value
+            .get("project_id")
+            .and_then(|v| v.as_str())
+            .is_none_or(|id| id.trim().is_empty())
+    {
+        return Err(anyhow::anyhow!(
+            "Unsupported kagi repository format. This version requires a v2 team-ready .kagi/kagi.json with project_id. Run `kagi init --force` to create a new repository."
+        ));
+    }
+    Ok(())
+}
+
+fn load_project_key(base_path: &Path) -> anyhow::Result<zeroize::Zeroizing<Vec<u8>>> {
+    let key_manager = KeyManager::new(base_path.to_path_buf());
+    key_manager.load().context(
+        "Failed to load project key. \
+         Did you run `kagi init`? \
+         If this is a shared repository, run `kagi join` and ask an active member to approve it, \
+         or set KAGI_PROJECT_KEY / KAGI_PROJECT_KEY_FILE for CI.",
+    )
+}
+
+fn store_from_project_key(base_path: PathBuf, project_key: &[u8]) -> anyhow::Result<FileStore> {
+    let key_array: [u8; 32] = project_key
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("Invalid project key length"))?;
+    let encryptor = XChaChaEncryptor::new(&key_array);
+    Ok(FileStore::new(base_path, Box::new(encryptor)))
+}
+
+fn rotate_project_key(base_path: &Path) -> anyhow::Result<usize> {
+    let key_manager = KeyManager::new(base_path.to_path_buf());
+    let old_key = key_manager
+        .load()
+        .context("Failed to load current project key")?;
+    let old_store = store_from_project_key(base_path.to_path_buf(), &old_key)?;
+    let scopes = old_store
+        .list_services()
+        .map_err(|e| anyhow::anyhow!("Failed to list encrypted stores: {}", e))?;
+    let mut services = Vec::new();
+    for scope in scopes {
+        services.push(
+            old_store
+                .load(&scope)
+                .map_err(|e| anyhow::anyhow!("Failed to decrypt {}: {}", scope, e))?,
+        );
+    }
+
+    let new_key = KeyManager::generate_project_key();
+    let new_store = store_from_project_key(base_path.to_path_buf(), &new_key)?;
+    for service in &services {
+        if let Err(e) = new_store.save(service) {
+            for original in &services {
+                let _ = old_store.save(original);
+            }
+            return Err(anyhow::anyhow!(
+                "Failed to re-encrypt {}; rolled back encrypted stores: {}",
+                service.name,
+                e
+            ));
+        }
+    }
+
+    if let Err(e) = key_manager.install_project_key(&new_key) {
+        for original in &services {
+            let _ = old_store.save(original);
+        }
+        return Err(anyhow::anyhow!(
+            "Failed to install rotated project key; rolled back encrypted stores: {}",
+            e
+        ));
+    }
+
+    Ok(services.len())
 }
 
 pub fn run(cli: Cli) -> anyhow::Result<()> {
@@ -597,20 +735,14 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
                 ));
             }
             if local.is_dir() && force {
-                let services_dir = local.join("services");
-                if services_dir.is_dir() {
-                    let has_enc = std::fs::read_dir(&services_dir)?
-                        .filter_map(|e| e.ok())
-                        .any(|e| e.path().extension().is_some_and(|ext| ext == "enc"));
-                    if has_enc {
-                        eprintln!(
-                            "{} {}",
-                            c.prefix(),
-                            c.warning(
-                                "warning: overwriting existing .kagi/ will delete all stored secrets."
-                            )
-                        );
-                    }
+                if has_encrypted_store(&local.join("secrets"))? {
+                    eprintln!(
+                        "{} {}",
+                        c.prefix(),
+                        c.warning(
+                            "warning: overwriting existing .kagi/ will delete all stored secrets."
+                        )
+                    );
                 }
                 std::fs::remove_dir_all(&local)?;
             }
@@ -637,7 +769,9 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
             println!(
                 "{} {}",
                 c.prefix(),
-                c.muted("Keep .kagi/ out of version control.")
+                c.muted(
+                    "Commit .kagi/; local keys stay on this device. Do not commit real .env files."
+                )
             );
         }
         Commands::Set {
@@ -1087,6 +1221,102 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
                         c.prefix(),
                         c.success("deleted environment"),
                         c.accent(&env)
+                    );
+                }
+            }
+        }
+        Commands::Join { name } => {
+            let (base_path, _) = resolve_kagi_base()?;
+            let key_manager = KeyManager::new(base_path);
+            let member = key_manager.create_join_request(name)?;
+            println!(
+                "{} {} {}",
+                c.prefix(),
+                c.success("created join request"),
+                c.accent(&member.member_id)
+            );
+            println!("{} {}", c.prefix(), c.muted("Ask an active member to run:"));
+            println!(
+                "  {} {} {}",
+                c.accent("kagi"),
+                c.accent("member approve"),
+                c.key(&member.member_id)
+            );
+        }
+        Commands::Member { command } => {
+            let (base_path, _) = resolve_kagi_base()?;
+            let key_manager = KeyManager::new(base_path.clone());
+            match command {
+                MemberCommands::List => {
+                    let members = key_manager.list_members()?;
+                    let requests = key_manager.list_join_requests()?;
+                    println!("{}", c.warning("Members"));
+                    if members.is_empty() {
+                        println!("  {}", c.muted("none"));
+                    } else {
+                        for member in members {
+                            let status = if member.status == "active" {
+                                c.success(&member.status)
+                            } else {
+                                c.muted(&member.status)
+                            };
+                            println!(
+                                "  {}  {}  {}",
+                                c.accent(&member.member_id),
+                                c.key(&member.name),
+                                status
+                            );
+                        }
+                    }
+
+                    println!("{}", c.warning("Join Requests"));
+                    if requests.is_empty() {
+                        println!("  {}", c.muted("none"));
+                    } else {
+                        for member in requests {
+                            println!(
+                                "  {}  {}  {}",
+                                c.accent(&member.member_id),
+                                c.key(&member.name),
+                                c.warning(&member.status)
+                            );
+                        }
+                    }
+                }
+                MemberCommands::Approve { member_id } => {
+                    let member = key_manager.approve_join_request(&member_id)?;
+                    println!(
+                        "{} {} {}",
+                        c.prefix(),
+                        c.success("approved member"),
+                        c.accent(&member.member_id)
+                    );
+                }
+                MemberCommands::Remove { member_id } => {
+                    confirm_member_remove(tty, &member_id, &c)?;
+                    key_manager.remove_member(&member_id)?;
+                    let count = rotate_project_key(&base_path)?;
+                    println!(
+                        "{} {} {} {}",
+                        c.prefix(),
+                        c.success("removed member and rotated project key"),
+                        c.accent(&member_id),
+                        c.muted(&format!("({} stores rewritten)", count))
+                    );
+                }
+            }
+        }
+        Commands::Key { command } => {
+            let (base_path, _) = resolve_kagi_base()?;
+            match command {
+                KeyCommands::Rotate => {
+                    confirm_key_rotate(tty, &c)?;
+                    let count = rotate_project_key(&base_path)?;
+                    println!(
+                        "{} {} {}",
+                        c.prefix(),
+                        c.success("rotated project key"),
+                        c.muted(&format!("({} stores rewritten)", count))
                     );
                 }
             }

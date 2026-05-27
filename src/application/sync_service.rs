@@ -111,7 +111,7 @@ mod tests {
     fn setup(dir: &TempDir) -> SyncService<FileStore> {
         let base = dir.path().join(".kagi");
         std::fs::create_dir(&base).unwrap();
-        let config = crate::domain::config::KagiConfig::new("1");
+        let config = crate::domain::config::KagiConfig::new("2", "kgp_test");
         std::fs::write(
             base.join(crate::domain::config::KAGI_CONFIG_FILE),
             serde_json::to_string(&config).unwrap(),

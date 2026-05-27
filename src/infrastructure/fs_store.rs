@@ -56,11 +56,7 @@ impl FileStore {
                 service_name
             )));
         }
-        if service_name.contains('/') {
-            Ok(format!("services/{}.enc", service_name))
-        } else {
-            Ok(format!("envs/{}.enc", service_name))
-        }
+        Ok(format!("secrets/{}.enc", service_name))
     }
 
     fn validate_env_name(env_name: &str) -> Result<(), DomainError> {
@@ -80,7 +76,7 @@ impl FileStore {
     }
 
     fn validate_configured_file(file: &str) -> Result<(), DomainError> {
-        if !(file.starts_with("services/") || file.starts_with("envs/"))
+        if !file.starts_with("secrets/")
             || file.starts_with('/')
             || file.contains('\\')
             || file
@@ -411,7 +407,7 @@ mod tests {
     fn create_store(dir: &TempDir) -> FileStore {
         let base = dir.path().join(".kagi");
         fs::create_dir(&base).unwrap();
-        let config = KagiConfig::new("1");
+        let config = KagiConfig::new("2", "kgp_test");
         fs::write(
             base.join(crate::domain::config::KAGI_CONFIG_FILE),
             serde_json::to_string(&config).unwrap(),

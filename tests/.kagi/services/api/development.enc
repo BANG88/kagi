@@ -1,8 +1,0 @@
-{
-  "version": 1,
-  "algorithm": "XCHACHA20-POLY1305",
-  "nonce": "+zKkGyO5nKCyCF1WRVJEaxi+obaS1HLJ",
-  "ciphertext": "1sKxynC5UNM1sJmbK+AAzKVS5qEGqCbIUkjuEsj/PNAm+LSgZbKVVq3QhaqdIsSnfG8JeAlZ8fUkznv9PqUqi9ljLk2gwqXsrJyb01Swz+52lDOJO5tNp/1G5PUyInGEgSqYB6+BY34=",
-  "aad": "a2FnaTp2MTpYQ0hBQ0hBMjAtUE9MWTEzMDU6YXBpL2RldmVsb3BtZW50",
-  "tag": "Y+QMgdLSDUNTlMNT+7oI5Q=="
-}

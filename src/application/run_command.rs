@@ -46,7 +46,7 @@ mod tests {
     ) {
         let base = dir.path().join(".kagi");
         std::fs::create_dir(&base).unwrap();
-        let config = serde_json::json!({"version": "1", "services": {}});
+        let config = serde_json::json!({"version": "2", "project_id": "kgp_test", "services": {}});
         std::fs::write(
             base.join(crate::domain::config::KAGI_CONFIG_FILE),
             serde_json::to_string(&config).unwrap(),

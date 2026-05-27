@@ -1,12 +1,25 @@
-# api kagi fixture
+# api kagi example
 
-This fixture exercises running a nested Bun project from `tests/api` while using
-the committed fake `.kagi` repository in `tests/.kagi`.
+This is a minimal nested Bun service. The app script stays exactly like a user
+project:
 
 ```bash
 bun dev
 ```
 
-`bun dev` calls `kagi run bun run index.ts` and reads the committed fake
-`api/development.MESSAGE` value from `tests/.kagi`. The values in `tests/.kagi` are
-test-only and safe to commit; do not copy this pattern for real project secrets.
+`bun dev` calls `kagi run bun run index.ts`. To try it locally from a fresh
+checkout:
+
+```bash
+cd tests
+kagi init --nested
+cd api
+kagi set MESSAGE "from kagi"
+bun dev
+```
+
+The script stays intentionally simple:
+
+```json
+"dev": "kagi run bun run index.ts"
+```

@@ -74,7 +74,7 @@ pub enum Commands {
         #[arg(short, long)]
         service: Option<String>,
 
-        /// <env> <command>... or <command>... when the scope is inferred from nested directory.
+        /// <service> <command>... or <command>... when the scope is inferred from nested directory.
         #[arg(required = false, trailing_var_arg = true)]
         args: Vec<String>,
     },
@@ -145,6 +145,25 @@ pub enum Commands {
         #[command(subcommand)]
         command: EnvCommands,
     },
+
+    /// Request access to this kagi project from a new device or member
+    Join {
+        /// Display name for the member requesting access
+        #[arg(short, long)]
+        name: Option<String>,
+    },
+
+    /// Manage project members
+    Member {
+        #[command(subcommand)]
+        command: MemberCommands,
+    },
+
+    /// Manage project encryption keys
+    Key {
+        #[command(subcommand)]
+        command: KeyCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -172,4 +191,28 @@ pub enum EnvCommands {
         /// Environment name to delete
         env: String,
     },
+}
+
+#[derive(Subcommand)]
+pub enum MemberCommands {
+    /// List active members and pending join requests
+    List,
+
+    /// Approve a pending join request
+    Approve {
+        /// Member id from `kagi member list`
+        member_id: String,
+    },
+
+    /// Remove a member's access wrapper
+    Remove {
+        /// Member id from `kagi member list`
+        member_id: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum KeyCommands {
+    /// Rotate the project key and re-encrypt all stored secrets
+    Rotate,
 }
