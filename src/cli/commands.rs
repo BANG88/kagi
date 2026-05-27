@@ -5,7 +5,7 @@ use crate::application::list_services::ListServicesService;
 use crate::application::run_command::RunCommandService;
 use crate::application::set_secret::SetSecretService;
 use crate::application::sync_service::SyncService;
-use crate::cli::args::{Cli, Commands, EnvCommands, KeyCommands, MemberCommands};
+use crate::cli::args::{Cli, Commands, EnvCommands, MemberCommands};
 use crate::cli::style::Palette;
 use crate::domain::config::{DEFAULT_ENV_NAME, KagiConfig};
 use crate::domain::repository::secret_repo::SecretRepository;
@@ -15,9 +15,21 @@ use crate::infrastructure::fs_store::FileStore;
 use crate::infrastructure::key_manager::KeyManager;
 use crate::infrastructure::xchacha_crypto::XChaChaEncryptor;
 use anyhow::Context;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
-use std::io::{self, IsTerminal};
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
+
+const ROTATION_JOURNAL_VERSION: u8 = 1;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct RotationJournal {
+    version: u8,
+    project_id: String,
+    access_json: String,
+    files: BTreeMap<String, String>,
+}
 
 fn draw_key_table(items: &[(String, String)], show_values: bool, c: &Palette) {
     draw_key_table_with_indent(items, show_values, c, "");
@@ -440,7 +452,7 @@ fn parse_get_selection(
             Ok(GetSelection::Key(scope_name(Some(&service), &env), key))
         }
         _ => Err(anyhow::anyhow!(
-            "Usage: kagi get [--show-values] [--service <service>] [env|key] or kagi get <service> [env|key] [key]"
+            "Usage: kagi get [--show] [--service <service>] [env|key] or kagi get <service> [env|key] [key]"
         )),
     }
 }
@@ -552,29 +564,6 @@ fn confirm_member_remove(tty: bool, member_id: &str, c: &Palette) -> anyhow::Res
     }
 }
 
-fn confirm_key_rotate(tty: bool, c: &Palette) -> anyhow::Result<()> {
-    if !tty || !io::stdin().is_terminal() {
-        return Err(anyhow::anyhow!(
-            "kagi key rotate re-encrypts stored secrets and requires an interactive terminal."
-        ));
-    }
-
-    eprintln!(
-        "{} {} {}",
-        c.prefix(),
-        c.warning("warning:"),
-        c.info("this will rotate the project key and rewrite all encrypted stores. Type 'rotate' to confirm.")
-    );
-    eprint!("{} {} ", c.prefix(), c.prompt("confirm:"));
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input)?;
-    if input.trim() == "rotate" {
-        Ok(())
-    } else {
-        Err(anyhow::anyhow!("aborted"))
-    }
-}
-
 fn resolve_kagi_base() -> anyhow::Result<(PathBuf, Option<String>)> {
     let cwd = std::env::current_dir()?;
 
@@ -630,6 +619,7 @@ fn resolve_store() -> anyhow::Result<(FileStore, Option<String>)> {
         ));
     }
     validate_v2_config(&config_path)?;
+    recover_pending_rotation(&base_path)?;
 
     let project_key = load_project_key(&base_path)?;
     let store = store_from_project_key(base_path, &project_key)?;
@@ -670,7 +660,105 @@ fn store_from_project_key(base_path: PathBuf, project_key: &[u8]) -> anyhow::Res
     Ok(FileStore::new(base_path, Box::new(encryptor)))
 }
 
-fn rotate_project_key(base_path: &Path) -> anyhow::Result<usize> {
+fn recover_pending_rotation(base_path: &Path) -> anyhow::Result<bool> {
+    let key_manager = KeyManager::new(base_path.to_path_buf());
+    let journal_path = key_manager.rotation_journal_path()?;
+    if !journal_path.exists() {
+        return Ok(false);
+    }
+
+    let content = fs::read_to_string(&journal_path)?;
+    let journal: RotationJournal = serde_json::from_str(&content)?;
+    if journal.version != ROTATION_JOURNAL_VERSION {
+        return Err(anyhow::anyhow!(
+            "unsupported rotation journal version: {}",
+            journal.version
+        ));
+    }
+    if journal.project_id != key_manager.project_id()? {
+        return Err(anyhow::anyhow!(
+            "rotation journal belongs to another kagi project"
+        ));
+    }
+
+    apply_rotation_journal(base_path, &journal)?;
+    fs::remove_file(journal_path)?;
+    Ok(true)
+}
+
+fn write_rotation_journal(path: &Path, journal: &RotationJournal) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+        set_private_dir_permissions(parent)?;
+    }
+    atomic_write(path, &serde_json::to_string_pretty(journal)?)?;
+    set_private_file_permissions(path)?;
+    Ok(())
+}
+
+fn apply_rotation_journal(base_path: &Path, journal: &RotationJournal) -> anyhow::Result<()> {
+    for (file, content) in &journal.files {
+        if !is_valid_rotation_file(file) {
+            return Err(anyhow::anyhow!(
+                "invalid path in rotation journal: {}",
+                file
+            ));
+        }
+        atomic_write(&base_path.join(file), content)?;
+    }
+    atomic_write(&base_path.join("access.json"), &journal.access_json)?;
+    Ok(())
+}
+
+fn is_valid_rotation_file(file: &str) -> bool {
+    file.starts_with("secrets/")
+        && !file.starts_with('/')
+        && !file.contains('\\')
+        && file
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
+fn atomic_write(path: &Path, content: &str) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp_path = path.with_extension(format!(
+        "{}.tmp",
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("kagi")
+    ));
+    {
+        let mut file = fs::File::create(&tmp_path)?;
+        file.write_all(content.as_bytes())?;
+        file.sync_all()?;
+    }
+    fs::rename(&tmp_path, path)?;
+    set_private_file_permissions(path)?;
+    Ok(())
+}
+
+fn set_private_file_permissions(_path: &Path) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(_path, fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+fn set_private_dir_permissions(_path: &Path) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(_path, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+fn rotate_project_key(base_path: &Path, remove_member_id: Option<&str>) -> anyhow::Result<usize> {
+    recover_pending_rotation(base_path)?;
     let key_manager = KeyManager::new(base_path.to_path_buf());
     let old_key = key_manager
         .load()
@@ -690,28 +778,25 @@ fn rotate_project_key(base_path: &Path) -> anyhow::Result<usize> {
 
     let new_key = KeyManager::generate_project_key();
     let new_store = store_from_project_key(base_path.to_path_buf(), &new_key)?;
+    let mut files = BTreeMap::new();
     for service in &services {
-        if let Err(e) = new_store.save(service) {
-            for original in &services {
-                let _ = old_store.save(original);
-            }
-            return Err(anyhow::anyhow!(
-                "Failed to re-encrypt {}; rolled back encrypted stores: {}",
-                service.name,
-                e
-            ));
-        }
+        let (file, content) = new_store
+            .encrypted_service_content(service)
+            .map_err(|e| anyhow::anyhow!("Failed to re-encrypt {}: {}", service.name, e))?;
+        files.insert(file, content);
     }
 
-    if let Err(e) = key_manager.install_project_key(&new_key) {
-        for original in &services {
-            let _ = old_store.save(original);
-        }
-        return Err(anyhow::anyhow!(
-            "Failed to install rotated project key; rolled back encrypted stores: {}",
-            e
-        ));
-    }
+    let journal = RotationJournal {
+        version: ROTATION_JOURNAL_VERSION,
+        project_id: key_manager.project_id()?,
+        access_json: key_manager.rotated_access_json(&new_key, remove_member_id)?,
+        files,
+    };
+    let journal_path = key_manager.rotation_journal_path()?;
+    write_rotation_journal(&journal_path, &journal)?;
+    apply_rotation_journal(base_path, &journal)?;
+    key_manager.cache_project_key(&new_key)?;
+    fs::remove_file(journal_path)?;
 
     Ok(services.len())
 }
@@ -844,21 +929,21 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
             match selection {
                 GetSelection::All => {
                     if show_values {
-                        confirm_secret_output(tty, "kagi get --show-values", &c)?;
+                        confirm_secret_output(tty, "kagi get --show", &c)?;
                     }
                     let list_service = ListServicesService::new(store);
                     draw_all_service_envs(&list_service, show_values, &c)?;
                 }
                 GetSelection::Service(service) => {
                     if show_values {
-                        confirm_secret_output(tty, "kagi get --show-values", &c)?;
+                        confirm_secret_output(tty, "kagi get --show", &c)?;
                     }
                     let list_service = ListServicesService::new(store);
                     draw_service_envs(&list_service, &service, show_values, &c)?;
                 }
                 GetSelection::Scope(scope) => {
                     if show_values {
-                        confirm_secret_output(tty, "kagi get --show-values", &c)?;
+                        confirm_secret_output(tty, "kagi get --show", &c)?;
                     }
                     let list_service = ListServicesService::new(store);
                     let items = list_service.execute(Some(&scope))?;
@@ -1292,28 +1377,12 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
                 }
                 MemberCommands::Remove { member_id } => {
                     confirm_member_remove(tty, &member_id, &c)?;
-                    key_manager.remove_member(&member_id)?;
-                    let count = rotate_project_key(&base_path)?;
+                    let count = rotate_project_key(&base_path, Some(&member_id))?;
                     println!(
                         "{} {} {} {}",
                         c.prefix(),
                         c.success("removed member and rotated project key"),
                         c.accent(&member_id),
-                        c.muted(&format!("({} stores rewritten)", count))
-                    );
-                }
-            }
-        }
-        Commands::Key { command } => {
-            let (base_path, _) = resolve_kagi_base()?;
-            match command {
-                KeyCommands::Rotate => {
-                    confirm_key_rotate(tty, &c)?;
-                    let count = rotate_project_key(&base_path)?;
-                    println!(
-                        "{} {} {}",
-                        c.prefix(),
-                        c.success("rotated project key"),
                         c.muted(&format!("({} stores rewritten)", count))
                     );
                 }
@@ -1326,6 +1395,11 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::init_service::InitService;
+    use crate::domain::entity::secret::Secret;
+    use crate::domain::entity::service::Service;
+    use crate::domain::repository::secret_repo::SecretRepository;
+    use tempfile::TempDir;
 
     #[test]
     fn test_env_file_name_uses_bun_style_defaults() {
@@ -1336,5 +1410,42 @@ mod tests {
         assert_eq!(env_file_name("api/production").unwrap(), ".env.production");
         assert_eq!(env_file_name("api/test").unwrap(), ".env.test");
         assert_eq!(env_file_name("api/staging").unwrap(), ".env.staging");
+    }
+
+    #[test]
+    fn test_rotation_journal_is_local_and_recoverable() {
+        let dir = TempDir::new().unwrap();
+
+        let base = dir.path().join(".kagi");
+        InitService::new(base.clone()).execute().unwrap();
+        let key_manager = KeyManager::new(base.clone());
+        let old_key = key_manager.load().unwrap();
+        let old_store = store_from_project_key(base.clone(), &old_key).unwrap();
+        let mut service = Service::new("api/development");
+        service.set_secret(Secret::new("MESSAGE", "hello"));
+        old_store.save(&service).unwrap();
+
+        let new_key = KeyManager::generate_project_key();
+        let new_store = store_from_project_key(base.clone(), &new_key).unwrap();
+        let (file, content) = new_store.encrypted_service_content(&service).unwrap();
+        let journal = RotationJournal {
+            version: ROTATION_JOURNAL_VERSION,
+            project_id: key_manager.project_id().unwrap(),
+            access_json: key_manager.rotated_access_json(&new_key, None).unwrap(),
+            files: BTreeMap::from([(file, content)]),
+        };
+        let journal_path = key_manager.rotation_journal_path().unwrap();
+        write_rotation_journal(&journal_path, &journal).unwrap();
+
+        assert!(journal_path.exists());
+        assert!(!journal_path.starts_with(&base));
+        assert!(!base.join("rotation.json").exists());
+
+        recover_pending_rotation(&base).unwrap();
+        assert!(!journal_path.exists());
+
+        let recovered_store = store_from_project_key(base, &new_key).unwrap();
+        let recovered = recovered_store.load("api/development").unwrap();
+        assert_eq!(recovered.get_secret("MESSAGE").unwrap().value, "hello");
     }
 }

@@ -12,7 +12,7 @@ checkout:
 
 ```bash
 cd tests
-kagi init --nested
+kagi init --nested --envs
 cd api
 kagi set MESSAGE "from kagi"
 bun dev

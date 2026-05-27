@@ -78,6 +78,12 @@ impl KeyManager {
         }
 
         let project_id = self.project_id()?;
+        if let Ok(identity) = self.load_identity()
+            && let Ok(key) = self.unwrap_access_key(&identity)
+        {
+            self.save_local_project_key(&project_id, &key)?;
+            return Ok(key);
+        }
         if let Some(key) = self.load_keyring_project_key(&project_id)? {
             return Ok(key);
         }
@@ -175,37 +181,54 @@ impl KeyManager {
         Ok(member)
     }
 
-    pub fn remove_member(&self, member_id: &str) -> Result<(), DomainError> {
-        self.load()?;
-        let mut state = self.load_access_state()?;
-        let active_count = state
-            .members
-            .iter()
-            .filter(|member| member.status == "active")
-            .count();
-        let member = state
-            .members
-            .iter_mut()
-            .find(|member| member.member_id == member_id)
-            .ok_or_else(|| {
-                DomainError::StoreCorrupted(format!("member not found: {}", member_id))
-            })?;
-        if member.status == "active" && active_count <= 1 {
+    pub fn project_id(&self) -> Result<String, DomainError> {
+        let content = fs::read_to_string(self.base_path.join(KAGI_CONFIG_FILE))?;
+        let config: KagiConfig = serde_json::from_str(&content)?;
+        if config.project_id.trim().is_empty() {
             return Err(DomainError::StoreCorrupted(
-                "cannot remove the last active member".into(),
+                "missing project_id in kagi.json".into(),
             ));
         }
-        member.status = "removed".to_string();
-        member.wrapped_key = None;
-        self.save_access_state(&state)?;
-        Ok(())
+        Ok(config.project_id)
     }
 
-    pub fn install_project_key(&self, key: &[u8]) -> Result<(), DomainError> {
-        let project_id = self.project_id()?;
-        let mut state = self.load_access_state()?;
-        let mut active_count = 0usize;
+    pub fn rotation_journal_path(&self) -> Result<PathBuf, DomainError> {
+        Ok(local_data_dir()?.join(format!("projects/{}.rotation.json", self.project_id()?)))
+    }
 
+    pub fn cache_project_key(&self, key: &[u8]) -> Result<(), DomainError> {
+        self.save_local_project_key(&self.project_id()?, key)
+    }
+
+    pub fn rotated_access_json(
+        &self,
+        key: &[u8],
+        remove_member_id: Option<&str>,
+    ) -> Result<String, DomainError> {
+        let mut state = self.load_access_state()?;
+        if let Some(member_id) = remove_member_id {
+            let active_count = state
+                .members
+                .iter()
+                .filter(|member| member.status == "active")
+                .count();
+            let member = state
+                .members
+                .iter_mut()
+                .find(|member| member.member_id == member_id)
+                .ok_or_else(|| {
+                    DomainError::StoreCorrupted(format!("member not found: {}", member_id))
+                })?;
+            if member.status == "active" && active_count <= 1 {
+                return Err(DomainError::StoreCorrupted(
+                    "cannot remove the last active member".into(),
+                ));
+            }
+            member.status = "removed".to_string();
+            member.wrapped_key = None;
+        }
+
+        let mut active_count = 0usize;
         for member in &mut state.members {
             if member.status != "active" {
                 continue;
@@ -219,27 +242,13 @@ impl KeyManager {
             })?;
             member.wrapped_key = Some(wrap_key_for_recipient(&recipient, key)?);
         }
-
         if active_count == 0 {
             return Err(DomainError::StoreCorrupted(
-                "cannot install project key without active members".into(),
+                "cannot rotate project key without active members".into(),
             ));
         }
 
-        self.save_access_state(&state)?;
-        self.save_local_project_key(&project_id, key)?;
-        Ok(())
-    }
-
-    fn project_id(&self) -> Result<String, DomainError> {
-        let content = fs::read_to_string(self.base_path.join(KAGI_CONFIG_FILE))?;
-        let config: KagiConfig = serde_json::from_str(&content)?;
-        if config.project_id.trim().is_empty() {
-            return Err(DomainError::StoreCorrupted(
-                "missing project_id in kagi.json".into(),
-            ));
-        }
-        Ok(config.project_id)
+        Ok(serde_json::to_string_pretty(&state)?)
     }
 
     fn load_access_state(&self) -> Result<AccessState, DomainError> {

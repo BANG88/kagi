@@ -147,6 +147,30 @@ impl FileStore {
         Ok(())
     }
 
+    pub fn encrypted_service_content(
+        &self,
+        service: &Service,
+    ) -> Result<(String, String), DomainError> {
+        let file_name = Self::service_file_name(&service.name)?;
+        let plaintext = serde_json::to_vec(service)?;
+        let aad = Self::aad_for_service(&service.name);
+        let encrypted = self.encryptor.encrypt(&plaintext, &aad)?;
+        if encrypted.len() < 40 {
+            return Err(DomainError::EncryptFailed(
+                "encrypted data too short".into(),
+            ));
+        }
+        let enc_service = EncryptedService {
+            version: Some(1),
+            algorithm: Some(XCHACHA20_POLY1305.to_string()),
+            nonce: general_purpose::STANDARD.encode(&encrypted[..24]),
+            ciphertext: general_purpose::STANDARD.encode(&encrypted[24..encrypted.len() - 16]),
+            aad: Some(general_purpose::STANDARD.encode(&aad)),
+            tag: general_purpose::STANDARD.encode(&encrypted[encrypted.len() - 16..]),
+        };
+        Ok((file_name, serde_json::to_string_pretty(&enc_service)?))
+    }
+
     pub fn add_env(&self, env_name: &str) -> Result<(), DomainError> {
         Self::validate_env_name(env_name)?;
         let mut config = self.load_config()?;
@@ -359,30 +383,11 @@ impl SecretRepository for FileStore {
 
     fn save(&self, service: &Service) -> Result<(), DomainError> {
         let mut config = self.load_config()?;
-        let file_name = Self::service_file_name(&service.name)?;
-        let plaintext = serde_json::to_vec(service)?;
-        let aad = Self::aad_for_service(&service.name);
-        let encrypted = self.encryptor.encrypt(&plaintext, &aad)?;
-        if encrypted.len() < 40 {
-            return Err(DomainError::EncryptFailed(
-                "encrypted data too short".into(),
-            ));
-        }
-        let nonce = general_purpose::STANDARD.encode(&encrypted[..24]);
-        let ciphertext = general_purpose::STANDARD.encode(&encrypted[24..encrypted.len() - 16]);
-        let tag = general_purpose::STANDARD.encode(&encrypted[encrypted.len() - 16..]);
-        let enc_service = EncryptedService {
-            version: Some(1),
-            algorithm: Some(XCHACHA20_POLY1305.to_string()),
-            nonce,
-            ciphertext,
-            aad: Some(general_purpose::STANDARD.encode(&aad)),
-            tag,
-        };
+        let (file_name, content) = self.encrypted_service_content(service)?;
         let service_file = self.service_path(&file_name);
         fs::create_dir_all(service_file.parent().unwrap())?;
         Self::set_private_dir_permissions(service_file.parent().unwrap())?;
-        fs::write(&service_file, serde_json::to_string_pretty(&enc_service)?)?;
+        fs::write(&service_file, content)?;
         Self::set_private_file_permissions(&service_file)?;
         config
             .services

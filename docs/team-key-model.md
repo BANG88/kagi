@@ -64,14 +64,14 @@ kagi join
 kagi member list
 kagi member approve <member_id>
 kagi member remove <member_id>
-kagi key rotate
 ```
 
 `kagi init` creates `kagi.json`, `access.json`, `secrets/`, one local identity,
 one active member, and one project key.
 
 `kagi join` appends a pending member entry to `access.json`. The requester
-commits or opens a PR with that change.
+commits or opens a PR with that change. Multiple pending requests can coexist;
+concurrent PRs may need a normal JSON merge that keeps every pending member.
 
 `kagi member approve <member_id>` encrypts the project key to the pending
 member's public recipient and marks that member active.
@@ -80,9 +80,6 @@ member's public recipient and marks that member active.
 member removed, and rotates the project key so future secrets are only available
 to active members. It cannot revoke secrets the removed member already had from
 old Git history.
-
-`kagi key rotate` re-encrypts every secret store and rewrites wrapped keys for
-active members.
 
 ## Commit Policy
 

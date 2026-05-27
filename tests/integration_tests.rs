@@ -347,7 +347,7 @@ fn test_get_blocks_non_interactive_by_default() {
 }
 
 #[test]
-fn test_get_show_values_blocks_non_interactive() {
+fn test_get_show_blocks_non_interactive() {
     let dir = TempDir::new().unwrap();
 
     let mut cmd = kagi_bin();
@@ -362,10 +362,22 @@ fn test_get_show_values_blocks_non_interactive() {
 
     let mut cmd = kagi_bin();
     cmd.current_dir(&dir);
-    cmd.args(["get", "api", "--show-values"]);
+    cmd.args(["get", "api", "--show"]);
     cmd.assert()
         .failure()
         .stderr(predicate::str::contains("requires an interactive terminal"));
+}
+
+#[test]
+fn test_get_show_values_flag_does_not_exist() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["get", "api", "--show-values"]);
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("unexpected argument"));
 }
 
 #[test]
@@ -524,7 +536,41 @@ fn test_join_and_member_approve_flow() {
 }
 
 #[test]
-fn test_member_remove_and_key_rotate_require_interactive_confirmation() {
+fn test_multiple_join_requests_can_be_pending_together() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["join", "--name", "alice"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["join", "--name", "bob"]);
+    cmd.assert().success();
+
+    let access: Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".kagi/access.json")).unwrap(),
+    )
+    .unwrap();
+    let pending: Vec<_> = access["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|member| member["status"] == "pending")
+        .collect();
+    assert_eq!(pending.len(), 2);
+    assert!(pending.iter().any(|member| member["name"] == "alice"));
+    assert!(pending.iter().any(|member| member["name"] == "bob"));
+}
+
+#[test]
+fn test_member_remove_requires_interactive_confirmation() {
     let dir = TempDir::new().unwrap();
 
     let mut cmd = kagi_bin();
@@ -538,17 +584,10 @@ fn test_member_remove_and_key_rotate_require_interactive_confirmation() {
     cmd.assert()
         .failure()
         .stderr(predicate::str::contains("requires an interactive terminal"));
-
-    let mut cmd = kagi_bin();
-    cmd.current_dir(&dir);
-    cmd.args(["key", "rotate"]);
-    cmd.assert()
-        .failure()
-        .stderr(predicate::str::contains("requires an interactive terminal"));
 }
 
 #[test]
-fn test_team_and_doctor_commands_do_not_exist() {
+fn test_team_doctor_and_key_commands_do_not_exist() {
     let mut cmd = kagi_bin();
     cmd.arg("team");
     cmd.assert()
@@ -557,6 +596,12 @@ fn test_team_and_doctor_commands_do_not_exist() {
 
     let mut cmd = kagi_bin();
     cmd.arg("doctor");
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("unrecognized subcommand"));
+
+    let mut cmd = kagi_bin();
+    cmd.arg("key");
     cmd.assert()
         .failure()
         .stderr(predicate::str::contains("unrecognized subcommand"));

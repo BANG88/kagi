@@ -55,7 +55,7 @@ pub enum Commands {
         service: Option<String>,
 
         /// Show decrypted values when listing. Requires an interactive terminal.
-        #[arg(long)]
+        #[arg(long = "show")]
         show_values: bool,
 
         /// Service or environment name
@@ -158,12 +158,6 @@ pub enum Commands {
         #[command(subcommand)]
         command: MemberCommands,
     },
-
-    /// Manage project encryption keys
-    Key {
-        #[command(subcommand)]
-        command: KeyCommands,
-    },
 }
 
 #[derive(Subcommand)]
@@ -209,10 +203,4 @@ pub enum MemberCommands {
         /// Member id from `kagi member list`
         member_id: String,
     },
-}
-
-#[derive(Subcommand)]
-pub enum KeyCommands {
-    /// Rotate the project key and re-encrypt all stored secrets
-    Rotate,
 }
