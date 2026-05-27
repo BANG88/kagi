@@ -438,6 +438,9 @@ cargo test
 # Run integration tests only
 cargo test --test integration_tests
 
+# Run the real OS keychain smoke test
+cargo test test_os_keychain_project_key_survives_local_data_loss -- --ignored
+
 # Try the Bun example
 cd tests
 kagi init --nested
@@ -449,7 +452,7 @@ bun dev
 cargo install --path .
 ```
 
-The test suite covers unit tests for every layer and full CLI integration tests using temporary directories.
+The default test suite uses isolated local storage so it can run in CI. The ignored keychain smoke test requires a real unlocked OS keychain/session and verifies that kagi can still load the project key after local data files are removed.
 
 ---
 

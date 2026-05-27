@@ -4,6 +4,8 @@ use serde_json::Value;
 use std::path::Path;
 use tempfile::TempDir;
 
+const KEYRING_SERVICE: &str = "dev.kagi.kagi";
+
 fn kagi_bin() -> Command {
     let mut cmd = Command::cargo_bin("kagi").unwrap();
     cmd.env("KAGI_DISABLE_KEYRING", "1");
@@ -12,6 +14,28 @@ fn kagi_bin() -> Command {
         std::env::temp_dir().join("kagi-integration-tests"),
     );
     cmd
+}
+
+fn kagi_bin_with_keyring(xdg_data_home: &Path) -> Command {
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.env_remove("KAGI_DISABLE_KEYRING");
+    cmd.env_remove("KAGI_HOME");
+    cmd.env("XDG_DATA_HOME", xdg_data_home);
+    cmd
+}
+
+struct KeyringCleanup {
+    project_id: String,
+}
+
+impl Drop for KeyringCleanup {
+    fn drop(&mut self) {
+        if keyring::use_native_store(false).is_ok()
+            && let Ok(entry) = keyring_core::Entry::new(KEYRING_SERVICE, &self.project_id)
+        {
+            let _ = entry.delete_credential();
+        }
+    }
 }
 
 fn set_nested_config(kagi_json: &Path, nested: Value) {
@@ -61,6 +85,54 @@ fn assert_run_env(current_dir: &Path, scope: &[&str], key: &str, expected: &str)
     cmd.assert()
         .success()
         .stdout(predicate::eq(expected.to_string()));
+}
+
+#[test]
+#[ignore = "requires a real unlocked OS keychain/session"]
+fn test_os_keychain_project_key_survives_local_data_loss() {
+    let dir = TempDir::new().unwrap();
+    let xdg = TempDir::new().unwrap();
+    std::fs::create_dir(dir.path().join("api")).unwrap();
+
+    let mut init = kagi_bin_with_keyring(xdg.path());
+    init.current_dir(&dir);
+    init.args(["init", "--nested", "--envs"]);
+    init.assert().success();
+
+    let config: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join(".kagi/kagi.json")).unwrap())
+            .unwrap();
+    let project_id = config["project_id"].as_str().unwrap().to_string();
+    let _cleanup = KeyringCleanup { project_id };
+
+    let mut set = kagi_bin_with_keyring(xdg.path());
+    set.current_dir(&dir);
+    set.args(["set", "api", "MESSAGE", "from-keychain"]);
+    set.assert().success();
+
+    assert!(xdg.path().join("kagi/identities/default.agekey").exists());
+    assert!(!xdg.path().join("kagi/projects").exists());
+
+    let mut run = kagi_bin_with_keyring(xdg.path());
+    run.current_dir(dir.path().join("api"));
+    run.args(["run"]);
+    run.args(shell_print_env("MESSAGE"));
+    run.assert()
+        .success()
+        .stdout(predicate::eq("from-keychain"));
+
+    std::fs::remove_dir_all(xdg.path().join("kagi")).unwrap();
+
+    let mut run_without_local_data = kagi_bin_with_keyring(xdg.path());
+    run_without_local_data.current_dir(dir.path().join("api"));
+    run_without_local_data.args(["run"]);
+    run_without_local_data.args(shell_print_env("MESSAGE"));
+    run_without_local_data
+        .assert()
+        .success()
+        .stdout(predicate::eq("from-keychain"));
+
+    assert!(!xdg.path().join("kagi/projects").exists());
 }
 
 #[test]
