@@ -2,7 +2,7 @@
 
 ![kagi README banner](docs/kagi-readme-banner.png)
 
-A CLI tool for managing encrypted environment variables with per-service isolation.
+A secure, team-ready CLI for managing encrypted secrets and environment variables — a drop-in replacement for `.env` files with per-service isolation and team sharing.
 
 **kagi** (鍵, Japanese for "key") keeps your secrets encrypted at rest using XChaCha20-Poly1305 while making them easy to inject into applications during development and deployment.
 

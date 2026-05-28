@@ -2,11 +2,11 @@
 name = "kagi-vault"
 version = "0.1.0"
 edition = "2024"
-description = "A small Rust CLI for encrypted environment variables"
+description = "Encrypted secrets and environment variable manager for teams — a secure, team-ready dotenv alternative with per-service isolation"
 license = "MIT"
 repository = "https://github.com/BANG88/kagi"
 readme = "README.md"
-keywords = ["cli", "env", "secrets", "encryption"]
+keywords = ["env", "secrets", "dotenv", "environment-variables", "encryption", "team", "vault", "security", "config"]
 categories = ["command-line-utilities", "config"]
 
 [[bin]]
