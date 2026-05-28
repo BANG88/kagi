@@ -6,7 +6,7 @@ description = "Encrypted secrets and environment variable manager for teams — 
 license = "MIT"
 repository = "https://github.com/BANG88/kagi"
 readme = "README.md"
-keywords = ["env", "secrets", "dotenv", "environment-variables", "encryption", "team", "vault", "security", "config"]
+keywords = ["env", "secrets", "encryption", "vault", "cli"]
 categories = ["command-line-utilities", "config"]
 
 [[bin]]
