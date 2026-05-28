@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 pub struct Secret {
     pub key: String,
     pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 impl Secret {
@@ -11,6 +13,19 @@ impl Secret {
         Self {
             key: key.into(),
             value: value.into(),
+            description: None,
+        }
+    }
+
+    pub fn with_description(
+        key: impl Into<String>,
+        value: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
+        Self {
+            key: key.into(),
+            value: value.into(),
+            description: Some(description.into()),
         }
     }
 }

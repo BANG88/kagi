@@ -89,7 +89,7 @@ impl Palette {
 
     /// Muted / secondary — sumi gray.
     pub fn muted(&self, text: &str) -> String {
-        self.plain(text)
+        self.apply(text, (140, 140, 140))
     }
 
     /// Commented / needs value — soft sakura.

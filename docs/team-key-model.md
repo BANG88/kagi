@@ -60,23 +60,23 @@ data directory. CI and container-only environments use `KAGI_PROJECT_KEY` or
 
 ```bash
 kagi init
-kagi join
+kagi member join
 kagi member list
 kagi member approve <member_id>
-kagi member remove <member_id>
+kagi member del <member_id>
 ```
 
 `kagi init` creates `kagi.json`, `access.json`, `secrets/`, one local identity,
 one active member, and one project key.
 
-`kagi join` appends a pending member entry to `access.json`. The requester
+`kagi member join` appends a pending member entry to `access.json`. The requester
 commits or opens a PR with that change. Multiple pending requests can coexist;
 concurrent PRs may need a normal JSON merge that keeps every pending member.
 
 `kagi member approve <member_id>` encrypts the project key to the pending
 member's public recipient and marks that member active.
 
-`kagi member remove <member_id>` removes that member's wrapped key, marks the
+`kagi member del <member_id>` removes that member's wrapped key, marks the
 member removed, and rotates the project key so future secrets are only available
 to active members. It cannot revoke secrets the removed member already had from
 old Git history.

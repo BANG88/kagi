@@ -6,3 +6,5 @@ pub mod env_parser;
 pub mod error;
 pub mod repository;
 pub mod runner;
+#[cfg(feature = "server")]
+pub mod sync;

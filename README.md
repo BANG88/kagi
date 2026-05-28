@@ -25,7 +25,11 @@ A CLI tool for managing encrypted environment variables with per-service isolati
 ### From Git
 
 ```bash
+# Default: includes the remote sync server
 cargo install --git https://github.com/BANG88/kagi.git
+
+# CLI-only: excludes server code and server-related commands
+cargo install --git https://github.com/BANG88/kagi.git --no-default-features
 ```
 
 Requires Rust 1.85+ (2024 edition).
@@ -35,7 +39,12 @@ Requires Rust 1.85+ (2024 edition).
 ```bash
 git clone https://github.com/BANG88/kagi.git
 cd kagi
+
+# Default: includes the remote sync server
 cargo install --path .
+
+# CLI-only: excludes server code and server-related commands
+cargo install --path . --no-default-features
 ```
 
 ---
@@ -214,7 +223,7 @@ A project is always team-ready. If you work alone, you are the only member.
 New device or teammate:
 
 ```bash
-kagi join --name alice
+kagi member join --name alice
 git add .kagi/access.json
 git commit -m "chore: request kagi access"
 ```
@@ -234,14 +243,61 @@ If multiple people request access at the same time, keep all pending entries in
 Remove access:
 
 ```bash
-kagi member remove <member_id>
+kagi member del <member_id>
 git add .kagi
 git commit -m "chore: remove kagi member"
 ```
 
-`member remove` rotates the project key internally and re-encrypts current
+`member del` rotates the project key internally and re-encrypts current
 secrets for active members. If rotation is interrupted, kagi writes a local
 journal outside the repository and retries safely on the next command.
+
+---
+
+## Remote Server Sync
+
+Git-backed `.kagi/` sharing is the default workflow. If a team does not want to
+commit `.kagi/`, run a self-hosted Kagi server instead.
+
+Start the server:
+
+```bash
+kagi serve --db ./kagi.db --key-file ./server.key.json --bind 127.0.0.1:8787
+```
+
+On first startup, the server prints one admin token. Save it securely, then log
+in from the admin machine:
+
+```bash
+kagi remote login --remote http://127.0.0.1:8787 --token kagi_admin_v1_...
+```
+
+Create a local project and request server registration:
+
+```bash
+kagi init --nested --envs
+kagi project join --remote http://127.0.0.1:8787
+```
+
+An admin approves the pending request:
+
+```bash
+kagi project list --remote http://127.0.0.1:8787
+kagi project approve --remote http://127.0.0.1:8787 <project_id>
+```
+
+`approve` prints a project token. Give that token to the requester once. The
+token contains the remote URL, project id, and server fingerprint:
+
+```bash
+kagi pull <project-token>
+kagi push
+kagi status
+```
+
+In server mode, keep `.kagi/` local and out of Git. Project tokens are bearer
+credentials and are stored outside `.kagi/`; admin tokens are stored in the OS
+keychain or supplied with `KAGI_ADMIN_TOKEN`.
 
 ---
 
@@ -270,7 +326,7 @@ If the container itself must read env files, export them when needed and keep
 
 ## Safety Model
 
-Commit these:
+For Git-backed projects, commit these:
 
 ```text
 .kagi/kagi.json
@@ -292,6 +348,9 @@ logs or screenshots containing secrets
 The repository contains encrypted secret stores, public member recipients, and
 encrypted access wrappers. It does not contain the raw project key or private
 identity keys.
+
+For server-backed projects, keep `.kagi/` local and sync encrypted state with
+`kagi push` / `kagi pull` instead.
 
 Secrets are encrypted with XChaCha20-Poly1305 and authenticated with their
 scope name, so an encrypted file cannot be silently moved to another scope.
@@ -323,8 +382,11 @@ This makes it trivial to swap the file-based store for a remote backend or repla
 ## Development
 
 ```bash
-# Run all tests
+# Run all tests (with server feature)
 cargo test
+
+# Run tests without server feature
+cargo test --no-default-features
 
 # Run integration tests only
 cargo test --test integration_tests

@@ -10,19 +10,19 @@ impl<R: SecretRepository> ListServicesService<R> {
         Self { repo }
     }
 
-    /// When service_name is None, returns list of service names (value is empty).
-    /// When service_name is Some, returns list of (key, value) pairs for that service.
+    /// When service_name is None, returns list of service names (value and description are empty).
+    /// When service_name is Some, returns list of (key, value, description) pairs for that service.
     pub fn execute(
         &self,
         service_name: Option<&str>,
-    ) -> Result<Vec<(String, String)>, DomainError> {
+    ) -> Result<Vec<(String, String, Option<String>)>, DomainError> {
         match service_name {
             Some(name) => {
                 let service = self.repo.load(name)?;
                 let mut items: Vec<_> = service
                     .secrets
                     .iter()
-                    .map(|(k, v)| (k.clone(), v.value.clone()))
+                    .map(|(k, v)| (k.clone(), v.value.clone(), v.description.clone()))
                     .collect();
                 items.sort_by(|a, b| a.0.cmp(&b.0));
                 Ok(items)
@@ -30,7 +30,10 @@ impl<R: SecretRepository> ListServicesService<R> {
             None => {
                 let mut services = self.repo.list_services()?;
                 services.sort();
-                Ok(services.into_iter().map(|s| (s, String::new())).collect())
+                Ok(services
+                    .into_iter()
+                    .map(|s| (s, String::new(), None))
+                    .collect())
             }
         }
     }
@@ -67,7 +70,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let svc = setup(&dir);
         let list = svc.execute(None).unwrap();
-        assert_eq!(list, vec![("api".into(), "".into())]);
+        assert_eq!(list, vec![("api".into(), "".into(), None)]);
     }
 
     #[test]
@@ -77,7 +80,10 @@ mod tests {
         let keys = svc.execute(Some("api")).unwrap();
         assert_eq!(
             keys,
-            vec![("A".into(), "1".into()), ("B".into(), "2".into())]
+            vec![
+                ("A".into(), "1".into(), None),
+                ("B".into(), "2".into(), None)
+            ]
         );
     }
 }

@@ -3,3 +3,6 @@
 .env
 .env.*
 !.env.example
+kagi.db
+kagi.db-*
+server.key.json

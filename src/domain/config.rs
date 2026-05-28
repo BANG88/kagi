@@ -62,6 +62,8 @@ pub struct Settings {
     pub envs: Vec<String>,
     #[serde(default = "default_env_name")]
     pub default_env: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync: Option<serde_json::Value>,
 }
 
 impl KagiConfig {
@@ -92,6 +94,7 @@ impl KagiConfig {
                 nested,
                 envs,
                 default_env: DEFAULT_ENV_NAME.to_string(),
+                sync: None,
             },
         }
     }

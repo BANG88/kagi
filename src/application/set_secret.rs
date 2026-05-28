@@ -12,13 +12,24 @@ impl<R: SecretRepository> SetSecretService<R> {
         Self { repo }
     }
 
-    pub fn execute(&self, service_name: &str, key: &str, value: &str) -> Result<(), DomainError> {
+    pub fn execute(
+        &self,
+        service_name: &str,
+        key: &str,
+        value: &str,
+        description: Option<&str>,
+    ) -> Result<(), DomainError> {
         let mut service = match self.repo.load(service_name) {
             Ok(s) => s,
             Err(DomainError::ServiceNotFound(_)) => Service::new(service_name),
             Err(e) => return Err(e),
         };
-        service.set_secret(Secret::new(key, value));
+        let secret = if let Some(desc) = description {
+            Secret::with_description(key, value, desc)
+        } else {
+            Secret::new(key, value)
+        };
+        service.set_secret(secret);
         self.repo.save(&service)
     }
 }
@@ -47,14 +58,26 @@ mod tests {
     fn test_set_new_secret() {
         let dir = TempDir::new().unwrap();
         let svc = create_service(&dir);
-        svc.execute("api", "KEY", "val").unwrap();
+        svc.execute("api", "KEY", "val", None).unwrap();
     }
 
     #[test]
     fn test_set_existing_service() {
         let dir = TempDir::new().unwrap();
         let svc = create_service(&dir);
-        svc.execute("api", "A", "1").unwrap();
-        svc.execute("api", "B", "2").unwrap();
+        svc.execute("api", "A", "1", None).unwrap();
+        svc.execute("api", "B", "2", None).unwrap();
+    }
+
+    #[test]
+    fn test_set_secret_with_description() {
+        let dir = TempDir::new().unwrap();
+        let svc = create_service(&dir);
+        svc.execute("api", "KEY", "val", Some("a description"))
+            .unwrap();
+        let loaded = svc.repo.load("api").unwrap();
+        let secret = loaded.get_secret("KEY").unwrap();
+        assert_eq!(secret.value, "val");
+        assert_eq!(secret.description, Some("a description".into()));
     }
 }

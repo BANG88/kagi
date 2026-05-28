@@ -206,6 +206,30 @@ impl KeyManager {
         Ok(config.project_id)
     }
 
+    #[cfg(feature = "server")]
+    pub fn member_id(&self) -> Result<String, DomainError> {
+        let identity = self.load_or_create_identity()?;
+        let state = self.load_access_state()?;
+        for member in state.members {
+            if member.status != "active" {
+                continue;
+            }
+            if let Some(wrapped_key) = member.wrapped_key {
+                let encrypted = general_purpose::STANDARD
+                    .decode(wrapped_key)
+                    .map_err(|e| DomainError::StoreCorrupted(e.to_string()))?;
+                if let Ok(key) = decrypt_with_identity(&identity, &encrypted)
+                    && key.len() == 32
+                {
+                    return Ok(member.member_id);
+                }
+            }
+        }
+        Err(DomainError::StoreCorrupted(
+            "no active member found for this device".into(),
+        ))
+    }
+
     pub fn rotation_journal_path(&self) -> Result<PathBuf, DomainError> {
         Ok(self
             .local_data_dir()?
@@ -312,7 +336,7 @@ impl KeyManager {
         ))
     }
 
-    fn load_or_create_identity(&self) -> Result<x25519::Identity, DomainError> {
+    pub fn load_or_create_identity(&self) -> Result<x25519::Identity, DomainError> {
         match self.load_identity() {
             Ok(identity) => Ok(identity),
             Err(_) => {
@@ -491,6 +515,15 @@ fn keyring_entry(project_id: &str) -> Result<Entry, DomainError> {
         .map_err(|e| DomainError::StoreCorrupted(format!("keyring unavailable: {}", e)))
 }
 
+#[cfg(feature = "server")]
+pub fn keyring_admin_entry(server_fingerprint: &str) -> Result<Entry, DomainError> {
+    keyring::use_native_store(false)
+        .map_err(|e| DomainError::StoreCorrupted(format!("keyring unavailable: {}", e)))?;
+    let key = format!("admin:{}", server_fingerprint);
+    Entry::new(KEYRING_SERVICE, &key)
+        .map_err(|e| DomainError::StoreCorrupted(format!("keyring unavailable: {}", e)))
+}
+
 #[cfg(test)]
 fn local_data_dir() -> Result<PathBuf, DomainError> {
     if let Ok(path) = env::var(LOCAL_HOME_ENV) {
@@ -509,7 +542,7 @@ fn local_data_dir() -> Result<PathBuf, DomainError> {
         .ok_or_else(|| DomainError::StoreCorrupted("failed to resolve local data directory".into()))
 }
 
-fn default_member_name() -> String {
+pub fn default_member_name() -> String {
     env::var("USER")
         .or_else(|_| env::var("USERNAME"))
         .unwrap_or_else(|_| "local".to_string())

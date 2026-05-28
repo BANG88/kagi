@@ -488,7 +488,7 @@ fn test_join_and_member_approve_flow() {
 
     let mut cmd = kagi_bin();
     cmd.current_dir(&dir);
-    cmd.args(["join", "--name", "alice"]);
+    cmd.args(["member", "join", "--name", "alice"]);
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("created join request"))
@@ -546,12 +546,12 @@ fn test_multiple_join_requests_can_be_pending_together() {
 
     let mut cmd = kagi_bin();
     cmd.current_dir(&dir);
-    cmd.args(["join", "--name", "alice"]);
+    cmd.args(["member", "join", "--name", "alice"]);
     cmd.assert().success();
 
     let mut cmd = kagi_bin();
     cmd.current_dir(&dir);
-    cmd.args(["join", "--name", "bob"]);
+    cmd.args(["member", "join", "--name", "bob"]);
     cmd.assert().success();
 
     let access: Value = serde_json::from_str(
@@ -580,7 +580,7 @@ fn test_member_remove_requires_interactive_confirmation() {
 
     let mut cmd = kagi_bin();
     cmd.current_dir(&dir);
-    cmd.args(["member", "remove", "kgm_fake"]);
+    cmd.args(["member", "del", "kgm_fake"]);
     cmd.assert()
         .failure()
         .stderr(predicate::str::contains("requires an interactive terminal"));
@@ -1139,6 +1139,33 @@ fn test_get_service_groups_environment_scopes() {
 }
 
 #[test]
+fn test_env_list_shows_configured_envs() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["init", "--envs", "development,staging,production"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["env", "list"]);
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("development"),
+        "expected development: {}",
+        stdout
+    );
+    assert!(stdout.contains("staging"), "expected staging: {}", stdout);
+    assert!(
+        stdout.contains("production"),
+        "expected production: {}",
+        stdout
+    );
+}
+
+#[test]
 fn test_env_del_requires_interactive_confirmation() {
     let dir = TempDir::new().unwrap();
 
@@ -1280,4 +1307,54 @@ fn test_set_requires_service_when_no_inference() {
     cmd.assert()
         .failure()
         .stderr(predicate::str::contains("Usage:"));
+}
+
+#[test]
+fn test_set_with_description_stores_it() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args([
+        "set",
+        "api",
+        "DB_URL",
+        "postgres://localhost",
+        "--desc",
+        "Database connection string",
+    ]);
+    cmd.assert().success();
+
+    // Verify the value is stored correctly by running it
+    assert_run_env(dir.path(), &["api"], "DB_URL", "postgres://localhost");
+}
+
+#[test]
+fn test_import_captures_description_from_comment() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    std::fs::write(
+        dir.path().join("api.env"),
+        "# API key for staging\nAPI_KEY=secret\n# Database URL\nDB_URL=postgres://localhost\n",
+    )
+    .unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["import", "api", "--file", "api.env"]);
+    cmd.assert().success();
+
+    // Verify the values were imported by running them
+    assert_run_env(dir.path(), &["api"], "API_KEY", "secret");
+    assert_run_env(dir.path(), &["api"], "DB_URL", "postgres://localhost");
 }

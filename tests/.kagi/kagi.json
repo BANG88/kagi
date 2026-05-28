@@ -1,5 +1,4 @@
 {
-  "version": "2",
   "project_id": "kgp_wWxtVG8JTacl",
   "services": {
     "api/development": {
@@ -13,12 +12,17 @@
     }
   },
   "settings": {
-    "nested": true,
+    "default_env": "development",
     "envs": [
       "development",
       "test",
       "production"
     ],
-    "default_env": "development"
-  }
+    "nested": true,
+    "sync": {
+      "mode": "server",
+      "remote": "http://127.0.0.1:13816"
+    }
+  },
+  "version": "3"
 }

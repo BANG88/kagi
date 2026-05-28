@@ -9,6 +9,17 @@ readme = "README.md"
 keywords = ["cli", "env", "secrets", "encryption"]
 categories = ["command-line-utilities", "config"]
 
+[features]
+default = ["server"]
+server = [
+    "dep:axum",
+    "dep:tower",
+    "dep:tower-http",
+    "dep:tower_governor",
+    "dep:sqlx",
+    "dep:subtle",
+]
+
 [dependencies]
 age = "0.11.3"
 anyhow = "1.0.102"
@@ -22,10 +33,39 @@ keyring-core = "1.0.0"
 nanoid = "0.5.0"
 owo-colors = "4.3.0"
 rand = "0.10.1"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 thiserror = "2.0.18"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2.5"
 zeroize = { version = "1.8.2", features = ["derive"] }
+
+# server-only dependencies
+axum = { version = "0.8", optional = true }
+tower = { version = "0.5", optional = true }
+tower-http = { version = "0.6", optional = true, features = ["trace", "timeout", "limit"] }
+tower_governor = { version = "0.8.0", optional = true }
+
+# database (server-only)
+sqlx = { version = "0.9", optional = true, default-features = false, features = [
+    "runtime-tokio",
+    "sqlite",
+    "migrate",
+    "macros",
+    "json",
+    "time",
+] }
+
+# crypto utilities for token and response authentication
+hmac = "0.13.0"
+sha2 = "0.11.0"
+subtle = { version = "2.6", optional = true }
+
+# utilities (shared)
+time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
 
 [dev-dependencies]
 assert_cmd = "2.2.2"

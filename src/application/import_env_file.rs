@@ -37,7 +37,7 @@ impl<R: SecretRepository> ImportEnvFileService<R> {
         let mut imported = Vec::new();
         let mut overwritten = Vec::new();
 
-        for (key, _value) in &vars {
+        for (key, _value, _desc) in &vars {
             if existing_keys.contains(key) {
                 overwritten.push(key.clone());
             }
@@ -53,13 +53,18 @@ impl<R: SecretRepository> ImportEnvFileService<R> {
         }
 
         // Do actual import
-        for (key, value) in vars {
+        for (key, value, desc) in vars {
             let mut service = match self.repo.load(service_name) {
                 Ok(s) => s,
                 Err(DomainError::ServiceNotFound(_)) => Service::new(service_name),
                 Err(e) => return Err(e),
             };
-            service.set_secret(Secret::new(&key, &value));
+            let secret = if let Some(desc) = desc {
+                Secret::with_description(&key, &value, desc)
+            } else {
+                Secret::new(&key, &value)
+            };
+            service.set_secret(secret);
             self.repo.save(&service)?;
         }
 

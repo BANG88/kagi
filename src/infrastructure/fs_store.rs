@@ -171,6 +171,18 @@ impl FileStore {
         Ok((file_name, serde_json::to_string_pretty(&enc_service)?))
     }
 
+    #[cfg(feature = "server")]
+    pub fn raw_service_content(&self, service_name: &str) -> Result<(String, String), DomainError> {
+        let config = self.load_config()?;
+        let svc_config = config
+            .services
+            .get(service_name)
+            .ok_or_else(|| DomainError::ServiceNotFound(service_name.into()))?;
+        Self::validate_configured_file(&svc_config.file)?;
+        let content = std::fs::read_to_string(self.service_path(&svc_config.file))?;
+        Ok((svc_config.file.clone(), content))
+    }
+
     pub fn add_env(&self, env_name: &str) -> Result<(), DomainError> {
         Self::validate_env_name(env_name)?;
         let mut config = self.load_config()?;

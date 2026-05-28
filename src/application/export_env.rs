@@ -12,12 +12,15 @@ impl<R: SecretRepository> ExportEnvService<R> {
 
     pub fn execute(&self, service_name: &str) -> Result<String, DomainError> {
         let service = self.repo.load(service_name)?;
-        let mut lines: Vec<_> = service
-            .secrets
-            .values()
-            .map(|s| format!("{}={}", s.key, s.value))
-            .collect();
-        lines.sort();
+        let mut secrets: Vec<_> = service.secrets.values().collect();
+        secrets.sort_by(|a, b| a.key.cmp(&b.key));
+        let mut lines = Vec::new();
+        for s in secrets {
+            if let Some(desc) = &s.description {
+                lines.push(format!("# {}", desc));
+            }
+            lines.push(format!("{}={}", s.key, s.value));
+        }
         Ok(lines.join("\n"))
     }
 }
@@ -43,6 +46,11 @@ mod tests {
         let store = FileStore::new(base, Box::new(XorEncryptor::new(0xAB)));
         let mut svc = Service::new("api");
         svc.set_secret(Secret::new("KEY", "val"));
+        svc.set_secret(Secret::with_description(
+            "DESC_KEY",
+            "val2",
+            "A description",
+        ));
         store.save(&svc).unwrap();
         ExportEnvService::new(store)
     }
@@ -52,6 +60,6 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let svc = setup(&dir);
         let output = svc.execute("api").unwrap();
-        assert_eq!(output, "KEY=val");
+        assert_eq!(output, "# A description\nDESC_KEY=val2\nKEY=val");
     }
 }

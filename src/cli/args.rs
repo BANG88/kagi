@@ -35,6 +35,10 @@ pub enum Commands {
         #[arg(short, long)]
         service: Option<String>,
 
+        /// Description of the secret (shown in exports and lists)
+        #[arg(short, long)]
+        desc: Option<String>,
+
         /// Service or environment name
         first: Option<String>,
 
@@ -146,18 +150,60 @@ pub enum Commands {
         command: EnvCommands,
     },
 
-    /// Request access to this kagi project from a new device or member
-    Join {
-        /// Display name for the member requesting access
-        #[arg(short, long)]
-        name: Option<String>,
-    },
-
     /// Manage project members
     Member {
         #[command(subcommand)]
         command: MemberCommands,
     },
+
+    #[cfg(feature = "server")]
+    /// Manage remote projects (join, list, approve, delete)
+    Project {
+        #[command(subcommand)]
+        command: ProjectCommands,
+    },
+
+    #[cfg(feature = "server")]
+    /// Start the Kagi remote sync server
+    Serve {
+        /// Database file path
+        #[arg(long, default_value = "")]
+        db: String,
+
+        /// Server key file path
+        #[arg(long, default_value = "")]
+        key_file: String,
+
+        /// Bind address
+        #[arg(long, default_value = "127.0.0.1:13816")]
+        bind: String,
+
+        /// Max body size (e.g. 10mb)
+        #[arg(long, default_value = "10mb")]
+        max_body: String,
+    },
+
+    #[cfg(feature = "server")]
+    /// Manage remote server credentials and connections
+    Remote {
+        #[command(subcommand)]
+        command: RemoteCommands,
+    },
+
+    #[cfg(feature = "server")]
+    /// Upload local encrypted project state to remote server
+    Push,
+
+    #[cfg(feature = "server")]
+    /// Download encrypted project state from remote server
+    Pull {
+        /// Optional project token for pulling without local project
+        token: Option<String>,
+    },
+
+    #[cfg(feature = "server")]
+    /// Compare local and remote revisions
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -192,6 +238,13 @@ pub enum MemberCommands {
     /// List active members and pending join requests
     List,
 
+    /// Request to join this project from a new device
+    Join {
+        /// Display name for the member requesting access
+        #[arg(short, long)]
+        name: Option<String>,
+    },
+
     /// Approve a pending join request
     Approve {
         /// Member id from `kagi member list`
@@ -199,8 +252,111 @@ pub enum MemberCommands {
     },
 
     /// Remove a member's access wrapper
-    Remove {
+    Del {
         /// Member id from `kagi member list`
         member_id: String,
     },
+}
+
+#[cfg(feature = "server")]
+#[derive(Subcommand)]
+pub enum RemoteCommands {
+    /// Save an admin token for a remote server (stored in OS keychain)
+    Login {
+        /// Remote server URL
+        #[arg(long)]
+        remote: String,
+
+        /// Admin token from server first startup
+        #[arg(long)]
+        token: String,
+    },
+}
+
+#[cfg(feature = "server")]
+#[derive(Subcommand)]
+pub enum ProjectCommands {
+    /// Request to register this local project on a remote server
+    Join {
+        /// Remote server URL
+        #[arg(long)]
+        remote: String,
+    },
+
+    /// List projects on the remote server (admin only)
+    List {
+        /// Remote server URL (optional if saved via `kagi remote login`)
+        #[arg(long)]
+        remote: Option<String>,
+    },
+
+    /// Approve a pending project registration request (admin only)
+    Approve {
+        /// Remote server URL (optional if saved via `kagi remote login`)
+        #[arg(long)]
+        remote: Option<String>,
+
+        /// Project ID to approve
+        project_id: String,
+    },
+
+    /// Delete a project from the remote server (admin or project admin)
+    Del {
+        /// Remote server URL (optional if saved via `kagi remote login`)
+        #[arg(long)]
+        remote: Option<String>,
+
+        /// Project ID to delete
+        project_id: String,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    #[cfg(feature = "server")]
+    fn test_server_commands_available_with_server_feature() {
+        let cmd = Cli::command();
+        let names: Vec<_> = cmd.get_subcommands().map(|c| c.get_name()).collect();
+        assert!(names.contains(&"serve"), "serve should be present");
+        assert!(names.contains(&"push"), "push should be present");
+        assert!(names.contains(&"pull"), "pull should be present");
+        assert!(names.contains(&"status"), "status should be present");
+        assert!(names.contains(&"project"), "project should be present");
+        assert!(names.contains(&"remote"), "remote should be present");
+    }
+
+    #[test]
+    #[cfg(not(feature = "server"))]
+    fn test_server_commands_not_available_without_server_feature() {
+        let cmd = Cli::command();
+        let names: Vec<_> = cmd.get_subcommands().map(|c| c.get_name()).collect();
+        assert!(
+            !names.contains(&"serve"),
+            "serve should NOT be present when server feature is disabled"
+        );
+        assert!(
+            !names.contains(&"push"),
+            "push should NOT be present when server feature is disabled"
+        );
+        assert!(
+            !names.contains(&"pull"),
+            "pull should NOT be present when server feature is disabled"
+        );
+        assert!(
+            !names.contains(&"status"),
+            "status should NOT be present when server feature is disabled"
+        );
+        assert!(
+            !names.contains(&"project"),
+            "project should NOT be present when server feature is disabled"
+        );
+        assert!(
+            !names.contains(&"remote"),
+            "remote should NOT be present when server feature is disabled"
+        );
+    }
 }

@@ -5,8 +5,15 @@ mod application;
 mod cli;
 mod domain;
 mod infrastructure;
+#[cfg(feature = "server")]
+mod server;
 
-fn main() {
+#[tokio::main]
+async fn main() {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
+
     let mut cmd = cli::args::Cli::command();
     cmd = cmd.styles(cli::style::kagi_styles());
 
@@ -20,40 +27,86 @@ fn main() {
  |_|\_\__,_|\__, |_|
             |___/   鍵"#,
     );
+    #[cfg(not(feature = "server"))]
+    let cmd_lines: Vec<(&str, &str)> = vec![
+        ("init", "create a team-ready encrypted project"),
+        ("set", "store one encrypted value"),
+        ("run", "start a process with injected env vars"),
+        (
+            "get",
+            "show service/env keys or print one value after confirmation",
+        ),
+        ("export", "print KEY=value lines after confirmation"),
+        ("import", "import values from a .env file"),
+        ("sync", "sync keys from .env.example"),
+        ("env", "manage default environments"),
+        ("member", "list, approve, or remove members"),
+    ];
+    #[cfg(feature = "server")]
+    let cmd_lines: Vec<(&str, &str)> = vec![
+        ("init", "create a team-ready encrypted project"),
+        ("set", "store one encrypted value"),
+        ("run", "start a process with injected env vars"),
+        (
+            "get",
+            "show service/env keys or print one value after confirmation",
+        ),
+        ("export", "print KEY=value lines after confirmation"),
+        ("import", "import values from a .env file"),
+        ("sync", "sync keys from .env.example"),
+        ("env", "manage default environments"),
+        ("member", "list, approve, or remove members"),
+        ("serve", "start the remote sync server"),
+        ("push", "upload project state to remote server"),
+        ("pull", "download project state from remote server"),
+        ("status", "compare local and remote revisions"),
+        ("project", "manage remote projects"),
+        ("remote", "manage remote server credentials"),
+    ];
+    let max_cmd = cmd_lines.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
+    let cmd_list = cmd_lines
+        .iter()
+        .map(|(name, desc)| {
+            let pad = " ".repeat(max_cmd.saturating_sub(name.len()));
+            format!("  {}{} {}", c.accent(name), pad, c.muted(desc))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let flow_lines: Vec<(&str, &str)> = vec![
+        ("init", "--envs development,production"),
+        ("set", "api DATABASE_URL '<value>'"),
+        ("run", "api bun dev"),
+    ];
+    let max_flow = flow_lines.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
+    let flow_list = flow_lines
+        .iter()
+        .map(|(name, args)| {
+            let pad = " ".repeat(max_flow.saturating_sub(name.len()));
+            format!(
+                "  {} {}{} {}",
+                c.accent("kagi"),
+                c.accent(name),
+                pad,
+                c.muted(args)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
     let cmd_ref = format!(
-        "{logo}\n{rule}\n{tagline}\n{jp}\n\n{usage}\n  {kagi} {command}\n  {kagi} {command_help}\n\n{flow}\n  {init_cmd}\n  {set_cmd}\n  {run_cmd}\n\n{commands}\n  {init:<10} {init_desc}\n  {set:<10} {set_desc}\n  {run:<10} {run_desc}\n  {get:<10} {get_desc}\n  {export:<10} {export_desc}\n  {import:<10} {import_desc}\n  {sync:<10} {sync_desc}\n  {env:<10} {env_desc}\n  {join:<10} {join_desc}\n  {member:<10} {member_desc}\n\n{security}\n  {security_note}",
+        "{logo}\n{rule}\n{tagline}\n{jp}\n\n{usage}\n  {kagi} {command}\n  {kagi} {command_help}\n\n{flow}\n{flow_list}\n\n{commands}\n{cmd_list}\n\n{security}\n  {security_note}",
         rule = c.warning("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"),
-        tagline = c.info("Encrypted envs, scoped safely."),
-        jp = c.info("日々の開発に、静かな鍵を。"),
+        tagline = c.muted("Encrypted envs, scoped safely."),
+        jp = c.muted("日々の開発に、静かな鍵を。"),
         usage = c.warning("Usage"),
         kagi = c.accent("kagi"),
         command = c.key("<command>"),
         command_help = c.key("<command> --help"),
         flow = c.warning("Core Flow"),
-        init_cmd = c.muted("kagi init --envs development,production"),
-        set_cmd = c.muted("kagi set api DATABASE_URL '<value>'"),
-        run_cmd = c.muted("kagi run api bun dev"),
+        flow_list = flow_list,
         commands = c.warning("Commands"),
-        init = c.accent("init"),
-        init_desc = c.info("create a team-ready encrypted project"),
-        set = c.accent("set"),
-        set_desc = c.info("store one encrypted value"),
-        run = c.accent("run"),
-        run_desc = c.info("start a process with injected env vars"),
-        get = c.accent("get"),
-        get_desc = c.info("show service/env keys or print one value after confirmation"),
-        export = c.accent("export"),
-        export_desc = c.info("print KEY=value lines after confirmation"),
-        import = c.accent("import"),
-        import_desc = c.info("import values from a .env file"),
-        sync = c.accent("sync"),
-        sync_desc = c.info("sync keys from .env.example"),
-        env = c.accent("env"),
-        env_desc = c.info("manage default environments"),
-        join = c.accent("join"),
-        join_desc = c.info("request access for this device/member"),
-        member = c.accent("member"),
-        member_desc = c.info("list, approve, or remove members"),
+        cmd_list = cmd_list,
         security = c.warning("Security"),
         security_note =
             c.muted("Use kagi run for scripts. get --show/export require a terminal prompt."),
@@ -75,7 +128,7 @@ fn main() {
         Ok(c) => c,
         Err(e) => e.exit(),
     };
-    if let Err(e) = cli::commands::run(cli) {
+    if let Err(e) = cli::commands::run(cli).await {
         let tty = std::io::stdout().is_terminal();
         let c = cli::style::Palette::new(tty);
         eprintln!("{} {}", c.prefix(), c.error(&format!("error: {}", e)));

@@ -6,15 +6,22 @@ use crate::application::run_command::RunCommandService;
 use crate::application::set_secret::SetSecretService;
 use crate::application::sync_service::SyncService;
 use crate::cli::args::{Cli, Commands, EnvCommands, MemberCommands};
+#[cfg(feature = "server")]
+use crate::cli::args::{ProjectCommands, RemoteCommands};
 use crate::cli::style::Palette;
 use crate::domain::config::{DEFAULT_ENV_NAME, KagiConfig};
 use crate::domain::repository::secret_repo::SecretRepository;
 use crate::domain::runner::CommandRunner;
+#[cfg(feature = "server")]
+use crate::domain::sync::project_token::base64_encode_url;
 use crate::infrastructure::env_injector::SystemCommandRunner;
 use crate::infrastructure::fs_store::FileStore;
 use crate::infrastructure::key_manager::KeyManager;
+#[cfg(feature = "server")]
+use crate::infrastructure::key_manager::default_member_name;
 use crate::infrastructure::xchacha_crypto::XChaChaEncryptor;
 use anyhow::Context;
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
@@ -31,20 +38,25 @@ struct RotationJournal {
     files: BTreeMap<String, String>,
 }
 
-fn draw_key_table(items: &[(String, String)], show_values: bool, c: &Palette) {
+fn draw_key_table(items: &[(String, String, Option<String>)], show_values: bool, c: &Palette) {
     draw_key_table_with_indent(items, show_values, c, "");
 }
 
 fn draw_key_table_with_indent(
-    items: &[(String, String)],
+    items: &[(String, String, Option<String>)],
     show_values: bool,
     c: &Palette,
     indent: &str,
 ) {
-    let max_key = items.iter().map(|(k, _)| k.len()).max().unwrap_or(0).max(3);
+    let max_key = items
+        .iter()
+        .map(|(k, _, _)| k.len())
+        .max()
+        .unwrap_or(0)
+        .max(3);
     let max_val = items
         .iter()
-        .map(|(_, v)| {
+        .map(|(_, v, _)| {
             if show_values {
                 if v.is_empty() { 7 } else { v.len() }
             } else {
@@ -54,14 +66,37 @@ fn draw_key_table_with_indent(
         .max()
         .unwrap_or(0)
         .max(5);
+    let has_desc = items.iter().any(|(_, _, d)| d.is_some());
+    let max_desc = if has_desc {
+        items
+            .iter()
+            .filter_map(|(_, _, d)| d.as_ref().map(|s| s.len()))
+            .max()
+            .unwrap_or(0)
+            .max(4)
+    } else {
+        0
+    };
 
-    let border = format!(
-        "┌─{:─<width1$}─┬─{:─<width2$}─┐",
-        "",
-        "",
-        width1 = max_key,
-        width2 = max_val
-    );
+    let border = if has_desc {
+        format!(
+            "┌─{:─<width1$}─┬─{:─<width2$}─┬─{:─<width3$}─┐",
+            "",
+            "",
+            "",
+            width1 = max_key,
+            width2 = max_val,
+            width3 = max_desc
+        )
+    } else {
+        format!(
+            "┌─{:─<width1$}─┬─{:─<width2$}─┐",
+            "",
+            "",
+            width1 = max_key,
+            width2 = max_val
+        )
+    };
     println!("{}{}", indent, c.accent(&border));
 
     print!("{}{}", indent, c.accent("│ "));
@@ -70,18 +105,35 @@ fn draw_key_table_with_indent(
     print!("{}", c.accent(" │ "));
     print!("{}", c.prompt("Value"));
     print!("{}", " ".repeat(max_val.saturating_sub(5)));
+    if has_desc {
+        print!("{}", c.accent(" │ "));
+        print!("{}", c.prompt("Desc"));
+        print!("{}", " ".repeat(max_desc.saturating_sub(4)));
+    }
     println!("{}", c.accent(" │"));
 
-    let sep = format!(
-        "├─{:─<width1$}─┼─{:─<width2$}─┤",
-        "",
-        "",
-        width1 = max_key,
-        width2 = max_val
-    );
+    let sep = if has_desc {
+        format!(
+            "├─{:─<width1$}─┼─{:─<width2$}─┼─{:─<width3$}─┤",
+            "",
+            "",
+            "",
+            width1 = max_key,
+            width2 = max_val,
+            width3 = max_desc
+        )
+    } else {
+        format!(
+            "├─{:─<width1$}─┼─{:─<width2$}─┤",
+            "",
+            "",
+            width1 = max_key,
+            width2 = max_val
+        )
+    };
     println!("{}{}", indent, c.accent(&sep));
 
-    for (key, value) in items {
+    for (key, value, desc) in items {
         print!("{}{}", indent, c.accent("│ "));
         print!("{}", c.key(key));
         let key_padding = max_key.saturating_sub(key.len());
@@ -95,31 +147,53 @@ fn draw_key_table_with_indent(
             if padding > 0 {
                 print!("{}", c.muted(&" ".repeat(padding)));
             }
-            println!("{}", c.accent(" │"));
         } else if value.is_empty() {
             print!("{}", c.commented("(empty)"));
             let padding = max_val.saturating_sub(7);
             if padding > 0 {
                 print!("{}", c.muted(&" ".repeat(padding)));
             }
-            println!("{}", c.accent(" │"));
         } else {
             print!("{}", c.success(value));
             let padding = max_val.saturating_sub(value.len());
             if padding > 0 {
                 print!("{}", c.muted(&" ".repeat(padding)));
             }
-            println!("{}", c.accent(" │"));
         }
+        if has_desc {
+            print!("{}", c.accent(" │ "));
+            if let Some(d) = desc {
+                print!("{}", c.muted(d));
+                let padding = max_desc.saturating_sub(d.len());
+                if padding > 0 {
+                    print!("{}", " ".repeat(padding));
+                }
+            } else {
+                print!("{}", " ".repeat(max_desc));
+            }
+        }
+        println!("{}", c.accent(" │"));
     }
 
-    let bottom = format!(
-        "└─{:─<width1$}─┴─{:─<width2$}─┘",
-        "",
-        "",
-        width1 = max_key,
-        width2 = max_val
-    );
+    let bottom = if has_desc {
+        format!(
+            "└─{:─<width1$}─┴─{:─<width2$}─┴─{:─<width3$}─┘",
+            "",
+            "",
+            "",
+            width1 = max_key,
+            width2 = max_val,
+            width3 = max_desc
+        )
+    } else {
+        format!(
+            "└─{:─<width1$}─┴─{:─<width2$}─┘",
+            "",
+            "",
+            width1 = max_key,
+            width2 = max_val
+        )
+    };
     println!("{}{}", indent, c.accent(&bottom));
 }
 
@@ -131,7 +205,7 @@ fn list_service_scopes(
     let mut scopes: Vec<String> = list_service
         .execute(None)?
         .into_iter()
-        .map(|(name, _)| name)
+        .map(|(name, _, _)| name)
         .filter(|name| name.starts_with(&prefix))
         .collect();
     scopes.sort();
@@ -176,7 +250,7 @@ fn draw_all_service_envs(
     let mut scopes: Vec<String> = list_service
         .execute(None)?
         .into_iter()
-        .map(|(name, _)| name)
+        .map(|(name, _, _)| name)
         .collect();
     scopes.sort();
 
@@ -629,7 +703,8 @@ fn resolve_store() -> anyhow::Result<(FileStore, Option<String>)> {
 fn validate_v2_config(config_path: &Path) -> anyhow::Result<()> {
     let content = fs::read_to_string(config_path)?;
     let value: serde_json::Value = serde_json::from_str(&content)?;
-    if value.get("version").and_then(|v| v.as_str()) != Some("2")
+    let version = value.get("version").and_then(|v| v.as_str()).unwrap_or("");
+    if (version != "2" && version != "3")
         || value
             .get("project_id")
             .and_then(|v| v.as_str())
@@ -808,7 +883,7 @@ fn rotate_project_key(base_path: &Path, remove_member_id: Option<&str>) -> anyho
     Ok(services.len())
 }
 
-pub fn run(cli: Cli) -> anyhow::Result<()> {
+pub async fn run(cli: Cli) -> anyhow::Result<()> {
     let tty = io::stdout().is_terminal();
     let c = Palette::new(tty);
     match cli.command {
@@ -866,6 +941,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Commands::Set {
             service: service_name,
+            desc,
             first,
             second,
             third,
@@ -895,7 +971,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
             )?;
             ensure_default_envs_for_scope(&store, &scope)?;
             let set_service = SetSecretService::new(store);
-            set_service.execute(&scope, &key, &value)?;
+            set_service.execute(&scope, &key, &value, desc.as_deref())?;
             println!(
                 "{} {} {}.{}",
                 c.prefix(),
@@ -967,9 +1043,17 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
                 }
                 GetSelection::Key(scope, key) => {
                     confirm_secret_output(tty, "kagi get", &c)?;
+                    let secret_desc = store
+                        .load(&scope)
+                        .ok()
+                        .and_then(|s| s.get_secret(&key).and_then(|sec| sec.description.clone()));
                     let get_service = GetSecretService::new(store);
                     let value = get_service.execute(&scope, &key)?;
-                    println!("{}", value);
+                    if let Some(desc) = secret_desc {
+                        println!("{} {} = {}", c.muted(&desc), c.key(&key), c.success(&value));
+                    } else {
+                        println!("{}", value);
+                    }
                 }
             }
         }
@@ -1315,24 +1399,6 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
                 }
             }
         }
-        Commands::Join { name } => {
-            let (base_path, _) = resolve_kagi_base()?;
-            let key_manager = KeyManager::new(base_path);
-            let member = key_manager.create_join_request(name)?;
-            println!(
-                "{} {} {}",
-                c.prefix(),
-                c.success("created join request"),
-                c.accent(&member.member_id)
-            );
-            println!("{} {}", c.prefix(), c.muted("Ask an active member to run:"));
-            println!(
-                "  {} {} {}",
-                c.accent("kagi"),
-                c.accent("member approve"),
-                c.key(&member.member_id)
-            );
-        }
         Commands::Member { command } => {
             let (base_path, _) = resolve_kagi_base()?;
             let key_manager = KeyManager::new(base_path.clone());
@@ -1373,6 +1439,22 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
                         }
                     }
                 }
+                MemberCommands::Join { name } => {
+                    let member = key_manager.create_join_request(name)?;
+                    println!(
+                        "{} {} {}",
+                        c.prefix(),
+                        c.success("created join request"),
+                        c.accent(&member.member_id)
+                    );
+                    println!("{} {}", c.prefix(), c.muted("Ask an active member to run:"));
+                    println!(
+                        "  {} {} {}",
+                        c.accent("kagi"),
+                        c.accent("member approve"),
+                        c.key(&member.member_id)
+                    );
+                }
                 MemberCommands::Approve { member_id } => {
                     let member = key_manager.approve_join_request(&member_id)?;
                     println!(
@@ -1382,7 +1464,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
                         c.accent(&member.member_id)
                     );
                 }
-                MemberCommands::Remove { member_id } => {
+                MemberCommands::Del { member_id } => {
                     confirm_member_remove(tty, &member_id, &c)?;
                     let count = rotate_project_key(&base_path, Some(&member_id))?;
                     println!(
@@ -1395,7 +1477,905 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
                 }
             }
         }
+        #[cfg(feature = "server")]
+        Commands::Serve {
+            db,
+            key_file,
+            bind,
+            max_body,
+        } => {
+            let db_path = if db.is_empty() {
+                std::env::current_dir()?.join("kagi.db")
+            } else {
+                PathBuf::from(db)
+            };
+            let key_file_path = if key_file.is_empty() {
+                default_server_key_path()?
+            } else {
+                PathBuf::from(key_file)
+            };
+            let bind_addr: std::net::SocketAddr = bind
+                .parse()
+                .map_err(|e| anyhow::anyhow!("invalid bind address: {}", e))?;
+            let max_body_size = parse_max_body(&max_body);
+
+            println!("kagi: starting server on http://{}", bind_addr);
+            println!("kagi: database: {}", db_path.display());
+            println!("kagi: key file: {}", key_file_path.display());
+            crate::server::serve(bind_addr, &db_path, &key_file_path, max_body_size).await?;
+        }
+        #[cfg(feature = "server")]
+        Commands::Remote { command } => match command {
+            RemoteCommands::Login { remote, token } => {
+                remote_login(&remote, &token, &c).await?;
+            }
+        },
+        #[cfg(feature = "server")]
+        Commands::Project { command } => match command {
+            ProjectCommands::Join { remote } => {
+                project_join_remote(std::env::current_dir()?, &remote, &c).await?;
+            }
+            ProjectCommands::List { remote } => {
+                let remote_url = resolve_admin_remote(remote).await?;
+                project_list_remote(&remote_url, &c).await?;
+            }
+            ProjectCommands::Approve { remote, project_id } => {
+                let remote_url = resolve_admin_remote(remote).await?;
+                project_approve_remote(&remote_url, &project_id, &c).await?;
+            }
+            ProjectCommands::Del { remote, project_id } => {
+                let remote_url = resolve_admin_remote(remote).await?;
+                project_del_remote(&remote_url, &project_id, &c).await?;
+            }
+        },
+        #[cfg(feature = "server")]
+        Commands::Push => {
+            let (base_path, _) = resolve_kagi_base()?;
+            let config_path = base_path.join(crate::domain::config::KAGI_CONFIG_FILE);
+            let config: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(&config_path)?)?;
+            let project_id = config["project_id"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("missing project_id"))?;
+            let remote_url = config["settings"]["sync"]["remote"]
+                .as_str()
+                .ok_or_else(|| {
+                    anyhow::anyhow!("missing remote URL. Run kagi init --remote first.")
+                })?;
+
+            let local_data_dir = local_data_dir()?;
+            let remote_store =
+                crate::infrastructure::remote_local::RemoteLocalStore::new(local_data_dir);
+            let token = remote_store
+                .load_token(project_id)?
+                .ok_or_else(|| anyhow::anyhow!("no project token found"))?;
+            let meta = remote_store
+                .load_remote_metadata(project_id)?
+                .ok_or_else(|| anyhow::anyhow!("no remote metadata found"))?;
+
+            let base_revision = meta.local_revision.unwrap_or(0);
+
+            let store = resolve_store()?.0;
+            let kagi_json = fs::read_to_string(&config_path)?;
+            let access_json = fs::read_to_string(base_path.join("access.json"))
+                .unwrap_or_else(|_| "{}".to_string());
+
+            let mut files = Vec::new();
+            for scope in store.list_services()? {
+                let (file_name, content) = store.raw_service_content(&scope)?;
+                files.push(crate::domain::sync::project_state::ProjectFile {
+                    path: file_name,
+                    content,
+                    sha256: None,
+                });
+            }
+
+            let project_state = crate::domain::sync::project_state::ProjectState {
+                project_id: project_id.to_string(),
+                revision: base_revision,
+                kagi_json,
+                access_json,
+                files,
+            };
+
+            let key_manager = KeyManager::new(base_path);
+            let identity = key_manager.load_or_create_identity()?;
+            let request_id = format!("kgr_{}", nanoid::nanoid!(12));
+            let plaintext = crate::domain::sync::envelope::RequestPlaintext {
+                version: 1,
+                request_id: request_id.clone(),
+                issued_at: time::OffsetDateTime::now_utc()
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .unwrap(),
+                operation: "push".into(),
+                method: "POST".into(),
+                path: format!("/v1/projects/{}/push", project_id),
+                project_id: Some(project_id.to_string()),
+                token: Some(token),
+                claim_secret: None,
+                payload: serde_json::json!({
+                    "base_revision": base_revision,
+                    "state": project_state,
+                }),
+            };
+
+            let client = crate::infrastructure::remote_client::RemoteClient::new_pinned(
+                remote_url.to_string(),
+                &meta.server_fingerprint,
+            )
+            .await?;
+            let data = client.send_request(&plaintext, &identity).await?;
+            let new_revision = data["revision"].as_i64().unwrap_or(base_revision + 1);
+
+            remote_store.save_remote_metadata(
+                &crate::domain::sync::remote_config::RemoteMetadata {
+                    version: 1,
+                    project_id: project_id.to_string(),
+                    remote: remote_url.to_string(),
+                    server_key_id: meta.server_key_id.clone(),
+                    server_fingerprint: meta.server_fingerprint.clone(),
+                    local_revision: Some(new_revision),
+                    last_pulled_at: meta.last_pulled_at,
+                    last_pushed_at: Some(
+                        time::OffsetDateTime::now_utc()
+                            .format(&time::format_description::well_known::Rfc3339)
+                            .unwrap(),
+                    ),
+                },
+            )?;
+
+            println!(
+                "{} {} revision {}",
+                c.prefix(),
+                c.success("pushed"),
+                c.accent(&new_revision.to_string())
+            );
+        }
+        #[cfg(feature = "server")]
+        Commands::Pull { token } => {
+            if let Some(token_str) = token {
+                pull_with_token(&token_str, &c).await?;
+            } else {
+                let (base_path, _) = resolve_kagi_base()?;
+                let config_path = base_path.join(crate::domain::config::KAGI_CONFIG_FILE);
+                let config: serde_json::Value =
+                    serde_json::from_str(&fs::read_to_string(&config_path)?)?;
+                let project_id = config["project_id"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("missing project_id"))?;
+                let remote_url = config["settings"]["sync"]["remote"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("missing remote URL"))?;
+
+                let local_data_dir = local_data_dir()?;
+                let remote_store =
+                    crate::infrastructure::remote_local::RemoteLocalStore::new(local_data_dir);
+                let meta = remote_store
+                    .load_remote_metadata(project_id)?
+                    .ok_or_else(|| anyhow::anyhow!("no remote metadata found"))?;
+
+                let key_manager = KeyManager::new(base_path.clone());
+                let identity = key_manager.load_or_create_identity()?;
+                let member_id = key_manager.member_id()?;
+                let request_id = format!("kgr_{}", nanoid::nanoid!(12));
+
+                let token = match remote_store.load_token(project_id)? {
+                    Some(t) => t,
+                    None => {
+                        let claim_secret =
+                            remote_store.load_claim_secret(project_id)?.ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "no claim secret found; run `kagi project join` first"
+                                )
+                            })?;
+                        let claim_plaintext = crate::domain::sync::envelope::RequestPlaintext {
+                            version: 1,
+                            request_id: request_id.clone(),
+                            issued_at: time::OffsetDateTime::now_utc()
+                                .format(&time::format_description::well_known::Rfc3339)
+                                .unwrap(),
+                            operation: "pull".into(),
+                            method: "POST".into(),
+                            path: format!("/v1/projects/{}/pull", project_id),
+                            project_id: Some(project_id.to_string()),
+                            token: None,
+                            claim_secret: Some(claim_secret.clone()),
+                            payload: serde_json::json!({
+                                "member_id": member_id,
+                            }),
+                        };
+                        let client =
+                            crate::infrastructure::remote_client::RemoteClient::new_pinned(
+                                remote_url.to_string(),
+                                &meta.server_fingerprint,
+                            )
+                            .await?;
+                        let data = client.send_request(&claim_plaintext, &identity).await?;
+                        if let Some(wrapped_b64) =
+                            data.get("wrapped_project_token").and_then(|v| v.as_str())
+                        {
+                            let wrapped = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                                .decode(wrapped_b64)
+                                .map_err(|e| anyhow::anyhow!("invalid wrapped token: {}", e))?;
+                            let decrypted = crate::infrastructure::remote_envelope::decrypt_bytes(
+                                &wrapped, &identity,
+                            )
+                            .map_err(|e| {
+                                anyhow::anyhow!("failed to decrypt wrapped token: {}", e)
+                            })?;
+                            let token = String::from_utf8(decrypted)
+                                .map_err(|e| anyhow::anyhow!("invalid token: {}", e))?;
+                            // Validate token format before using it
+                            let _parsed =
+                                crate::domain::sync::project_token::ProjectToken::parse(&token)
+                                    .ok_or_else(|| {
+                                        anyhow::anyhow!("token from server is malformed")
+                                    })?;
+                            token
+                        } else {
+                            return Err(anyhow::anyhow!(
+                                "no project token available; run `kagi project join` first or ask admin to approve"
+                            ));
+                        }
+                    }
+                };
+
+                let known_revision = meta.local_revision.unwrap_or(0);
+                let plaintext = crate::domain::sync::envelope::RequestPlaintext {
+                    version: 1,
+                    request_id: request_id.clone(),
+                    issued_at: time::OffsetDateTime::now_utc()
+                        .format(&time::format_description::well_known::Rfc3339)
+                        .unwrap(),
+                    operation: "pull".into(),
+                    method: "POST".into(),
+                    path: format!("/v1/projects/{}/pull", project_id),
+                    project_id: Some(project_id.to_string()),
+                    token: Some(token.clone()),
+                    claim_secret: None,
+                    payload: serde_json::json!({ "known_revision": known_revision }),
+                };
+                let client = crate::infrastructure::remote_client::RemoteClient::new_pinned(
+                    remote_url.to_string(),
+                    &meta.server_fingerprint,
+                )
+                .await?;
+                let data = client.send_request(&plaintext, &identity).await?;
+                let remote_revision = data["revision"].as_i64().unwrap_or(0);
+                let state = data["state"].clone();
+
+                apply_pulled_state(&base_path, &state)?;
+
+                // Only save token after authenticated pull succeeds
+                remote_store.save_token(project_id, &token)?;
+                remote_store.delete_claim_secret(project_id)?;
+
+                remote_store.save_remote_metadata(
+                    &crate::domain::sync::remote_config::RemoteMetadata {
+                        version: 1,
+                        project_id: project_id.to_string(),
+                        remote: remote_url.to_string(),
+                        server_key_id: meta.server_key_id.clone(),
+                        server_fingerprint: meta.server_fingerprint.clone(),
+                        local_revision: Some(remote_revision),
+                        last_pulled_at: Some(
+                            time::OffsetDateTime::now_utc()
+                                .format(&time::format_description::well_known::Rfc3339)
+                                .unwrap(),
+                        ),
+                        last_pushed_at: meta.last_pushed_at,
+                    },
+                )?;
+
+                println!(
+                    "{} {} revision {}",
+                    c.prefix(),
+                    c.success("pulled"),
+                    c.accent(&remote_revision.to_string())
+                );
+            }
+        }
+        #[cfg(feature = "server")]
+        Commands::Status => {
+            let (base_path, _) = resolve_kagi_base()?;
+            let config_path = base_path.join(crate::domain::config::KAGI_CONFIG_FILE);
+            let config: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(&config_path)?)?;
+            let project_id = config["project_id"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("missing project_id"))?;
+            let remote_url = config["settings"]["sync"]["remote"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("missing remote URL"))?;
+
+            let local_data_dir = local_data_dir()?;
+            let remote_store =
+                crate::infrastructure::remote_local::RemoteLocalStore::new(local_data_dir);
+            let token = remote_store
+                .load_token(project_id)?
+                .ok_or_else(|| anyhow::anyhow!("no project token found"))?;
+            let meta = remote_store
+                .load_remote_metadata(project_id)?
+                .ok_or_else(|| anyhow::anyhow!("no remote metadata found"))?;
+
+            let local_revision = meta.local_revision.unwrap_or(0);
+
+            let key_manager = KeyManager::new(base_path);
+            let identity = key_manager.load_or_create_identity()?;
+            let request_id = format!("kgr_{}", nanoid::nanoid!(12));
+            let plaintext = crate::domain::sync::envelope::RequestPlaintext {
+                version: 1,
+                request_id: request_id.clone(),
+                issued_at: time::OffsetDateTime::now_utc()
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .unwrap(),
+                operation: "status".into(),
+                method: "POST".into(),
+                path: format!("/v1/projects/{}/status", project_id),
+                project_id: Some(project_id.to_string()),
+                token: Some(token),
+                claim_secret: None,
+                payload: serde_json::json!({ "local_revision": local_revision }),
+            };
+
+            let client = crate::infrastructure::remote_client::RemoteClient::new_pinned(
+                remote_url.to_string(),
+                &meta.server_fingerprint,
+            )
+            .await?;
+            let data = client.send_request(&plaintext, &identity).await?;
+            let remote_revision = data["remote_revision"].as_i64().unwrap_or(0);
+            let state_str = data["state"].as_str().unwrap_or("unknown");
+            let pending_joins = data["pending_join_count"].as_i64().unwrap_or(0);
+
+            println!(
+                "{} {} local={} remote={}",
+                c.prefix(),
+                c.info(state_str),
+                c.accent(&local_revision.to_string()),
+                c.accent(&remote_revision.to_string())
+            );
+            if pending_joins > 0 {
+                println!(
+                    "{} {} pending join request(s)",
+                    c.prefix(),
+                    c.warning(&pending_joins.to_string())
+                );
+            }
+        }
     }
+    Ok(())
+}
+
+#[cfg(feature = "server")]
+fn parse_max_body(s: &str) -> usize {
+    let s = s.to_lowercase();
+    if s.ends_with("mb") {
+        s.trim_end_matches("mb").parse::<usize>().unwrap_or(10) * 1024 * 1024
+    } else if s.ends_with("kb") {
+        s.trim_end_matches("kb").parse::<usize>().unwrap_or(10) * 1024
+    } else {
+        s.parse::<usize>().unwrap_or(10 * 1024 * 1024)
+    }
+}
+
+#[cfg(feature = "server")]
+fn default_server_key_path() -> anyhow::Result<PathBuf> {
+    let base = local_data_dir()?;
+    Ok(base.join("server/server.key.json"))
+}
+
+#[cfg(feature = "server")]
+fn local_data_dir() -> anyhow::Result<PathBuf> {
+    #[cfg(test)]
+    {
+        Ok(std::env::temp_dir().join("kagi-tests"))
+    }
+    #[cfg(not(test))]
+    {
+        if let Ok(path) = std::env::var("KAGI_HOME") {
+            return Ok(PathBuf::from(path));
+        }
+        directories::ProjectDirs::from("dev", "kagi", "kagi")
+            .map(|dirs| dirs.data_dir().to_path_buf())
+            .ok_or_else(|| anyhow::anyhow!("failed to resolve local data directory"))
+    }
+}
+
+#[cfg(feature = "server")]
+fn apply_pulled_state(base_path: &Path, state: &serde_json::Value) -> anyhow::Result<()> {
+    let project_state: crate::domain::sync::project_state::ProjectState =
+        serde_json::from_value(state.clone())?;
+    for file in &project_state.files {
+        crate::domain::sync::project_state::validate_file_path(&file.path)
+            .map_err(|err| anyhow::anyhow!("invalid remote file path {}: {}", file.path, err))?;
+    }
+
+    let kagi_json_empty = serde_json::from_str::<serde_json::Value>(&project_state.kagi_json)
+        .map(|v| v.as_object().map(|o| o.is_empty()).unwrap_or(false))
+        .unwrap_or(false);
+    let access_json_empty = serde_json::from_str::<serde_json::Value>(&project_state.access_json)
+        .map(|v| v.as_object().map(|o| o.is_empty()).unwrap_or(false))
+        .unwrap_or(false);
+    let is_empty_remote = project_state.revision == 0
+        && kagi_json_empty
+        && access_json_empty
+        && project_state.files.is_empty();
+
+    if is_empty_remote {
+        let local_kagi = base_path.join("kagi.json");
+        let local_access = base_path.join("access.json");
+        if local_kagi.exists() && local_access.exists() {
+            // Server has empty initial state; keep local files.
+        } else {
+            return Err(anyhow::anyhow!(
+                "remote project is empty; run `kagi init` first, or ask the owner to push first"
+            ));
+        }
+    } else {
+        atomic_write(&base_path.join("kagi.json"), &project_state.kagi_json)?;
+        atomic_write(&base_path.join("access.json"), &project_state.access_json)?;
+    }
+
+    for file in project_state.files {
+        let file_path = base_path.join(&file.path);
+        fs::create_dir_all(file_path.parent().unwrap())?;
+        atomic_write(&file_path, &file.content)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "server")]
+async fn pull_with_token(token_str: &str, c: &Palette) -> anyhow::Result<()> {
+    let token = crate::domain::sync::project_token::ProjectToken::parse(token_str)
+        .ok_or_else(|| anyhow::anyhow!("invalid project token"))?;
+    let remote_url = token.payload.remote.clone();
+    let project_id = token.payload.project_id.clone();
+
+    let key_manager = KeyManager::new(std::env::current_dir()?.join(".kagi"));
+    let identity = key_manager.load_or_create_identity()?;
+    let request_id = format!("kgr_{}", nanoid::nanoid!(12));
+    let plaintext = crate::domain::sync::envelope::RequestPlaintext {
+        version: 1,
+        request_id: request_id.clone(),
+        issued_at: time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap(),
+        operation: "pull".into(),
+        method: "POST".into(),
+        path: format!("/v1/projects/{}/pull", project_id),
+        project_id: Some(project_id.clone()),
+        token: Some(token_str.to_string()),
+        claim_secret: None,
+        payload: serde_json::json!({ "known_revision": 0 }),
+    };
+
+    let remote_client = crate::infrastructure::remote_client::RemoteClient::new_pinned(
+        remote_url.to_string(),
+        &token.payload.server_fingerprint,
+    )
+    .await?;
+    let data = remote_client.send_request(&plaintext, &identity).await?;
+    let remote_revision = data["revision"].as_i64().unwrap_or(0);
+    let state = data["state"].clone();
+
+    let base_path = std::env::current_dir()?.join(".kagi");
+    apply_pulled_state(&base_path, &state)?;
+
+    let local_data_dir = local_data_dir()?;
+    let remote_store = crate::infrastructure::remote_local::RemoteLocalStore::new(local_data_dir);
+    remote_store.save_token(&project_id, token_str)?;
+    remote_store.save_remote_metadata(&crate::domain::sync::remote_config::RemoteMetadata {
+        version: 1,
+        project_id: project_id.clone(),
+        remote: remote_url.to_string(),
+        server_key_id: remote_client.server_key_id().to_string(),
+        server_fingerprint: remote_client.fingerprint().to_string(),
+        local_revision: Some(remote_revision),
+        last_pulled_at: Some(
+            time::OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap(),
+        ),
+        last_pushed_at: None,
+    })?;
+
+    println!(
+        "{} {} revision {}",
+        c.prefix(),
+        c.success("pulled"),
+        c.accent(&remote_revision.to_string())
+    );
+    Ok(())
+}
+
+#[cfg(feature = "server")]
+fn resolve_admin_token(fingerprint: &str) -> anyhow::Result<String> {
+    if let Ok(token) = std::env::var("KAGI_ADMIN_TOKEN") {
+        validate_admin_token_for_fingerprint(&token, fingerprint)?;
+        return Ok(token);
+    }
+    let entry =
+        crate::infrastructure::key_manager::keyring_admin_entry(fingerprint).map_err(|e| {
+            anyhow::anyhow!(
+                "keyring unavailable: {}. admin token requires OS keychain.",
+                e
+            )
+        })?;
+    match entry.get_password() {
+        Ok(token) => {
+            validate_admin_token_for_fingerprint(&token, fingerprint)?;
+            Ok(token)
+        }
+        Err(_) => Err(anyhow::anyhow!(
+            "admin token not found for server {}. Run `kagi remote login --remote <url> --token <token>` or set KAGI_ADMIN_TOKEN.",
+            fingerprint
+        )),
+    }
+}
+
+#[cfg(feature = "server")]
+fn validate_admin_token_for_fingerprint(token: &str, fingerprint: &str) -> anyhow::Result<()> {
+    let parsed = crate::domain::sync::project_token::ProjectToken::parse(token)
+        .ok_or_else(|| anyhow::anyhow!("invalid admin token"))?;
+    if !token.starts_with("kagi_admin_v1_")
+        || parsed.payload.project_id != "admin"
+        || !parsed
+            .payload
+            .capabilities
+            .iter()
+            .any(|capability| capability == "admin")
+    {
+        return Err(anyhow::anyhow!("invalid admin token"));
+    }
+    if parsed.payload.server_fingerprint != fingerprint {
+        return Err(anyhow::anyhow!(
+            "admin token belongs to server {}, but remote fingerprint is {}",
+            parsed.payload.server_fingerprint,
+            fingerprint
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "server")]
+async fn remote_login(remote_url: &str, token: &str, c: &Palette) -> anyhow::Result<()> {
+    let remote_client =
+        crate::infrastructure::remote_client::RemoteClient::new(remote_url.to_string())
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to connect to remote: {}", e))?;
+    let fingerprint = remote_client.fingerprint();
+    validate_admin_token_for_fingerprint(token, fingerprint)?;
+    let entry =
+        crate::infrastructure::key_manager::keyring_admin_entry(fingerprint).map_err(|e| {
+            anyhow::anyhow!(
+                "keyring unavailable: {}. admin token requires OS keychain.",
+                e
+            )
+        })?;
+    entry
+        .set_password(token)
+        .map_err(|e| anyhow::anyhow!("failed to save admin token to keyring: {}", e))?;
+
+    let local_data_dir = local_data_dir()?;
+    let remote_store = crate::infrastructure::remote_local::RemoteLocalStore::new(local_data_dir);
+    remote_store
+        .save_admin_remote(fingerprint, remote_url)
+        .map_err(|e| anyhow::anyhow!("failed to save admin remote config: {}", e))?;
+
+    println!(
+        "{} admin token saved for server {} ({})",
+        c.success("ok"),
+        c.accent(fingerprint),
+        c.muted(remote_url)
+    );
+    Ok(())
+}
+
+#[cfg(feature = "server")]
+async fn resolve_admin_remote(remote: Option<String>) -> anyhow::Result<String> {
+    if let Some(url) = remote {
+        return Ok(url);
+    }
+    let local_data_dir = local_data_dir()?;
+    let admins_dir = local_data_dir.join("admins");
+    let remote_store = crate::infrastructure::remote_local::RemoteLocalStore::new(local_data_dir);
+    if !admins_dir.exists() {
+        return Err(anyhow::anyhow!(
+            "no saved admin remote found. Run `kagi remote login --remote <url> --token <token>` first, or pass --remote."
+        ));
+    }
+    let mut found = None;
+    for entry in fs::read_dir(&admins_dir)? {
+        let entry = entry?;
+        let fingerprint = entry.file_name().to_string_lossy().to_string();
+        if let Some(remote) = remote_store.load_admin_remote(&fingerprint)? {
+            found = Some(remote);
+            break;
+        }
+    }
+    found.ok_or_else(|| {
+        anyhow::anyhow!(
+            "no saved admin remote found. Run `kagi remote login --remote <url> --token <token>` first, or pass --remote."
+        )
+    })
+}
+
+#[cfg(feature = "server")]
+async fn project_join_remote(cwd: PathBuf, remote_url: &str, c: &Palette) -> anyhow::Result<()> {
+    let local = cwd.join(".kagi");
+    if !local.is_dir() {
+        return Err(anyhow::anyhow!(
+            "no .kagi/ directory found. Run `kagi init` first."
+        ));
+    }
+
+    let config_path = local.join(crate::domain::config::KAGI_CONFIG_FILE);
+    let mut config: serde_json::Value = serde_json::from_str(&fs::read_to_string(&config_path)?)?;
+    let existing_project_id = config["project_id"].as_str().map(|s| s.to_string());
+
+    let key_manager = KeyManager::new(local.clone());
+    let identity = key_manager.load_or_create_identity()?;
+    let recipient = identity.to_public();
+    let name = default_member_name();
+    let member_id = key_manager.member_id()?;
+
+    let remote_client =
+        crate::infrastructure::remote_client::RemoteClient::new(remote_url.to_string()).await?;
+
+    let claim_secret = format!("kgs_{}", nanoid::nanoid!(24));
+    let claim_secret_hash = {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(claim_secret.as_bytes());
+        format!("cs:{}", base64_encode_url(&hasher.finalize()))
+    };
+
+    let request_id = format!("kgr_{}", nanoid::nanoid!(12));
+    let plaintext = crate::domain::sync::envelope::RequestPlaintext {
+        version: 1,
+        request_id: request_id.clone(),
+        issued_at: time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap(),
+        operation: "create_project_request".into(),
+        method: "POST".into(),
+        path: "/v1/projects/requests".into(),
+        project_id: existing_project_id.clone(),
+        token: None,
+        claim_secret: None,
+        payload: serde_json::json!({
+            "requester_member_id": member_id,
+            "requester_name": name,
+            "requester_recipient": recipient.to_string(),
+            "claim_secret_hash": claim_secret_hash,
+        }),
+    };
+
+    let data = remote_client.send_request(&plaintext, &identity).await?;
+    let project_id = data["project_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing project_id in response"))?;
+
+    config["settings"]["sync"]["mode"] = serde_json::Value::String("server".to_string());
+    config["settings"]["sync"]["remote"] = serde_json::Value::String(remote_url.to_string());
+    if existing_project_id.is_none() {
+        config["project_id"] = serde_json::Value::String(project_id.to_string());
+    }
+    fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
+
+    let local_data_dir = local_data_dir()?;
+    let remote_store = crate::infrastructure::remote_local::RemoteLocalStore::new(local_data_dir);
+
+    let client = reqwest::Client::new();
+    let server_key: crate::domain::sync::remote_config::ServerKeyResponse = client
+        .get(format!(
+            "{}/v1/server-key",
+            remote_url.trim_end_matches('/')
+        ))
+        .send()
+        .await?
+        .json()
+        .await?;
+
+    remote_store.save_remote_metadata(&crate::domain::sync::remote_config::RemoteMetadata {
+        version: 1,
+        project_id: project_id.to_string(),
+        remote: remote_url.to_string(),
+        server_key_id: server_key.server_key_id.clone(),
+        server_fingerprint: server_key.fingerprint.clone(),
+        local_revision: Some(0),
+        last_pulled_at: None,
+        last_pushed_at: None,
+    })?;
+    remote_store.save_claim_secret(project_id, &claim_secret)?;
+
+    println!(
+        "{} {} {}. {}",
+        c.prefix(),
+        c.success("Requested project"),
+        c.accent(project_id),
+        c.muted("Waiting for admin approval.")
+    );
+    Ok(())
+}
+
+#[cfg(feature = "server")]
+async fn project_list_remote(remote_url: &str, c: &Palette) -> anyhow::Result<()> {
+    let remote_client =
+        crate::infrastructure::remote_client::RemoteClient::new(remote_url.to_string()).await?;
+    let token = resolve_admin_token(remote_client.fingerprint())?;
+
+    let identity = {
+        let key_manager = KeyManager::new(std::env::current_dir()?.join(".kagi"));
+        key_manager.load_or_create_identity()?
+    };
+
+    // 1. Fetch pending requests
+    let request_id = format!("kgr_{}", nanoid::nanoid!(12));
+    let requests_plaintext = crate::domain::sync::envelope::RequestPlaintext {
+        version: 1,
+        request_id: request_id.clone(),
+        issued_at: time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap(),
+        operation: "list_project_requests".into(),
+        method: "POST".into(),
+        path: "/v1/projects/requests/list".into(),
+        project_id: Some("admin".into()),
+        token: Some(token.clone()),
+        claim_secret: None,
+        payload: serde_json::json!({}),
+    };
+    let requests_data = remote_client
+        .send_request(&requests_plaintext, &identity)
+        .await?;
+    let empty = Vec::new();
+    let requests = requests_data["requests"].as_array().unwrap_or(&empty);
+
+    // 2. Fetch active projects
+    let request_id = format!("kgr_{}", nanoid::nanoid!(12));
+    let projects_plaintext = crate::domain::sync::envelope::RequestPlaintext {
+        version: 1,
+        request_id: request_id.clone(),
+        issued_at: time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap(),
+        operation: "list_projects".into(),
+        method: "POST".into(),
+        path: "/v1/projects/list".into(),
+        project_id: Some("admin".into()),
+        token: Some(token),
+        claim_secret: None,
+        payload: serde_json::json!({}),
+    };
+    let projects_data = remote_client
+        .send_request(&projects_plaintext, &identity)
+        .await?;
+    let projects = projects_data["projects"].as_array().unwrap_or(&empty);
+
+    if requests.is_empty() && projects.is_empty() {
+        println!(
+            "{} {}",
+            c.prefix(),
+            c.muted("No projects or pending requests found.")
+        );
+        return Ok(());
+    }
+
+    if !requests.is_empty() {
+        println!("{} {}", c.prefix(), c.warning("Pending requests:"));
+        for r in requests {
+            let id = r["project_id"].as_str().unwrap_or("unknown");
+            let name = r["requester_name"].as_str().unwrap_or("");
+            let created_at = r["created_at"].as_str().unwrap_or("");
+            println!(
+                "  {}  {}  {}",
+                c.accent(id),
+                c.muted(&format!("by {}", name)),
+                c.muted(created_at)
+            );
+        }
+    }
+
+    if !projects.is_empty() {
+        println!("{} {}", c.prefix(), c.muted("Active projects:"));
+        for p in projects {
+            let id = p["project_id"].as_str().unwrap_or("unknown");
+            let revision = p["revision"].as_i64().unwrap_or(0);
+            let created_at = p["created_at"].as_str().unwrap_or("");
+            println!(
+                "  {}  rev={}  created={}",
+                c.accent(id),
+                revision,
+                created_at
+            );
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "server")]
+async fn project_approve_remote(
+    remote_url: &str,
+    project_id: &str,
+    c: &Palette,
+) -> anyhow::Result<()> {
+    let remote_client =
+        crate::infrastructure::remote_client::RemoteClient::new(remote_url.to_string()).await?;
+    let token = resolve_admin_token(remote_client.fingerprint())?;
+
+    let request_id = format!("kgr_{}", nanoid::nanoid!(12));
+    let plaintext = crate::domain::sync::envelope::RequestPlaintext {
+        version: 1,
+        request_id: request_id.clone(),
+        issued_at: time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap(),
+        operation: "approve_project_request".into(),
+        method: "POST".into(),
+        path: format!("/v1/projects/requests/{}/approve", project_id),
+        project_id: Some("admin".into()),
+        token: Some(token),
+        claim_secret: None,
+        payload: serde_json::json!({ "remote": remote_url }),
+    };
+
+    let identity = {
+        let key_manager = KeyManager::new(std::env::current_dir()?.join(".kagi"));
+        key_manager.load_or_create_identity()?
+    };
+
+    let data = remote_client.send_request(&plaintext, &identity).await?;
+    let approved_project_id = data["project_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing project_id in response"))?;
+
+    println!(
+        "{} {} {}",
+        c.prefix(),
+        c.success("Approved project"),
+        c.accent(approved_project_id),
+    );
+    Ok(())
+}
+
+#[cfg(feature = "server")]
+async fn project_del_remote(remote_url: &str, project_id: &str, c: &Palette) -> anyhow::Result<()> {
+    let remote_client =
+        crate::infrastructure::remote_client::RemoteClient::new(remote_url.to_string()).await?;
+    let token = resolve_admin_token(remote_client.fingerprint())?;
+
+    let request_id = format!("kgr_{}", nanoid::nanoid!(12));
+    let plaintext = crate::domain::sync::envelope::RequestPlaintext {
+        version: 1,
+        request_id: request_id.clone(),
+        issued_at: time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap(),
+        operation: "delete_project".into(),
+        method: "POST".into(),
+        path: format!("/v1/projects/{}/delete", project_id),
+        project_id: Some(project_id.into()),
+        token: Some(token),
+        claim_secret: None,
+        payload: serde_json::json!({}),
+    };
+
+    let identity = {
+        let key_manager = KeyManager::new(std::env::current_dir()?.join(".kagi"));
+        key_manager.load_or_create_identity()?
+    };
+
+    remote_client.send_request(&plaintext, &identity).await?;
+
+    println!(
+        "{} {} {}",
+        c.prefix(),
+        c.success("Deleted project"),
+        c.accent(project_id)
+    );
     Ok(())
 }
 
@@ -1417,6 +2397,114 @@ mod tests {
         assert_eq!(env_file_name("api/production").unwrap(), ".env.production");
         assert_eq!(env_file_name("api/test").unwrap(), ".env.test");
         assert_eq!(env_file_name("api/staging").unwrap(), ".env.staging");
+    }
+
+    #[test]
+    #[cfg(feature = "server")]
+    fn test_validate_admin_token_matches_server_fingerprint() {
+        let token =
+            crate::domain::sync::project_token::ProjectToken::generate_admin_token("kgs_ok".into());
+
+        validate_admin_token_for_fingerprint(&token.full_token, "kgs_ok").unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "server")]
+    fn test_validate_admin_token_rejects_wrong_server_fingerprint() {
+        let token =
+            crate::domain::sync::project_token::ProjectToken::generate_admin_token("kgs_ok".into());
+
+        let err = validate_admin_token_for_fingerprint(&token.full_token, "kgs_other").unwrap_err();
+        assert!(err.to_string().contains("admin token belongs to server"));
+    }
+
+    #[test]
+    #[cfg(feature = "server")]
+    fn test_validate_admin_token_rejects_project_token() {
+        let token = crate::domain::sync::project_token::ProjectToken::generate(
+            "http://localhost:13816".into(),
+            "kgp_test".into(),
+            "kgs_ok".into(),
+            vec!["pull".into()],
+        );
+
+        let err = validate_admin_token_for_fingerprint(&token.full_token, "kgs_ok").unwrap_err();
+        assert!(err.to_string().contains("invalid admin token"));
+    }
+
+    #[test]
+    #[cfg(feature = "server")]
+    fn test_apply_pulled_state_rejects_path_escape() {
+        let dir = TempDir::new().unwrap();
+        let base = dir.path().join(".kagi");
+        fs::create_dir(&base).unwrap();
+        let state = serde_json::json!({
+            "project_id": "kgp_test",
+            "revision": 1,
+            "kagi_json": "{}",
+            "access_json": "{}",
+            "files": [
+                {
+                    "path": "../outside.enc",
+                    "content": "{}"
+                }
+            ]
+        });
+
+        let err = apply_pulled_state(&base, &state).unwrap_err();
+        assert!(err.to_string().contains("invalid remote file path"));
+        assert!(!dir.path().join("outside.enc").exists());
+    }
+
+    #[test]
+    #[cfg(feature = "server")]
+    fn test_apply_pulled_state_preserves_local_on_empty_remote() {
+        let dir = TempDir::new().unwrap();
+        let base = dir.path().join(".kagi");
+        fs::create_dir(&base).unwrap();
+        fs::write(base.join("kagi.json"), "{\"project_id\":\"kgp_test\"}").unwrap();
+        fs::write(base.join("access.json"), "{\"members\":[]}").unwrap();
+
+        let state = serde_json::json!({
+            "project_id": "kgp_test",
+            "revision": 0,
+            "kagi_json": "{}",
+            "access_json": "{}",
+            "files": []
+        });
+
+        apply_pulled_state(&base, &state).unwrap();
+        assert_eq!(
+            fs::read_to_string(base.join("kagi.json")).unwrap(),
+            "{\"project_id\":\"kgp_test\"}"
+        );
+        assert_eq!(
+            fs::read_to_string(base.join("access.json")).unwrap(),
+            "{\"members\":[]}"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "server")]
+    fn test_apply_pulled_state_fails_when_local_missing() {
+        let dir = TempDir::new().unwrap();
+        let base = dir.path().join(".kagi");
+        fs::create_dir(&base).unwrap();
+
+        let state = serde_json::json!({
+            "project_id": "kgp_test",
+            "revision": 0,
+            "kagi_json": "{}",
+            "access_json": "{}",
+            "files": []
+        });
+
+        let err = apply_pulled_state(&base, &state).unwrap_err();
+        assert!(
+            err.to_string().contains("remote project is empty"),
+            "expected error about empty remote, got: {}",
+            err
+        );
     }
 
     #[test]
