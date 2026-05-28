@@ -49,20 +49,38 @@ cargo install --path .
 cargo install --path . --no-default-features
 ```
 
-### Optional Codex skill
+### Optional Codex / OpenCode skill
 
-This repository includes a Codex skill for agents that help users operate kagi
-projects safely:
+This repository includes a skill for agents that help users operate kagi
+projects safely. The skill files live in `skills/kagi/SKILL.md` and are
+registered via `skills.sh.json` on the [skills.sh](https://skills.sh) directory.
+
+#### Install with skills.sh
+
+Use the [skills.sh](https://skills.sh) CLI (requires Node.js / npx):
 
 ```bash
-./skills.sh install
+npx skills add BANG88/kagi
 ```
 
-The installer copies `skills/*` into `${CODEX_HOME:-$HOME/.codex}/skills`.
-If a local copy already exists, replace it explicitly:
+This copies the skill into the agent's skills directory. To force reinstall:
 
 ```bash
-./skills.sh install --force kagi
+npx skills add BANG88/kagi --force
+```
+
+#### Manual install
+
+If you prefer not to use `npx skills`, copy the skill files manually:
+
+```bash
+# For OpenCode
+mkdir -p ~/.config/opencode/skills/kagi
+cp skills/kagi/SKILL.md ~/.config/opencode/skills/kagi/
+
+# For Codex (legacy)
+mkdir -p ${CODEX_HOME:-$HOME/.codex}/skills/kagi
+cp skills/kagi/SKILL.md ${CODEX_HOME:-$HOME/.codex}/skills/kagi/
 ```
 
 ---
