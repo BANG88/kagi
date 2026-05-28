@@ -1,7 +1,9 @@
 {
+  "$schema": "https://skills.sh/schemas/skills.sh.schema.json",
   "groupings": [
     {
       "title": "Kagi",
+      "description": "Work safely with encrypted environment variables and secrets management",
       "skills": ["kagi"]
     }
   ],

@@ -1,5 +1,7 @@
 # kagi
 
+[![skills.sh](https://skills.sh/b/BANG88/kagi)](https://skills.sh/BANG88/kagi)
+
 ![kagi README banner](docs/kagi-readme-banner.png)
 
 A secure, team-ready CLI for managing encrypted secrets and environment variables — a drop-in replacement for `.env` files with per-service isolation and team sharing.
