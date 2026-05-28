@@ -1,6 +1,6 @@
 [package]
 name = "kagi-vault"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Encrypted secrets and environment variable manager for teams — a secure, team-ready dotenv alternative with per-service isolation"
 license = "MIT"
