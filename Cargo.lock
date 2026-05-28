@@ -2561,7 +2561,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "kagi"
+name = "kagi-vault"
 version = "0.1.0"
 dependencies = [
  "age",

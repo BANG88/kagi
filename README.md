@@ -22,14 +22,14 @@ A CLI tool for managing encrypted environment variables with per-service isolati
 
 ## Installation
 
-### From Git
+### From crates.io
 
 ```bash
 # Default: includes the remote sync server
-cargo install --git https://github.com/BANG88/kagi.git
+cargo install kagi-vault
 
 # CLI-only: excludes server code and server-related commands
-cargo install --git https://github.com/BANG88/kagi.git --no-default-features
+cargo install kagi-vault --no-default-features
 ```
 
 Requires Rust 1.85+ (2024 edition).

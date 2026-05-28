@@ -48,13 +48,13 @@ server (default)   — include the Axum server, SQLx migrations, and rate limiti
 Install CLI only (faster compile, smaller binary):
 
 ```bash
-cargo install kagi --no-default-features
+cargo install kagi-vault --no-default-features
 ```
 
 Install full binary with server:
 
 ```bash
-cargo install kagi
+cargo install kagi-vault
 ```
 
 Server-only dependencies (`axum`, `tower`, `tower-http`, `tower_governor`,
@@ -105,8 +105,8 @@ and `kagi pull` remain normal CLI commands. Do not create a separate user-facing
 This keeps install and version management simple:
 
 ```bash
-cargo install kagi          # full binary with server
-cargo install kagi --no-default-features  # CLI only
+cargo install kagi-vault          # full binary with server
+cargo install kagi-vault --no-default-features  # CLI only
 kagi serve
 kagi project join --remote http://127.0.0.1:8787
 ```

@@ -1,5 +1,5 @@
 [package]
-name = "kagi"
+name = "kagi-vault"
 version = "0.1.0"
 edition = "2024"
 description = "A small Rust CLI for encrypted environment variables"
@@ -8,6 +8,10 @@ repository = "https://github.com/BANG88/kagi"
 readme = "README.md"
 keywords = ["cli", "env", "secrets", "encryption"]
 categories = ["command-line-utilities", "config"]
+
+[[bin]]
+name = "kagi"
+path = "src/main.rs"
 
 [features]
 default = ["server"]
