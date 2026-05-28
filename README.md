@@ -47,6 +47,22 @@ cargo install --path .
 cargo install --path . --no-default-features
 ```
 
+### Optional Codex skill
+
+This repository includes a Codex skill for agents that help users operate kagi
+projects safely:
+
+```bash
+./skills.sh install
+```
+
+The installer copies `skills/*` into `${CODEX_HOME:-$HOME/.codex}/skills`.
+If a local copy already exists, replace it explicitly:
+
+```bash
+./skills.sh install --force kagi
+```
+
 ---
 
 ## Daily Development
