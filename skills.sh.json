@@ -1,0 +1,9 @@
+{
+  "groupings": [
+    {
+      "title": "Kagi",
+      "skills": ["kagi"]
+    }
+  ],
+  "notGrouped": "bottom"
+}
