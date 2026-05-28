@@ -30,6 +30,8 @@ pub struct MemberMetadata {
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wrapped_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signing_public_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,12 +121,16 @@ impl KeyManager {
         let identity = self.load_or_create_identity()?;
         let recipient = identity.to_public();
         let key = generate_project_key();
+        let signing_key = generate_signing_keypair();
+        let signing_public_key = base64_encode(&signing_key.verifying_key().to_bytes());
+        self.save_signing_key(member_id, &signing_key)?;
         let member = MemberMetadata {
             member_id: member_id.to_string(),
             name: default_member_name(),
             recipient: recipient.to_string(),
             status: "active".to_string(),
             wrapped_key: Some(wrap_key_for_recipient(&recipient, &key)?),
+            signing_public_key: Some(signing_public_key),
         };
         self.save_access_state(&AccessState {
             version: "2".to_string(),
@@ -138,6 +144,9 @@ impl KeyManager {
     pub fn create_join_request(&self, name: Option<String>) -> Result<MemberMetadata, DomainError> {
         let identity = self.load_or_create_identity()?;
         let member_id = Self::generate_member_id();
+        let signing_key = generate_signing_keypair();
+        let signing_public_key = base64_encode(&signing_key.verifying_key().to_bytes());
+        self.save_signing_key(&member_id, &signing_key)?;
         let member = MemberMetadata {
             member_id: member_id.clone(),
             name: name
@@ -147,6 +156,7 @@ impl KeyManager {
             recipient: identity.to_public().to_string(),
             status: "pending".to_string(),
             wrapped_key: None,
+            signing_public_key: Some(signing_public_key),
         };
         let mut state = self.load_access_state()?;
         upsert_member(&mut state.members, member.clone());
@@ -428,6 +438,84 @@ impl KeyManager {
         }
         local_data_dir()
     }
+
+    fn signing_key_path(&self, member_id: &str) -> Result<PathBuf, DomainError> {
+        Ok(self
+            .local_data_dir()?
+            .join(format!("identities/{}.signkey", member_id)))
+    }
+
+    fn save_signing_key(
+        &self,
+        member_id: &str,
+        key: &ed25519_dalek::SigningKey,
+    ) -> Result<(), DomainError> {
+        let path = self.signing_key_path(member_id)?;
+        fs::create_dir_all(path.parent().unwrap())?;
+        set_private_dir_permissions(path.parent().unwrap())?;
+        fs::write(&path, base64_encode(&key.to_bytes()))?;
+        set_private_file_permissions(&path)?;
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub fn load_signing_key(
+        &self,
+        member_id: &str,
+    ) -> Result<ed25519_dalek::SigningKey, DomainError> {
+        let path = self.signing_key_path(member_id)?;
+        let b64 = fs::read_to_string(&path)?;
+        let bytes = general_purpose::STANDARD
+            .decode(b64.trim())
+            .map_err(|e| DomainError::StoreCorrupted(format!("invalid signing key: {}", e)))?;
+        if bytes.len() != 32 {
+            return Err(DomainError::StoreCorrupted(
+                "signing key must be 32 bytes".into(),
+            ));
+        }
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&bytes);
+        Ok(ed25519_dalek::SigningKey::from_bytes(&arr))
+    }
+
+    pub fn ensure_signing_key(
+        &self,
+        member_id: &str,
+    ) -> Result<ed25519_dalek::SigningKey, DomainError> {
+        match self.load_signing_key(member_id) {
+            Ok(key) => Ok(key),
+            Err(_) => {
+                let key = generate_signing_keypair();
+                let public_key = base64_encode(&key.verifying_key().to_bytes());
+                self.save_signing_key(member_id, &key)?;
+                let mut state = self.load_access_state()?;
+                let mut updated = false;
+                for member in &mut state.members {
+                    if member.member_id == member_id {
+                        member.signing_public_key = Some(public_key);
+                        updated = true;
+                        break;
+                    }
+                }
+                if updated {
+                    self.save_access_state(&state)?;
+                }
+                Ok(key)
+            }
+        }
+    }
+}
+
+fn generate_signing_keypair() -> ed25519_dalek::SigningKey {
+    let mut bytes = [0u8; 32];
+    for byte in &mut bytes {
+        *byte = rand::random::<u8>();
+    }
+    ed25519_dalek::SigningKey::from_bytes(&bytes)
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    general_purpose::STANDARD.encode(bytes)
 }
 
 fn generate_project_key() -> Zeroizing<Vec<u8>> {

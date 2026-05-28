@@ -1,0 +1,23 @@
+[Unit]
+Description=Kagi remote sync server
+After=network.target
+
+[Service]
+Type=simple
+User=kagi
+Group=kagi
+WorkingDirectory=/var/lib/kagi
+Environment="KAGI_HOME=/var/lib/kagi"
+Environment="RUST_LOG=info"
+ExecStart=/usr/local/bin/kagi serve --bind 127.0.0.1:8787 --db /var/lib/kagi/kagi.db --key-file /var/lib/kagi/server.key.json
+Restart=on-failure
+RestartSec=5
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/kagi
+
+[Install]
+WantedBy=multi-user.target

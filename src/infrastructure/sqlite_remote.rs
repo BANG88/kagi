@@ -1,7 +1,8 @@
 use crate::domain::sync::project_state::ProjectFile;
+use sha2::Digest;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Pool, Row, Sqlite};
-use std::str::FromStr;
+use std::path::Path;
 use std::time::Duration;
 
 pub struct SqliteRemoteRepository {
@@ -17,6 +18,8 @@ pub struct PushProjectStateRequest<'a> {
     pub activate_tokens: &'a [String],
     pub revoke_tokens: &'a [String],
     pub accepted_joins: &'a [String],
+    pub manifest_json: Option<&'a str>,
+    pub manifest_signature: Option<&'a str>,
 }
 
 pub struct CreateProjectMemberRequest<'a> {
@@ -42,9 +45,14 @@ pub struct ApproveProjectRequest<'a> {
 }
 
 impl SqliteRemoteRepository {
-    pub async fn new(database_url: &str) -> Result<Self, sqlx::Error> {
-        let mut opts = SqliteConnectOptions::from_str(database_url)?;
-        opts = opts.create_if_missing(true);
+    pub async fn new_file(path: impl AsRef<Path>) -> Result<Self, sqlx::Error> {
+        let opts = SqliteConnectOptions::new()
+            .filename(path.as_ref())
+            .create_if_missing(true);
+        Self::connect_with(opts).await
+    }
+
+    async fn connect_with(opts: SqliteConnectOptions) -> Result<Self, sqlx::Error> {
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
             .min_connections(1)
@@ -66,75 +74,6 @@ impl SqliteRemoteRepository {
             .await?;
 
         sqlx::migrate!("./migrations").run(&pool).await?;
-
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS admin_tokens (
-                token_id TEXT PRIMARY KEY,
-                token_hash TEXT NOT NULL,
-                capabilities_json TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'active',
-                created_at TEXT NOT NULL,
-                last_used_at TEXT
-            )",
-        )
-        .execute(&pool)
-        .await?;
-
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS project_requests (
-                project_id TEXT PRIMARY KEY,
-                requester_member_id TEXT NOT NULL,
-                requester_name TEXT NOT NULL,
-                requester_recipient TEXT NOT NULL,
-                claim_secret_hash TEXT NOT NULL,
-                kagi_json TEXT,
-                status TEXT NOT NULL DEFAULT 'pending',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )",
-        )
-        .execute(&pool)
-        .await?;
-
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_project_requests_status ON project_requests(status)",
-        )
-        .execute(&pool)
-        .await?;
-
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS project_members (
-                project_id TEXT NOT NULL,
-                member_id TEXT NOT NULL,
-                name TEXT NOT NULL,
-                role TEXT NOT NULL DEFAULT 'member',
-                status TEXT NOT NULL,
-                recipient TEXT,
-                wrapped_project_token TEXT,
-                claim_secret_hash TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (project_id, member_id),
-                FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
-            )",
-        )
-        .execute(&pool)
-        .await?;
-
-        sqlx::query("ALTER TABLE project_members ADD COLUMN wrapped_project_token TEXT")
-            .execute(&pool)
-            .await
-            .ok();
-
-        sqlx::query("ALTER TABLE project_requests ADD COLUMN claim_secret_hash TEXT")
-            .execute(&pool)
-            .await
-            .ok();
-
-        sqlx::query("ALTER TABLE project_members ADD COLUMN claim_secret_hash TEXT")
-            .execute(&pool)
-            .await
-            .ok();
 
         Ok(Self { pool })
     }
@@ -282,6 +221,25 @@ impl SqliteRemoteRepository {
             .await?;
         }
 
+        if let Some(manifest_json) = request.manifest_json {
+            let manifest_hash = {
+                let mut hasher = sha2::Sha256::new();
+                hasher.update(manifest_json.as_bytes());
+                hex::encode(hasher.finalize())
+            };
+            sqlx::query(
+                "INSERT INTO manifests (project_id, revision, manifest_hash, manifest_json, manifest_signature, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+            )
+            .bind(request.project_id)
+            .bind(new_revision)
+            .bind(&manifest_hash)
+            .bind(manifest_json)
+            .bind(request.manifest_signature)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+        }
+
         tx.commit().await?;
         Ok(new_revision)
     }
@@ -315,6 +273,28 @@ impl SqliteRemoteRepository {
             .collect();
 
         Ok(Some((revision, project_files)))
+    }
+
+    pub async fn get_manifest(
+        &self,
+        project_id: &str,
+        revision: i64,
+    ) -> Result<Option<(String, String, Option<String>)>, sqlx::Error> {
+        let row = sqlx::query(
+            "SELECT manifest_hash, manifest_json, manifest_signature FROM manifests WHERE project_id = ? AND revision = ?",
+        )
+        .bind(project_id)
+        .bind(revision)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|r| {
+            (
+                r.try_get("manifest_hash").unwrap_or_default(),
+                r.try_get("manifest_json").unwrap_or_default(),
+                r.try_get("manifest_signature").ok(),
+            )
+        }))
     }
 
     pub async fn list_join_requests(
@@ -747,6 +727,86 @@ impl SqliteRemoteRepository {
             })
             .collect())
     }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_audit_event(
+        &self,
+        event_id: &str,
+        project_id: Option<&str>,
+        actor_member_id: Option<&str>,
+        actor_token_id: Option<&str>,
+        event_type: &str,
+        request_id: Option<&str>,
+        remote_addr: Option<&str>,
+        metadata_json: Option<&str>,
+    ) -> Result<(), sqlx::Error> {
+        let now = time::OffsetDateTime::now_utc().to_string();
+        sqlx::query(
+            "INSERT INTO audit_events (event_id, created_at, project_id, actor_member_id, actor_token_id, event_type, request_id, remote_addr, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        .bind(event_id)
+        .bind(&now)
+        .bind(project_id)
+        .bind(actor_member_id)
+        .bind(actor_token_id)
+        .bind(event_type)
+        .bind(request_id)
+        .bind(remote_addr)
+        .bind(metadata_json)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub async fn list_audit_events(
+        &self,
+        project_id: Option<&str>,
+        limit: i64,
+    ) -> Result<
+        Vec<(
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        )>,
+        sqlx::Error,
+    > {
+        let rows = if let Some(pid) = project_id {
+            sqlx::query("SELECT event_id, created_at, project_id, actor_member_id, actor_token_id, event_type, request_id, remote_addr, metadata_json FROM audit_events WHERE project_id = ? ORDER BY created_at DESC LIMIT ?")
+                .bind(pid)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await?
+        } else {
+            sqlx::query("SELECT event_id, created_at, project_id, actor_member_id, actor_token_id, event_type, request_id, remote_addr, metadata_json FROM audit_events ORDER BY created_at DESC LIMIT ?")
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await?
+        };
+
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                (
+                    r.try_get("event_id").unwrap_or_default(),
+                    r.try_get("created_at").unwrap_or_default(),
+                    r.try_get("project_id").ok(),
+                    r.try_get("actor_member_id").ok(),
+                    r.try_get("actor_token_id").ok(),
+                    r.try_get("event_type").unwrap_or_default(),
+                    r.try_get("request_id").ok(),
+                    r.try_get("remote_addr").ok(),
+                    r.try_get("metadata_json").ok(),
+                )
+            })
+            .collect())
+    }
 }
 
 #[cfg(test)]
@@ -756,10 +816,8 @@ mod tests {
 
     async fn test_repo() -> SqliteRemoteRepository {
         let id = rand::random::<u64>();
-        let path = format!("/tmp/kagi_test_{}.db", id);
-        SqliteRemoteRepository::new(&format!("sqlite:{}", path))
-            .await
-            .unwrap()
+        let path = std::env::temp_dir().join(format!("kagi_test_{}.db", id));
+        SqliteRemoteRepository::new_file(path).await.unwrap()
     }
 
     #[tokio::test]
@@ -838,6 +896,8 @@ mod tests {
                 activate_tokens: &[],
                 revoke_tokens: &[],
                 accepted_joins: &[],
+                manifest_json: None,
+                manifest_signature: None,
             })
             .await
             .unwrap();
@@ -867,6 +927,8 @@ mod tests {
                 activate_tokens: &[],
                 revoke_tokens: &[],
                 accepted_joins: &[],
+                manifest_json: None,
+                manifest_signature: None,
             })
             .await
             .unwrap_err();
@@ -934,6 +996,8 @@ mod tests {
             activate_tokens: &[],
             revoke_tokens: &[],
             accepted_joins: &[],
+            manifest_json: None,
+            manifest_signature: None,
         })
         .await
         .unwrap();
@@ -1059,5 +1123,73 @@ mod tests {
         let ids: Vec<String> = projects.iter().map(|p| p.0.clone()).collect();
         assert!(ids.contains(&"kgp_a".to_string()));
         assert!(ids.contains(&"kgp_b".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_audit_event_lifecycle() {
+        let repo = test_repo().await;
+        repo.create_project("kgp_test").await.unwrap();
+
+        repo.create_audit_event(
+            "kae_1",
+            Some("kgp_test"),
+            Some("kgm_alice"),
+            Some("kgt_123"),
+            "push",
+            Some("kgr_1"),
+            Some("127.0.0.1"),
+            Some("{\"revision\":1}"),
+        )
+        .await
+        .unwrap();
+
+        let events = repo.list_audit_events(Some("kgp_test"), 10).await.unwrap();
+        assert_eq!(events.len(), 1);
+        let (
+            event_id,
+            _created_at,
+            project_id,
+            actor_member_id,
+            actor_token_id,
+            event_type,
+            request_id,
+            remote_addr,
+            metadata_json,
+        ) = &events[0];
+        assert_eq!(event_id, "kae_1");
+        assert_eq!(project_id.as_deref(), Some("kgp_test"));
+        assert_eq!(actor_member_id.as_deref(), Some("kgm_alice"));
+        assert_eq!(actor_token_id.as_deref(), Some("kgt_123"));
+        assert_eq!(event_type, "push");
+        assert_eq!(request_id.as_deref(), Some("kgr_1"));
+        assert_eq!(remote_addr.as_deref(), Some("127.0.0.1"));
+        assert_eq!(metadata_json.as_deref(), Some("{\"revision\":1}"));
+    }
+
+    #[tokio::test]
+    async fn test_audit_event_does_not_leak_sensitive_data() {
+        let repo = test_repo().await;
+        repo.create_project("kgp_test").await.unwrap();
+
+        repo.create_audit_event(
+            "kae_1",
+            Some("kgp_test"),
+            None,
+            None,
+            "project_request_created",
+            Some("kgr_1"),
+            Some("127.0.0.1"),
+            Some("{\"requester_name\":\"Alice\"}"),
+        )
+        .await
+        .unwrap();
+
+        let events = repo.list_audit_events(Some("kgp_test"), 10).await.unwrap();
+        assert_eq!(events.len(), 1);
+        let metadata_json = &events[0].8;
+        let meta = metadata_json.as_deref().unwrap_or("");
+        assert!(!meta.contains("secret"));
+        assert!(!meta.contains("token"));
+        assert!(!meta.contains("claim_secret"));
     }
 }

@@ -217,6 +217,7 @@ mod tests {
             local_revision: Some(0),
             last_pulled_at: None,
             last_pushed_at: None,
+            last_manifest_hash: None,
         };
         store.save_remote_metadata(&meta).unwrap();
         let loaded = store.load_remote_metadata("kgp_test").unwrap();

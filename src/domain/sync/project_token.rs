@@ -8,6 +8,8 @@ pub struct TokenPayload {
     pub token_id: String,
     pub server_fingerprint: String,
     pub capabilities: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bootstrap_signer_public_key: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -42,6 +44,7 @@ impl ProjectToken {
         project_id: String,
         server_fingerprint: String,
         capabilities: Vec<String>,
+        bootstrap_signer_public_key: Option<String>,
     ) -> Self {
         let token_id = format!("kgt_{}", nanoid::nanoid!(12));
         let payload = TokenPayload {
@@ -51,6 +54,7 @@ impl ProjectToken {
             token_id: token_id.clone(),
             server_fingerprint: server_fingerprint.clone(),
             capabilities,
+            bootstrap_signer_public_key,
         };
         let payload_json = serde_json::to_vec(&payload).unwrap();
         let payload_b64 = base64_encode_url(&payload_json);
@@ -73,6 +77,7 @@ impl ProjectToken {
             token_id: token_id.clone(),
             server_fingerprint: server_fingerprint.clone(),
             capabilities: vec!["admin".into()],
+            bootstrap_signer_public_key: None,
         };
         let payload_json = serde_json::to_vec(&payload).unwrap();
         let payload_b64 = base64_encode_url(&payload_json);
@@ -116,6 +121,7 @@ mod tests {
             "kgp_test123".into(),
             "kgs_fp123".into(),
             vec!["pull".into(), "push".into()],
+            Some("signer_public_key".into()),
         );
         assert!(token.full_token.starts_with("kagi_proj_v1_"));
         assert!(token.payload.token_id.starts_with("kgt_"));
@@ -129,6 +135,10 @@ mod tests {
             token.payload.server_fingerprint
         );
         assert_eq!(parsed.payload.capabilities, token.payload.capabilities);
+        assert_eq!(
+            parsed.payload.bootstrap_signer_public_key,
+            token.payload.bootstrap_signer_public_key
+        );
         assert_eq!(parsed.full_token, token.full_token);
     }
 

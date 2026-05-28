@@ -33,6 +33,10 @@ must never be able to decrypt env values.
   endpoints from brute-force attacks.
 - Server code is gated behind a `server` Cargo feature. Users who only need the
   CLI can compile without it, omitting Axum, SQLx, and all server handlers.
+- Deployment mode: explicitly single-tenant. One server instance serves one team.
+  Do not use a single instance for unrelated tenants without additional isolation.
+- Storage limits: each project is capped at 1000 files and 50 MB of encrypted
+  content to prevent a single project from exhausting disk space.
 
 ## Feature Flags
 
@@ -895,6 +899,116 @@ Database backup safety:
 - SQLite backups must not contain env plaintext, project keys, token plaintext,
   member private identities, raw server private identity, or token pepper.
 
+## Backup and Restore
+
+### What must be backed up
+
+1. **SQLite database file** (`kagi.db` or the path passed to `--db`)
+2. **SQLite WAL and SHM files** (`kagi.db-wal`, `kagi.db-shm`) when the database
+   is in WAL mode. Kagi enables WAL by default (`PRAGMA journal_mode = WAL`).
+3. **Server key file** (`server.key.json` or the path passed to `--key-file`)
+
+The server key file contains the age identity and the token pepper. Without it,
+all existing token hashes become unverifiable and the server cannot decrypt
+incoming envelopes or generate responses.
+
+### What must NOT be shared publicly
+
+- Server key file (`server.key.json`)
+- Database backups (`.db`, `.db-wal`, `.db-shm`)
+- Server logs containing request IDs, member metadata, or IP addresses
+- Admin token plaintext
+- Project token plaintext
+
+### Recommended backup commands
+
+For a running server, use SQLite's online backup API to create a consistent snapshot
+without stopping the server:
+
+```bash
+# Online backup (safe while server is running)
+sqlite3 kagi.db ".backup to /backup/kagi-$(date +%Y%m%d-%H%M%S).db"
+
+# Or copy the database file while the server is stopped
+systemctl stop kagi
+cp kagi.db kagi.db-wal kagi.db-shm /backup/
+cp server.key.json /backup/
+systemctl start kagi
+```
+
+Automated backup example (daily cron):
+
+```bash
+#!/bin/bash
+BACKUP_DIR="/backup/kagi/$(date +%Y%m%d)"
+mkdir -p "$BACKUP_DIR"
+sqlite3 /var/lib/kagi/kagi.db ".backup to $BACKUP_DIR/kagi.db"
+cp /etc/kagi/server.key.json "$BACKUP_DIR/"
+chmod -R 700 "$BACKUP_DIR"
+```
+
+### Restore flow
+
+1. Stop the server:
+   ```bash
+   systemctl stop kagi
+   ```
+
+2. Restore the database and WAL files:
+   ```bash
+   cp /backup/kagi.db /var/lib/kagi/kagi.db
+   cp /backup/kagi.db-wal /var/lib/kagi/kagi.db-wal
+   cp /backup/kagi.db-shm /var/lib/kagi/kagi.db-shm
+   ```
+
+3. Restore the server key file:
+   ```bash
+   cp /backup/server.key.json /etc/kagi/server.key.json
+   chmod 600 /etc/kagi/server.key.json
+   ```
+
+4. Start the server:
+   ```bash
+   systemctl start kagi
+   ```
+
+5. Run a health check:
+   ```bash
+   curl http://127.0.0.1:8787/
+   ```
+
+6. Verify from a client:
+   ```bash
+   kagi status
+   kagi pull
+   ```
+
+### Server key rotation impact
+
+If the server key file is lost or compromised, you must generate a new one.
+Regenerating the server key changes:
+
+- Server fingerprint (`kgs_...`)
+- Token pepper
+
+**Impact on existing tokens:**
+
+All existing admin and project tokens are pinned to the old server fingerprint.
+After key regeneration, the server cannot verify old token hashes because the
+pepper changed. Every admin and project member must obtain a new token.
+
+Recovery steps after key loss:
+
+1. Stop the server.
+2. Delete the old server key file and start the server to generate a new one.
+3. The server will print a new admin token on first startup.
+4. Re-run `kagi remote login` with the new admin token.
+5. Re-create all projects and re-issue all project tokens.
+6. Distribute new project tokens to all members.
+
+Because of this impact, keep the server key file in a secure, backed-up
+location with strict file permissions (`0600` on Unix).
+
 ## Database Operations
 
 All write operations use one SQL transaction.
@@ -1575,3 +1689,124 @@ Security tests:
 - Server DB does not contain token plaintext.
 - Server DB does not contain raw server private identity.
 - Server DB does not contain token pepper.
+
+## Deployment Packaging
+
+### Docker
+
+A `Dockerfile` is included in the repository. It builds a multi-stage image using Debian Bookworm as the base.
+
+Build:
+
+```bash
+docker build -t kagi-server:latest .
+```
+
+Run with persistent volumes:
+
+```bash
+docker run -d \
+  --name kagi-server \
+  -p 127.0.0.1:8787:8787 \
+  -v kagi-data:/home/kagi/data \
+  -v kagi-server-key:/home/kagi/server \
+  kagi-server:latest
+```
+
+On first startup, the container prints the admin token to the logs. Retrieve it with:
+
+```bash
+docker logs kagi-server
+```
+
+### Docker Compose
+
+A `docker-compose.yml` example is included with persistent volume mounts for the database and server key.
+
+```bash
+docker compose up -d
+```
+
+The compose file binds `127.0.0.1:8787` by default. Change the port mapping to expose the server publicly, and place a reverse proxy in front for TLS.
+
+### systemd
+
+A `kagi-server.service` unit file is included. Install it on a Debian/Ubuntu or RHEL-compatible system:
+
+```bash
+# Create user and directories
+sudo useradd -r -s /bin/false -d /var/lib/kagi kagi
+sudo mkdir -p /var/lib/kagi /etc/kagi
+sudo chown kagi:kagi /var/lib/kagi
+sudo chmod 700 /var/lib/kagi
+
+# Install the binary
+sudo cp target/release/kagi /usr/local/bin/kagi
+sudo chmod +x /usr/local/bin/kagi
+
+# Install the service file
+sudo cp kagi-server.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable kagi-server
+sudo systemctl start kagi-server
+```
+
+On first startup, the server creates the database and server key, then prints the admin token. Check the logs:
+
+```bash
+sudo journalctl -u kagi-server -n 50
+```
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `KAGI_HOME` | platform-specific | Base directory for local data and server state |
+| `KAGI_ALLOW_INSECURE_HTTP` | unset | Set to `1` to allow non-localhost `http://` remotes |
+| `RUST_LOG` | unset | Standard `tracing` log filter, e.g. `info` or `debug` |
+
+Server command-line flags:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--bind` | `127.0.0.1:8787` | Address and port to listen on |
+| `--db` | `$KAGI_HOME/server/kagi.db` | SQLite database path |
+| `--key-file` | `$KAGI_HOME/server/server.key.json` | Server key file path |
+| `--max-body` | `10mb` | Maximum request body size |
+
+### Reverse Proxy
+
+For production, run the Kagi server behind a reverse proxy that handles TLS termination.
+
+Recommended setup with Caddy:
+
+```
+kagi.example.com {
+    reverse_proxy 127.0.0.1:8787
+}
+```
+
+Recommended setup with nginx:
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name kagi.example.com;
+
+    ssl_certificate /etc/letsencrypt/live/kagi.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/kagi.example.com/privkey.pem;
+
+    client_max_body_size 20m;
+    access_log /var/log/nginx/kagi.access.log;
+
+    location / {
+        proxy_pass http://127.0.0.1:8787;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+Keep the Kagi server bound to `127.0.0.1` when a reverse proxy is present. The reverse proxy should pass the real client IP so the Kagi rate limiter applies per-client limits correctly.

@@ -10,6 +10,10 @@ use clap::{ColorChoice, Parser, Subcommand};
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
+
+    /// Allow insecure HTTP remotes for non-localhost addresses
+    #[arg(long, global = true)]
+    pub allow_insecure_http: bool,
 }
 
 #[derive(Subcommand)]
@@ -181,6 +185,10 @@ pub enum Commands {
         /// Max body size (e.g. 10mb)
         #[arg(long, default_value = "10mb")]
         max_body: String,
+
+        /// Allow serving HTTP on non-localhost addresses (unsafe for production)
+        #[arg(long)]
+        allow_insecure_http: bool,
     },
 
     #[cfg(feature = "server")]

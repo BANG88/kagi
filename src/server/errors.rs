@@ -20,6 +20,7 @@ pub enum ServerError {
     InvalidRevision,
     InvalidProjectState(String),
     ServerKeyMismatch,
+    PayloadTooLarge,
     Internal(String),
 }
 
@@ -86,6 +87,12 @@ impl IntoResponse for ServerError {
                 "unknown server key".into(),
                 None,
             ),
+            ServerError::PayloadTooLarge => (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "payload_too_large",
+                "project storage limit exceeded".into(),
+                None,
+            ),
             ServerError::Internal(msg) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal",
@@ -149,6 +156,14 @@ mod tests {
         assert_eq!(
             status_of(ServerError::Internal("x".into())),
             StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[test]
+    fn test_payload_too_large_status() {
+        assert_eq!(
+            status_of(ServerError::PayloadTooLarge),
+            StatusCode::PAYLOAD_TOO_LARGE
         );
     }
 }

@@ -259,7 +259,25 @@ journal outside the repository and retries safely on the next command.
 Git-backed `.kagi/` sharing is the default workflow. If a team does not want to
 commit `.kagi/`, run a self-hosted Kagi server instead.
 
-Start the server:
+Status: **production-ready for self-hosted team use** — requires HTTPS, proper
+backups, and monitoring. See `docs/remote-sync-server.md` for the full
+protocol, deployment guide, and Docker/systemd examples.
+
+The Kagi server is explicitly **single-tenant**. Each server instance serves one
+team or organization. Do not run a single server instance for unrelated tenants
+without additional isolation.
+
+### HTTP restrictions
+
+The server rejects non-localhost `http://` remotes by default. Use HTTPS for
+any public or LAN deployment. For local development only, pass
+`--allow-insecure-http` or set `KAGI_ALLOW_INSECURE_HTTP=1`:
+
+```bash
+kagi project join --remote http://127.0.0.1:8787
+```
+
+### Start the server
 
 ```bash
 kagi serve --db ./kagi.db --key-file ./server.key.json --bind 127.0.0.1:8787

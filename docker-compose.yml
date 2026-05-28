@@ -1,0 +1,29 @@
+version: "3.8"
+
+services:
+  kagi:
+    build: .
+    container_name: kagi-server
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - kagi-data:/home/kagi/data
+      - kagi-server-key:/home/kagi/server
+    environment:
+      # Optional: allow non-localhost HTTP for LAN testing
+      # KAGI_ALLOW_INSECURE_HTTP: "1"
+      # Optional: custom request body limit
+      # KAGI_MAX_BODY: "20mb"
+    healthcheck:
+      test: ["CMD", "sh", "-c", "wget -qO- http://localhost:8787/ >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  kagi-data:
+    driver: local
+  kagi-server-key:
+    driver: local

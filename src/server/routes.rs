@@ -6,12 +6,14 @@ use crate::domain::sync::project_token::{ProjectToken, base64_encode_url, normal
 use crate::infrastructure::remote_envelope::{decrypt_request, encrypt_response, parse_recipient};
 use crate::server::errors::ServerError;
 use crate::server::state::AppState;
-use axum::extract::{Path as AxumPath, State};
+use axum::extract::{ConnectInfo, Path as AxumPath, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::json;
+use std::collections::{BTreeMap, BTreeSet};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use time::OffsetDateTime;
 
@@ -115,6 +117,7 @@ async fn create_project_handler(
         project_id.clone(),
         state.fingerprint.clone(),
         vec!["pull".into(), "join".into(), "push".into(), "rotate".into()],
+        None,
     );
 
     let token_hash = state.hash_token(&token.full_token);
@@ -145,6 +148,7 @@ async fn create_project_handler(
 
 async fn create_project_request_handler(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(envelope): Json<RequestEnvelope>,
 ) -> Result<axum::response::Response, ServerError> {
     let (plaintext, response_recipient) =
@@ -208,6 +212,20 @@ async fn create_project_request_handler(
             }
         })?;
 
+    let _ = state
+        .repo
+        .create_audit_event(
+            &format!("kae_{}", nanoid::nanoid!(12)),
+            Some(&project_id),
+            None,
+            None,
+            "project_request_created",
+            Some(&plaintext.request_id),
+            Some(&addr.to_string()),
+            Some(&json!({"requester_name": requester_name}).to_string()),
+        )
+        .await;
+
     let response_data = json!({"project_id": project_id, "status": "pending"});
     encrypt_success_response(&state, &plaintext, &response_recipient, response_data)
 }
@@ -241,6 +259,7 @@ async fn list_project_requests_handler(
 async fn approve_project_request_handler(
     State(state): State<Arc<AppState>>,
     AxumPath(project_id): AxumPath<String>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(envelope): Json<RequestEnvelope>,
 ) -> Result<axum::response::Response, ServerError> {
     let (plaintext, response_recipient) = decrypt_and_verify_envelope(
@@ -251,7 +270,7 @@ async fn approve_project_request_handler(
     )
     .await?;
     let token_str = plaintext.token.as_ref().ok_or(ServerError::AuthFailed)?;
-    let (_token_id, caps) = authenticate_admin(&state, token_str).await?;
+    let (admin_token_id, caps) = authenticate_admin(&state, token_str).await?;
     if !caps.iter().any(|c| c == "admin") {
         return Err(ServerError::Forbidden);
     }
@@ -282,6 +301,7 @@ async fn approve_project_request_handler(
         project_id.clone(),
         state.fingerprint.clone(),
         vec!["pull".into(), "join".into(), "push".into(), "rotate".into()],
+        None,
     );
 
     let token_hash = state.hash_token(&token.full_token);
@@ -326,6 +346,20 @@ async fn approve_project_request_handler(
             }
         })?;
 
+    let _ = state
+        .repo
+        .create_audit_event(
+            &format!("kae_{}", nanoid::nanoid!(12)),
+            Some(&project_id),
+            None,
+            Some(&admin_token_id),
+            "project_request_approved",
+            Some(&plaintext.request_id),
+            Some(&addr.to_string()),
+            Some(&json!({"requester_name": requester_name}).to_string()),
+        )
+        .await;
+
     let response_data = json!({
         "project_id": project_id,
         "status": "active",
@@ -362,6 +396,7 @@ async fn list_projects_handler(
 async fn delete_project_handler(
     State(state): State<Arc<AppState>>,
     AxumPath(project_id): AxumPath<String>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(envelope): Json<RequestEnvelope>,
 ) -> Result<axum::response::Response, ServerError> {
     let (plaintext, response_recipient) = decrypt_and_verify_envelope(
@@ -373,11 +408,12 @@ async fn delete_project_handler(
     .await?;
     let token_str = plaintext.token.as_ref().ok_or(ServerError::AuthFailed)?;
 
-    let is_admin = if let Ok((_token_id, caps)) = authenticate_admin(&state, token_str).await {
-        caps.iter().any(|c| c == "admin")
-    } else {
-        false
-    };
+    let (actor_token_id, is_admin) =
+        if let Ok((token_id, caps)) = authenticate_admin(&state, token_str).await {
+            (Some(token_id), caps.iter().any(|c| c == "admin"))
+        } else {
+            (None, false)
+        };
 
     if !is_admin {
         let (_token_id, _caps, member_id) = authenticate(&state, &project_id, token_str).await?;
@@ -401,6 +437,20 @@ async fn delete_project_handler(
         .await
         .map_err(|e| ServerError::Internal(e.to_string()))?;
 
+    let _ = state
+        .repo
+        .create_audit_event(
+            &format!("kae_{}", nanoid::nanoid!(12)),
+            Some(&project_id),
+            None,
+            actor_token_id.as_deref(),
+            "project_deleted",
+            Some(&plaintext.request_id),
+            Some(&addr.to_string()),
+            None,
+        )
+        .await;
+
     let response_data = json!({"project_id": project_id, "status": "deleted"});
     encrypt_success_response(&state, &plaintext, &response_recipient, response_data)
 }
@@ -408,6 +458,7 @@ async fn delete_project_handler(
 async fn push_handler(
     State(state): State<Arc<AppState>>,
     AxumPath(project_id): AxumPath<String>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(envelope): Json<RequestEnvelope>,
 ) -> Result<axum::response::Response, ServerError> {
     let (plaintext, response_recipient) = decrypt_and_verify_envelope(
@@ -418,7 +469,7 @@ async fn push_handler(
     )
     .await?;
     let token_str = plaintext.token.as_ref().ok_or(ServerError::AuthFailed)?;
-    let (_token_id, caps, _member_id) = authenticate(&state, &project_id, token_str).await?;
+    let (token_id, caps, _member_id) = authenticate(&state, &project_id, token_str).await?;
     if !caps.iter().any(|c| c == "push") {
         return Err(ServerError::Forbidden);
     }
@@ -440,6 +491,17 @@ async fn push_handler(
             .map_err(|_e| ServerError::InvalidPath("invalid file path".into()))?;
     }
 
+    // Storage limits: prevent a single project from filling the disk
+    const MAX_PROJECT_FILES: usize = 1000;
+    const MAX_PROJECT_TOTAL_BYTES: usize = 50 * 1024 * 1024;
+    if project_state.files.len() > MAX_PROJECT_FILES {
+        return Err(ServerError::PayloadTooLarge);
+    }
+    let total_incoming_size: usize = project_state.files.iter().map(|f| f.content.len()).sum();
+    if total_incoming_size > MAX_PROJECT_TOTAL_BYTES {
+        return Err(ServerError::PayloadTooLarge);
+    }
+
     let activate: Vec<String> = plaintext
         .payload
         .get("activate_token_ids")
@@ -456,6 +518,27 @@ async fn push_handler(
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default();
 
+    let manifest_json = plaintext
+        .payload
+        .get("manifest")
+        .and_then(|v| v.as_str())
+        .ok_or(ServerError::BadRequest("missing manifest".into()))?;
+    let manifest_signature = plaintext
+        .payload
+        .get("manifest_signature")
+        .and_then(|v| v.as_str())
+        .ok_or(ServerError::BadRequest("missing manifest_signature".into()))?;
+
+    verify_pushed_manifest(
+        &state,
+        &project_id,
+        base_revision,
+        &project_state,
+        manifest_json,
+        manifest_signature,
+    )
+    .await?;
+
     let new_revision = state
         .repo
         .push_project_state(
@@ -468,6 +551,8 @@ async fn push_handler(
                 activate_tokens: &activate,
                 revoke_tokens: &revoke,
                 accepted_joins: &accepted,
+                manifest_json: Some(manifest_json),
+                manifest_signature: Some(manifest_signature),
             },
         )
         .await
@@ -483,6 +568,20 @@ async fn push_handler(
         }
     })?;
 
+    let _ = state
+        .repo
+        .create_audit_event(
+            &format!("kae_{}", nanoid::nanoid!(12)),
+            Some(&project_id),
+            None,
+            Some(&token_id),
+            "push",
+            Some(&plaintext.request_id),
+            Some(&addr.to_string()),
+            Some(&json!({"revision": new_revision}).to_string()),
+        )
+        .await;
+
     let response_data = json!({
         "revision": new_revision,
     });
@@ -492,6 +591,7 @@ async fn push_handler(
 async fn pull_handler(
     State(state): State<Arc<AppState>>,
     AxumPath(project_id): AxumPath<String>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(envelope): Json<RequestEnvelope>,
 ) -> Result<axum::response::Response, ServerError> {
     let (plaintext, response_recipient) = decrypt_and_verify_envelope(
@@ -529,6 +629,12 @@ async fn pull_handler(
             })
             .unwrap_or_else(|| ("{}".to_string(), "{}".to_string()));
 
+        let manifest = state
+            .repo
+            .get_manifest(&project_id, revision)
+            .await
+            .map_err(|e| ServerError::Internal(e.to_string()))?;
+
         let mut response = json!({
             "revision": revision,
             "state": {
@@ -539,6 +645,14 @@ async fn pull_handler(
                 "files": files,
             },
         });
+
+        if let Some((manifest_hash, manifest_json, manifest_signature)) = manifest {
+            response["manifest_hash"] = json!(manifest_hash);
+            response["manifest"] = json!(manifest_json);
+            if let Some(sig) = manifest_signature {
+                response["manifest_signature"] = json!(sig);
+            }
+        }
 
         if caps.iter().any(|c| c == "push" || c == "rotate") {
             let join_requests = state
@@ -551,6 +665,20 @@ async fn pull_handler(
             }).collect();
             response["join_requests"] = json!(requests_json);
         }
+
+        let _ = state
+            .repo
+            .create_audit_event(
+                &format!("kae_{}", nanoid::nanoid!(12)),
+                Some(&project_id),
+                None,
+                None,
+                "pull",
+                Some(&plaintext.request_id),
+                Some(&addr.to_string()),
+                Some(&json!({"revision": revision}).to_string()),
+            )
+            .await;
 
         encrypt_success_response(&state, &plaintext, &response_recipient, response)
     } else {
@@ -593,6 +721,20 @@ async fn pull_handler(
         let response = json!({
             "wrapped_project_token": wrapped,
         });
+
+        let _ = state
+            .repo
+            .create_audit_event(
+                &format!("kae_{}", nanoid::nanoid!(12)),
+                Some(&project_id),
+                Some(member_id),
+                None,
+                "tokenless_pull",
+                Some(&plaintext.request_id),
+                Some(&addr.to_string()),
+                None,
+            )
+            .await;
 
         // Use claim_secret for MAC since token is None
         let mut plaintext_with_secret = plaintext.clone();
@@ -668,6 +810,7 @@ async fn status_handler(
 async fn join_handler(
     State(state): State<Arc<AppState>>,
     AxumPath(project_id): AxumPath<String>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(envelope): Json<RequestEnvelope>,
 ) -> Result<axum::response::Response, ServerError> {
     let (plaintext, response_recipient) = decrypt_and_verify_envelope(
@@ -727,6 +870,20 @@ async fn join_handler(
             }
         })?;
 
+    let _ = state
+        .repo
+        .create_audit_event(
+            &format!("kae_{}", nanoid::nanoid!(12)),
+            Some(&project_id),
+            None,
+            Some(&token_id),
+            "join_request",
+            Some(&plaintext.request_id),
+            Some(&addr.to_string()),
+            Some(&json!({"member_id": member_id, "name": name}).to_string()),
+        )
+        .await;
+
     let response = json!({"member_id": member_id, "status": "pending"});
     encrypt_success_response(&state, &plaintext, &response_recipient, response)
 }
@@ -734,6 +891,7 @@ async fn join_handler(
 async fn token_issue_handler(
     State(state): State<Arc<AppState>>,
     AxumPath(project_id): AxumPath<String>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(envelope): Json<RequestEnvelope>,
 ) -> Result<axum::response::Response, ServerError> {
     let (plaintext, response_recipient) = decrypt_and_verify_envelope(
@@ -762,11 +920,36 @@ async fn token_issue_handler(
         .unwrap_or("pending_activation");
     let remote_url = remote_url_from_plaintext(&plaintext, Some(token_str))?;
 
+    let bootstrap_signer_public_key = match state
+        .repo
+        .pull_project_state(&project_id)
+        .await
+        .map_err(|e| ServerError::Internal(e.to_string()))?
+    {
+        Some((revision, _)) if revision > 0 => {
+            let (_, manifest_json, _) = state
+                .repo
+                .get_manifest(&project_id, revision)
+                .await
+                .map_err(|e| ServerError::Internal(e.to_string()))?
+                .ok_or_else(|| {
+                    ServerError::Internal("project revision is missing manifest".into())
+                })?;
+            let manifest = serde_json::from_str::<
+                crate::domain::sync::manifest::ProjectStateManifest,
+            >(&manifest_json)
+            .map_err(|e| ServerError::Internal(format!("invalid stored manifest: {}", e)))?;
+            Some(manifest.signer_public_key)
+        }
+        _ => None,
+    };
+
     let token = ProjectToken::generate(
         remote_url,
         project_id.clone(),
         state.fingerprint.clone(),
         capabilities,
+        bootstrap_signer_public_key,
     );
 
     let token_hash = state.hash_token(&token.full_token);
@@ -791,12 +974,28 @@ async fn token_issue_handler(
         "project_token": token.full_token,
         "status": status,
     });
+
+    let _ = state
+        .repo
+        .create_audit_event(
+            &format!("kae_{}", nanoid::nanoid!(12)),
+            Some(&project_id),
+            None,
+            None,
+            "token_issued",
+            Some(&plaintext.request_id),
+            Some(&addr.to_string()),
+            Some(&json!({"token_id": token.payload.token_id}).to_string()),
+        )
+        .await;
+
     encrypt_success_response(&state, &plaintext, &response_recipient, response)
 }
 
 async fn token_revoke_handler(
     State(state): State<Arc<AppState>>,
     AxumPath(project_id): AxumPath<String>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(envelope): Json<RequestEnvelope>,
 ) -> Result<axum::response::Response, ServerError> {
     let (plaintext, response_recipient) = decrypt_and_verify_envelope(
@@ -807,7 +1006,7 @@ async fn token_revoke_handler(
     )
     .await?;
     let token_str = plaintext.token.as_ref().ok_or(ServerError::AuthFailed)?;
-    let (_token_id, caps, _member_id) = authenticate(&state, &project_id, token_str).await?;
+    let (token_id, caps, _member_id) = authenticate(&state, &project_id, token_str).await?;
     if !caps.iter().any(|c| c == "rotate") {
         return Err(ServerError::Forbidden);
     }
@@ -823,6 +1022,20 @@ async fn token_revoke_handler(
         .revoke_tokens(&project_id, &token_ids)
         .await
         .map_err(|e| ServerError::Internal(e.to_string()))?;
+
+    let _ = state
+        .repo
+        .create_audit_event(
+            &format!("kae_{}", nanoid::nanoid!(12)),
+            Some(&project_id),
+            None,
+            Some(&token_id),
+            "token_revoked",
+            Some(&plaintext.request_id),
+            Some(&addr.to_string()),
+            Some(&json!({"token_ids": token_ids}).to_string()),
+        )
+        .await;
 
     let response = json!({"revoked_token_ids": token_ids});
     encrypt_success_response(&state, &plaintext, &response_recipient, response)
@@ -971,6 +1184,186 @@ fn validate_remote_url(remote: &str) -> Result<(), ServerError> {
     }
 }
 
+async fn verify_pushed_manifest(
+    state: &AppState,
+    project_id: &str,
+    base_revision: i64,
+    project_state: &ProjectState,
+    manifest_json: &str,
+    manifest_signature: &str,
+) -> Result<(), ServerError> {
+    let manifest: crate::domain::sync::manifest::ProjectStateManifest =
+        serde_json::from_str(manifest_json)
+            .map_err(|e| ServerError::InvalidProjectState(format!("invalid manifest: {}", e)))?;
+    let manifest_canonical = serde_json::to_string(&manifest)
+        .map_err(|e| ServerError::InvalidProjectState(format!("invalid manifest: {}", e)))?;
+    if manifest_canonical != manifest_json {
+        return Err(ServerError::InvalidProjectState(
+            "manifest must use canonical JSON encoding".into(),
+        ));
+    }
+
+    let expected_revision = base_revision + 1;
+    if manifest.project_id != project_id {
+        return Err(ServerError::InvalidProjectState(
+            "manifest project_id mismatch".into(),
+        ));
+    }
+    if manifest.revision != expected_revision {
+        return Err(ServerError::InvalidProjectState(
+            "manifest revision mismatch".into(),
+        ));
+    }
+
+    let expected_previous_hash = if base_revision > 0 {
+        let (previous_hash, _, _) = state
+            .repo
+            .get_manifest(project_id, base_revision)
+            .await
+            .map_err(|e| ServerError::Internal(e.to_string()))?
+            .ok_or_else(|| ServerError::InvalidProjectState("previous manifest missing".into()))?;
+        Some(previous_hash)
+    } else {
+        None
+    };
+    if manifest.previous_manifest_hash != expected_previous_hash {
+        return Err(ServerError::InvalidProjectState(
+            "manifest previous hash mismatch".into(),
+        ));
+    }
+
+    if manifest.kagi_json_hash != crate::domain::sync::manifest::hash_json(&project_state.kagi_json)
+    {
+        return Err(ServerError::InvalidProjectState(
+            "manifest kagi_json hash mismatch".into(),
+        ));
+    }
+    if manifest.access_json_hash
+        != crate::domain::sync::manifest::hash_json(&project_state.access_json)
+    {
+        return Err(ServerError::InvalidProjectState(
+            "manifest access_json hash mismatch".into(),
+        ));
+    }
+
+    let mut state_file_hashes = BTreeMap::new();
+    for file in &project_state.files {
+        let file_hash = {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(file.content.as_bytes());
+            hex::encode(hasher.finalize())
+        };
+        if let Some(declared_hash) = file.sha256.as_deref()
+            && declared_hash != file_hash
+        {
+            return Err(ServerError::InvalidProjectState(format!(
+                "project file sha256 mismatch for {}",
+                file.path
+            )));
+        }
+        if state_file_hashes
+            .insert(file.path.clone(), file_hash)
+            .is_some()
+        {
+            return Err(ServerError::InvalidProjectState(format!(
+                "duplicate project file path: {}",
+                file.path
+            )));
+        }
+    }
+
+    let mut manifest_paths = BTreeSet::new();
+    for manifest_file in &manifest.file_hashes {
+        if !manifest_paths.insert(manifest_file.path.clone()) {
+            return Err(ServerError::InvalidProjectState(format!(
+                "duplicate manifest file path: {}",
+                manifest_file.path
+            )));
+        }
+        let state_hash = state_file_hashes.get(&manifest_file.path).ok_or_else(|| {
+            ServerError::InvalidProjectState(format!(
+                "manifest references missing file: {}",
+                manifest_file.path
+            ))
+        })?;
+        if manifest_file.sha256 != *state_hash {
+            return Err(ServerError::InvalidProjectState(format!(
+                "manifest file hash mismatch for {}",
+                manifest_file.path
+            )));
+        }
+    }
+    let state_paths: BTreeSet<String> = state_file_hashes.keys().cloned().collect();
+    if state_paths != manifest_paths {
+        return Err(ServerError::InvalidProjectState(
+            "manifest file set mismatch".into(),
+        ));
+    }
+
+    let access: serde_json::Value = serde_json::from_str(&project_state.access_json)
+        .map_err(|e| ServerError::InvalidProjectState(format!("invalid access_json: {}", e)))?;
+    let signer_public_key = access
+        .get("members")
+        .and_then(|members| members.as_array())
+        .and_then(|members| {
+            members.iter().find(|member| {
+                member.get("member_id").and_then(|value| value.as_str())
+                    == Some(manifest.signer_member_id.as_str())
+            })
+        })
+        .and_then(|member| member.get("signing_public_key"))
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| {
+            ServerError::InvalidProjectState("manifest signer is not in access_json".into())
+        })?;
+    if signer_public_key != manifest.signer_public_key {
+        return Err(ServerError::InvalidProjectState(
+            "manifest signer key mismatch".into(),
+        ));
+    }
+
+    let signature_bytes = {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        STANDARD.decode(manifest_signature).map_err(|e| {
+            ServerError::InvalidProjectState(format!("invalid manifest signature: {}", e))
+        })?
+    };
+    if signature_bytes.len() != 64 {
+        return Err(ServerError::InvalidProjectState(
+            "manifest signature must be 64 bytes".into(),
+        ));
+    }
+    let signature = ed25519_dalek::Signature::from_slice(&signature_bytes)
+        .map_err(|e| ServerError::InvalidProjectState(format!("invalid signature: {}", e)))?;
+    let public_key_bytes = {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        STANDARD.decode(&manifest.signer_public_key).map_err(|e| {
+            ServerError::InvalidProjectState(format!("invalid signer public key: {}", e))
+        })?
+    };
+    if public_key_bytes.len() != 32 {
+        return Err(ServerError::InvalidProjectState(
+            "signer public key must be 32 bytes".into(),
+        ));
+    }
+    let mut public_key = [0u8; 32];
+    public_key.copy_from_slice(&public_key_bytes);
+    let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&public_key)
+        .map_err(|e| ServerError::InvalidProjectState(format!("invalid signer key: {}", e)))?;
+    use ed25519_dalek::Verifier;
+    verifying_key
+        .verify(manifest.compute_hash().as_bytes(), &signature)
+        .map_err(|e| {
+            ServerError::InvalidProjectState(format!(
+                "manifest signature verification failed: {}",
+                e
+            ))
+        })?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -990,12 +1383,14 @@ mod tests {
         })
     }
 
+    fn dummy_addr() -> ConnectInfo<SocketAddr> {
+        ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 8080)))
+    }
+
     async fn test_repo() -> SqliteRemoteRepository {
         let id = rand::random::<u64>();
-        let path = format!("/tmp/kagi_route_test_{}.db", id);
-        SqliteRemoteRepository::new(&format!("sqlite:{}", path))
-            .await
-            .unwrap()
+        let path = std::env::temp_dir().join(format!("kagi_route_test_{}.db", id));
+        SqliteRemoteRepository::new_file(path).await.unwrap()
     }
 
     fn make_envelope(
@@ -1024,6 +1419,109 @@ mod tests {
             claim_secret: None,
             payload: json!({}),
         }
+    }
+
+    fn test_signing_key() -> ed25519_dalek::SigningKey {
+        ed25519_dalek::SigningKey::from_bytes(&[11u8; 32])
+    }
+
+    fn test_public_key_b64(signing_key: &ed25519_dalek::SigningKey) -> String {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        STANDARD.encode(signing_key.verifying_key().to_bytes())
+    }
+
+    fn sha256_hex(value: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(value.as_bytes());
+        hex::encode(hasher.finalize())
+    }
+
+    fn signed_project_state_fixture() -> (ProjectState, String, String) {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        use ed25519_dalek::Signer as _;
+
+        let signing_key = test_signing_key();
+        let signer_public_key = test_public_key_b64(&signing_key);
+        let access_json = json!({
+            "members": [{
+                "member_id": "kgm_test",
+                "signing_public_key": signer_public_key,
+            }]
+        })
+        .to_string();
+        let file_content = "encrypted-content";
+        let file_hash = sha256_hex(file_content);
+        let file_path = "secrets/api/development.enc";
+        let project_state = ProjectState {
+            project_id: "kgp_test".into(),
+            revision: 0,
+            kagi_json: "{}".into(),
+            access_json: access_json.clone(),
+            files: vec![crate::domain::sync::project_state::ProjectFile {
+                path: file_path.into(),
+                content: file_content.into(),
+                sha256: Some(file_hash.clone()),
+            }],
+        };
+        let manifest = crate::domain::sync::manifest::ProjectStateManifest {
+            version: 1,
+            project_id: "kgp_test".into(),
+            revision: 1,
+            previous_manifest_hash: None,
+            kagi_json_hash: crate::domain::sync::manifest::hash_json(&project_state.kagi_json),
+            access_json_hash: crate::domain::sync::manifest::hash_json(&access_json),
+            file_hashes: vec![crate::domain::sync::manifest::FileHash {
+                path: file_path.into(),
+                sha256: file_hash,
+            }],
+            timestamp: "2026-01-01T00:00:00Z".into(),
+            signer_member_id: "kgm_test".into(),
+            signer_public_key,
+        };
+        let manifest_json = serde_json::to_string(&manifest).unwrap();
+        let signature = signing_key.sign(manifest.compute_hash().as_bytes());
+        let signature_b64 = STANDARD.encode(signature.to_bytes());
+        (project_state, manifest_json, signature_b64)
+    }
+
+    #[tokio::test]
+    async fn test_verify_pushed_manifest_accepts_valid_manifest() {
+        let repo = test_repo().await;
+        let state = test_state(repo);
+        let (project_state, manifest_json, signature) = signed_project_state_fixture();
+
+        verify_pushed_manifest(
+            &state,
+            "kgp_test",
+            0,
+            &project_state,
+            &manifest_json,
+            &signature,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_verify_pushed_manifest_rejects_tampered_file_content() {
+        let repo = test_repo().await;
+        let state = test_state(repo);
+        let (mut project_state, manifest_json, signature) = signed_project_state_fixture();
+        project_state.files[0].content = "tampered".into();
+
+        let err = verify_pushed_manifest(
+            &state,
+            "kgp_test",
+            0,
+            &project_state,
+            &manifest_json,
+            &signature,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, ServerError::InvalidProjectState(_)));
     }
 
     #[tokio::test]
@@ -1300,7 +1798,7 @@ mod tests {
         let mut envelope = make_envelope(&state, &plaintext, &client_identity);
         envelope.request_id = "kgr_1".into();
 
-        let err = create_project_request_handler(State(state), Json(envelope))
+        let err = create_project_request_handler(State(state), dummy_addr(), Json(envelope))
             .await
             .unwrap_err();
         assert!(matches!(err, ServerError::BadEnvelope(_)));
@@ -1315,9 +1813,14 @@ mod tests {
         let plaintext = plaintext_now("kgr_1", "/v1/projects/kgp_test/push", "POST");
         let envelope = make_envelope(&state, &plaintext, &client_identity);
 
-        let err = push_handler(State(state), AxumPath("kgp_test".into()), Json(envelope))
-            .await
-            .unwrap_err();
+        let err = push_handler(
+            State(state),
+            AxumPath("kgp_test".into()),
+            dummy_addr(),
+            Json(envelope),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, ServerError::AuthFailed));
     }
 
@@ -1331,9 +1834,14 @@ mod tests {
         plaintext.token = Some("wrong_token".into());
         let envelope = make_envelope(&state, &plaintext, &client_identity);
 
-        let err = push_handler(State(state), AxumPath("kgp_test".into()), Json(envelope))
-            .await
-            .unwrap_err();
+        let err = push_handler(
+            State(state),
+            AxumPath("kgp_test".into()),
+            dummy_addr(),
+            Json(envelope),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, ServerError::AuthFailed));
     }
 
@@ -1363,9 +1871,14 @@ mod tests {
         plaintext.payload = json!({"base_revision": 0, "state": {"project_id": "kgp_test", "revision": 1, "kagi_json": "{}", "access_json": "{}", "files": []}});
         let envelope = make_envelope(&state, &plaintext, &client_identity);
 
-        let err = push_handler(State(state), AxumPath("kgp_test".into()), Json(envelope))
-            .await
-            .unwrap_err();
+        let err = push_handler(
+            State(state),
+            AxumPath("kgp_test".into()),
+            dummy_addr(),
+            Json(envelope),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, ServerError::Forbidden));
     }
 
@@ -1396,10 +1909,119 @@ mod tests {
         plaintext.payload = json!({"base_revision": 0, "state": {"project_id": "kgp_b", "revision": 1, "kagi_json": "{}", "access_json": "{}", "files": []}});
         let envelope = make_envelope(&state, &plaintext, &client_identity);
 
-        let err = push_handler(State(state), AxumPath("kgp_b".into()), Json(envelope))
-            .await
-            .unwrap_err();
+        let err = push_handler(
+            State(state),
+            AxumPath("kgp_b".into()),
+            dummy_addr(),
+            Json(envelope),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, ServerError::AuthFailed));
+    }
+
+    #[tokio::test]
+    async fn test_handler_push_exceeds_file_count_limit() {
+        let repo = test_repo().await;
+        repo.create_project("kgp_test").await.unwrap();
+        let state = test_state(repo);
+        let token = "push_token";
+        let token_hash = state.hash_token(token);
+        state
+            .repo
+            .create_token(
+                "kgp_test",
+                "kgt_123",
+                &token_hash,
+                "[\"push\"]",
+                None,
+                "active",
+            )
+            .await
+            .unwrap();
+
+        let files: Vec<_> = (0..1001)
+            .map(|i| crate::domain::sync::project_state::ProjectFile {
+                path: format!("secrets/a{}.enc", i),
+                content: "x".into(),
+                sha256: None,
+            })
+            .collect();
+        let client_identity = x25519::Identity::generate();
+        let mut plaintext = plaintext_now("kgr_1", "/v1/projects/kgp_test/push", "POST");
+        plaintext.token = Some(token.into());
+        plaintext.payload = json!({
+            "base_revision": 0,
+            "state": {
+                "project_id": "kgp_test",
+                "revision": 1,
+                "kagi_json": "{}",
+                "access_json": "{}",
+                "files": files
+            }
+        });
+        let envelope = make_envelope(&state, &plaintext, &client_identity);
+
+        let err = push_handler(
+            State(state),
+            AxumPath("kgp_test".into()),
+            dummy_addr(),
+            Json(envelope),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ServerError::PayloadTooLarge));
+    }
+
+    #[tokio::test]
+    async fn test_handler_push_exceeds_total_size_limit() {
+        let repo = test_repo().await;
+        repo.create_project("kgp_test").await.unwrap();
+        let state = test_state(repo);
+        let token = "push_token";
+        let token_hash = state.hash_token(token);
+        state
+            .repo
+            .create_token(
+                "kgp_test",
+                "kgt_123",
+                &token_hash,
+                "[\"push\"]",
+                None,
+                "active",
+            )
+            .await
+            .unwrap();
+
+        let files = vec![crate::domain::sync::project_state::ProjectFile {
+            path: "secrets/big.enc".into(),
+            content: "x".repeat(50 * 1024 * 1024 + 1),
+            sha256: None,
+        }];
+        let client_identity = x25519::Identity::generate();
+        let mut plaintext = plaintext_now("kgr_1", "/v1/projects/kgp_test/push", "POST");
+        plaintext.token = Some(token.into());
+        plaintext.payload = json!({
+            "base_revision": 0,
+            "state": {
+                "project_id": "kgp_test",
+                "revision": 1,
+                "kagi_json": "{}",
+                "access_json": "{}",
+                "files": files
+            }
+        });
+        let envelope = make_envelope(&state, &plaintext, &client_identity);
+
+        let err = push_handler(
+            State(state),
+            AxumPath("kgp_test".into()),
+            dummy_addr(),
+            Json(envelope),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ServerError::PayloadTooLarge));
     }
 
     #[tokio::test]
@@ -1427,9 +2049,14 @@ mod tests {
         plaintext.token = Some(token.into());
         let envelope = make_envelope(&state, &plaintext, &client_identity);
 
-        let response = pull_handler(State(state), AxumPath("kgp_test".into()), Json(envelope))
-            .await
-            .unwrap();
+        let response = pull_handler(
+            State(state),
+            AxumPath("kgp_test".into()),
+            dummy_addr(),
+            Json(envelope),
+        )
+        .await
+        .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
     }
 
@@ -1473,9 +2100,14 @@ mod tests {
         plaintext.payload = json!({"member_id": "kgm_alice"});
         let envelope = make_envelope(&state, &plaintext, &client_identity);
 
-        let response = pull_handler(State(state), AxumPath("kgp_test".into()), Json(envelope))
-            .await
-            .unwrap();
+        let response = pull_handler(
+            State(state),
+            AxumPath("kgp_test".into()),
+            dummy_addr(),
+            Json(envelope),
+        )
+        .await
+        .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
         // Verify response body contains MAC and wrapped token
@@ -1528,9 +2160,14 @@ mod tests {
         plaintext.payload = json!({"member_id": "kgm_alice"});
         let envelope = make_envelope(&state, &plaintext, &client_identity);
 
-        let err = pull_handler(State(state), AxumPath("kgp_test".into()), Json(envelope))
-            .await
-            .unwrap_err();
+        let err = pull_handler(
+            State(state),
+            AxumPath("kgp_test".into()),
+            dummy_addr(),
+            Json(envelope),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, ServerError::Forbidden));
     }
 
@@ -1592,9 +2229,14 @@ mod tests {
         plaintext.payload = json!({"join_request": {"member_id": "kgm_bob", "name": "Bob", "recipient": "age1..."}});
         let envelope = make_envelope(&state, &plaintext, &client_identity);
 
-        let response = join_handler(State(state), AxumPath("kgp_test".into()), Json(envelope))
-            .await
-            .unwrap();
+        let response = join_handler(
+            State(state),
+            AxumPath("kgp_test".into()),
+            dummy_addr(),
+            Json(envelope),
+        )
+        .await
+        .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
     }
 
@@ -1624,9 +2266,14 @@ mod tests {
         plaintext.payload = json!({"capabilities": ["pull"]});
         let envelope = make_envelope(&state, &plaintext, &client_identity);
 
-        let err = token_issue_handler(State(state), AxumPath("kgp_test".into()), Json(envelope))
-            .await
-            .unwrap_err();
+        let err = token_issue_handler(
+            State(state),
+            AxumPath("kgp_test".into()),
+            dummy_addr(),
+            Json(envelope),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, ServerError::Forbidden));
     }
 
@@ -1656,9 +2303,14 @@ mod tests {
         plaintext.payload = json!({"token_ids": ["kgt_123"]});
         let envelope = make_envelope(&state, &plaintext, &client_identity);
 
-        let err = token_revoke_handler(State(state), AxumPath("kgp_test".into()), Json(envelope))
-            .await
-            .unwrap_err();
+        let err = token_revoke_handler(
+            State(state),
+            AxumPath("kgp_test".into()),
+            dummy_addr(),
+            Json(envelope),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, ServerError::Forbidden));
     }
 
@@ -1673,7 +2325,7 @@ mod tests {
         plaintext.payload = json!({"requester_member_id": "kgm_alice", "requester_name": "Alice", "requester_recipient": alice_recipient, "claim_secret_hash": "cs:test"});
         let envelope = make_envelope(&state, &plaintext, &client_identity);
 
-        let response = create_project_request_handler(State(state), Json(envelope))
+        let response = create_project_request_handler(State(state), dummy_addr(), Json(envelope))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -1771,6 +2423,7 @@ mod tests {
         let response = approve_project_request_handler(
             State(state),
             AxumPath("kgp_req".into()),
+            dummy_addr(),
             Json(envelope),
         )
         .await
@@ -1830,10 +2483,14 @@ mod tests {
         plaintext.token = Some(admin_token.into());
         let envelope = make_envelope(&state, &plaintext, &client_identity);
 
-        let response =
-            delete_project_handler(State(state), AxumPath("kgp_test".into()), Json(envelope))
-                .await
-                .unwrap();
+        let response = delete_project_handler(
+            State(state),
+            AxumPath("kgp_test".into()),
+            dummy_addr(),
+            Json(envelope),
+        )
+        .await
+        .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
     }
 
@@ -1875,10 +2532,14 @@ mod tests {
         plaintext.token = Some(token.into());
         let envelope = make_envelope(&state, &plaintext, &client_identity);
 
-        let response =
-            delete_project_handler(State(state), AxumPath("kgp_test".into()), Json(envelope))
-                .await
-                .unwrap();
+        let response = delete_project_handler(
+            State(state),
+            AxumPath("kgp_test".into()),
+            dummy_addr(),
+            Json(envelope),
+        )
+        .await
+        .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
     }
 
@@ -1920,9 +2581,14 @@ mod tests {
         plaintext.token = Some(token.into());
         let envelope = make_envelope(&state, &plaintext, &client_identity);
 
-        let err = delete_project_handler(State(state), AxumPath("kgp_test".into()), Json(envelope))
-            .await
-            .unwrap_err();
+        let err = delete_project_handler(
+            State(state),
+            AxumPath("kgp_test".into()),
+            dummy_addr(),
+            Json(envelope),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, ServerError::Forbidden));
     }
 
@@ -1954,9 +2620,14 @@ mod tests {
             ciphertext: "not_valid_base64!!!".into(),
         };
 
-        let err = push_handler(State(state), AxumPath("kgp_test".into()), Json(envelope))
-            .await
-            .unwrap_err();
+        let err = push_handler(
+            State(state),
+            AxumPath("kgp_test".into()),
+            dummy_addr(),
+            Json(envelope),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, ServerError::DecryptFailed(_)));
     }
 }

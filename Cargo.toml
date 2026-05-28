@@ -66,6 +66,7 @@ subtle = { version = "2.6", optional = true }
 
 # utilities (shared)
 time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
+ed25519-dalek = "2.2.0"
 
 [dev-dependencies]
 assert_cmd = "2.2.2"

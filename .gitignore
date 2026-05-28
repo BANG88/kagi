@@ -6,3 +6,4 @@
 kagi.db
 kagi.db-*
 server.key.json
+docs/server-public-readiness-plan.md

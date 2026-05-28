@@ -30,13 +30,15 @@ pub struct AppState {
 
 impl AppState {
     pub async fn new(db_path: &Path, key_file_path: &Path) -> Result<Arc<Self>, anyhow::Error> {
-        let database_url = if db_path.is_absolute() {
-            format!("sqlite://{}", db_path.display())
+        let db_path = if db_path.is_absolute() {
+            db_path.to_path_buf()
         } else {
-            let abs = std::env::current_dir()?.join(db_path);
-            format!("sqlite://{}", abs.display())
+            std::env::current_dir()?.join(db_path)
         };
-        let repo = SqliteRemoteRepository::new(&database_url).await?;
+        if let Some(parent) = db_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let repo = SqliteRemoteRepository::new_file(&db_path).await?;
 
         let key_file = if key_file_path.exists() {
             let content = fs::read_to_string(key_file_path)?;
@@ -135,10 +137,8 @@ mod tests {
 
     async fn test_repo() -> SqliteRemoteRepository {
         let id = rand::random::<u64>();
-        let path = format!("/tmp/kagi_state_test_{}.db", id);
-        SqliteRemoteRepository::new(&format!("sqlite:{}", path))
-            .await
-            .unwrap()
+        let path = std::env::temp_dir().join(format!("kagi_state_test_{}.db", id));
+        SqliteRemoteRepository::new_file(path).await.unwrap()
     }
 
     #[tokio::test]

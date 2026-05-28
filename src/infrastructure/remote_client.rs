@@ -5,6 +5,7 @@ use crate::infrastructure::remote_envelope::{decrypt_response, encrypt_request, 
 use age::x25519;
 use base64::Engine;
 use reqwest::Client;
+use url::Url;
 
 pub struct RemoteClient {
     client: Client,
@@ -14,9 +15,46 @@ pub struct RemoteClient {
     fingerprint: String,
 }
 
+fn is_localhost_url(url: &str) -> bool {
+    let parsed = match Url::parse(url) {
+        Ok(u) => u,
+        Err(_) => return false,
+    };
+    if parsed.scheme() != "http" {
+        return false;
+    }
+    match parsed.host() {
+        Some(url::Host::Domain("localhost")) => true,
+        Some(url::Host::Ipv4(ip)) if ip.is_loopback() => true,
+        Some(url::Host::Ipv6(ip)) if ip.is_loopback() => true,
+        _ => false,
+    }
+}
+
+pub fn validate_http_transport(remote_url: &str, allow_insecure: bool) -> Result<(), DomainError> {
+    if remote_url.starts_with("http://") && !is_localhost_url(remote_url) && !allow_insecure {
+        let env_override = std::env::var("KAGI_ALLOW_INSECURE_HTTP")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if !env_override {
+            return Err(DomainError::StoreCorrupted(
+                "HTTP remotes are only allowed for localhost. Use HTTPS or pass --allow-insecure-http for local testing.".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 impl RemoteClient {
-    pub async fn new(remote_url: String) -> Result<Self, DomainError> {
-        let client = Client::new();
+    pub async fn new(remote_url: String, allow_insecure: bool) -> Result<Self, DomainError> {
+        validate_http_transport(&remote_url, allow_insecure)?;
+        let client = if is_localhost_url(&remote_url) {
+            Client::builder().no_proxy().build().map_err(|e| {
+                DomainError::StoreCorrupted(format!("failed to build HTTP client: {}", e))
+            })?
+        } else {
+            Client::new()
+        };
         let url = format!("{}/v1/server-key", remote_url.trim_end_matches('/'));
         let server_key: ServerKeyResponse = client
             .get(&url)
@@ -42,8 +80,9 @@ impl RemoteClient {
     pub async fn new_pinned(
         remote_url: String,
         expected_fingerprint: &str,
+        allow_insecure: bool,
     ) -> Result<Self, DomainError> {
-        let remote = Self::new(remote_url).await?;
+        let remote = Self::new(remote_url, allow_insecure).await?;
         if remote.fingerprint != expected_fingerprint {
             return Err(DomainError::StoreCorrupted(format!(
                 "server fingerprint mismatch: expected {}, got {}",
@@ -153,5 +192,117 @@ impl RemoteClient {
         }
 
         Ok(decrypted.get("data").cloned().unwrap_or_default())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsString;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var_os(key);
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, previous }
+        }
+
+        fn unset(key: &'static str) -> Self {
+            let previous = std::env::var_os(key);
+            unsafe {
+                std::env::remove_var(key);
+            }
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            unsafe {
+                if let Some(previous) = &self.previous {
+                    std::env::set_var(self.key, previous);
+                } else {
+                    std::env::remove_var(self.key);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_is_localhost_url_localhost() {
+        assert!(is_localhost_url("http://localhost:13816"));
+        assert!(is_localhost_url("http://localhost:8787"));
+    }
+
+    #[test]
+    fn test_is_localhost_url_127_0_0_1() {
+        assert!(is_localhost_url("http://127.0.0.1:13816"));
+        assert!(is_localhost_url("http://127.0.0.1:8787"));
+    }
+
+    #[test]
+    fn test_is_localhost_url_ipv6_loopback() {
+        assert!(is_localhost_url("http://[::1]:13816"));
+    }
+
+    #[test]
+    fn test_is_localhost_url_rejects_non_loopback() {
+        assert!(!is_localhost_url("http://example.com"));
+        assert!(!is_localhost_url("http://192.168.1.1:13816"));
+        assert!(!is_localhost_url("http://10.0.0.1:13816"));
+    }
+
+    #[test]
+    fn test_is_localhost_url_rejects_https() {
+        assert!(!is_localhost_url("https://localhost:13816"));
+        assert!(!is_localhost_url("https://127.0.0.1:13816"));
+    }
+
+    #[test]
+    fn test_validate_http_transport_blocks_non_localhost_http() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _env = EnvVarGuard::unset("KAGI_ALLOW_INSECURE_HTTP");
+        let result = validate_http_transport("http://example.com", false);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("HTTP remotes are only allowed for localhost")
+        );
+    }
+
+    #[test]
+    fn test_validate_http_transport_allows_localhost_http() {
+        assert!(validate_http_transport("http://127.0.0.1:13816", false).is_ok());
+        assert!(validate_http_transport("http://localhost:13816", false).is_ok());
+    }
+
+    #[test]
+    fn test_validate_http_transport_allows_https_anywhere() {
+        assert!(validate_http_transport("https://example.com", false).is_ok());
+        assert!(validate_http_transport("https://kagi.example.com", false).is_ok());
+    }
+
+    #[test]
+    fn test_validate_http_transport_allows_insecure_with_flag() {
+        assert!(validate_http_transport("http://example.com", true).is_ok());
+    }
+
+    #[test]
+    fn test_validate_http_transport_allows_insecure_with_env() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _env = EnvVarGuard::set("KAGI_ALLOW_INSECURE_HTTP", "1");
+        assert!(validate_http_transport("http://example.com", false).is_ok());
     }
 }

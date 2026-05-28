@@ -126,10 +126,14 @@ mod tests {
         (addr, db_dir, key_dir)
     }
 
+    fn test_http_client() -> reqwest::Client {
+        reqwest::Client::builder().no_proxy().build().unwrap()
+    }
+
     #[tokio::test]
     async fn test_health_check_endpoint() {
         let (addr, _db_dir, _key_dir) = spawn_test_server(10 * 1024 * 1024).await;
-        let client = reqwest::Client::new();
+        let client = test_http_client();
         let resp = client
             .get(format!("http://{}/", addr))
             .send()
@@ -144,7 +148,7 @@ mod tests {
     #[tokio::test]
     async fn test_server_key_endpoint() {
         let (addr, _db_dir, _key_dir) = spawn_test_server(10 * 1024 * 1024).await;
-        let client = reqwest::Client::new();
+        let client = test_http_client();
         let resp = client
             .get(format!("http://{}/v1/server-key", addr))
             .send()
@@ -161,7 +165,7 @@ mod tests {
     #[tokio::test]
     async fn test_oversized_request_body_rejected() {
         let (addr, _db_dir, _key_dir) = spawn_test_server(1024).await;
-        let client = reqwest::Client::new();
+        let client = test_http_client();
         let large_body = serde_json::json!({"data": "x".repeat(2048) });
         let resp = client
             .post(format!("http://{}/v1/projects/kgp_test/push", addr))
@@ -176,7 +180,7 @@ mod tests {
     #[tokio::test]
     async fn test_malformed_json_rejected() {
         let (addr, _db_dir, _key_dir) = spawn_test_server(10 * 1024 * 1024).await;
-        let client = reqwest::Client::new();
+        let client = test_http_client();
         let resp = client
             .post(format!("http://{}/v1/projects/kgp_test/push", addr))
             .header("Content-Type", "application/json")
@@ -197,7 +201,7 @@ mod tests {
         use time::OffsetDateTime;
 
         let (addr, _db_dir, _key_dir) = spawn_test_server(10 * 1024 * 1024).await;
-        let client = reqwest::Client::new();
+        let client = test_http_client();
 
         // 1. Fetch server key
         let server_key_resp = client
@@ -270,7 +274,7 @@ mod tests {
     async fn test_rate_limit_rejects_excess_requests() {
         let (addr, _db_dir, _key_dir) =
             spawn_test_server_with_rate_limit(10 * 1024 * 1024, 1, 1).await;
-        let client = reqwest::Client::new();
+        let client = test_http_client();
 
         // First request should succeed
         let resp1 = client
