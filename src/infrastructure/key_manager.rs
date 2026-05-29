@@ -478,7 +478,7 @@ impl KeyManager {
         Ok(())
     }
 
-    fn load_keyring_project_key(
+    pub fn load_keyring_project_key(
         &self,
         project_id: &str,
     ) -> Result<Option<Zeroizing<Vec<u8>>>, DomainError> {
@@ -494,7 +494,11 @@ impl KeyManager {
         }
     }
 
-    fn save_keyring_project_key(&self, project_id: &str, key: &[u8]) -> Result<(), DomainError> {
+    pub fn save_keyring_project_key(
+        &self,
+        project_id: &str,
+        key: &[u8],
+    ) -> Result<(), DomainError> {
         if keyring_disabled() {
             return Err(DomainError::StoreCorrupted("keyring disabled".into()));
         }

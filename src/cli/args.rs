@@ -66,6 +66,10 @@ pub enum Commands {
         #[arg(long = "show")]
         show_values: bool,
 
+        /// Force plain text output (disable TUI)
+        #[arg(long)]
+        plain: bool,
+
         /// Service or environment name
         first: Option<String>,
 
@@ -74,6 +78,32 @@ pub enum Commands {
 
         /// Secret key, when service and env are both provided positionally
         third: Option<String>,
+    },
+
+    /// Delete a single secret key from a scope
+    Unset {
+        /// Optional service scope (e.g., api, web). Defaults to the inferred nested directory.
+        #[arg(short, long)]
+        service: Option<String>,
+
+        /// Service or environment name
+        first: Option<String>,
+
+        /// Environment name or secret key
+        second: Option<String>,
+
+        /// Secret key, when service and env are both provided positionally
+        third: Option<String>,
+    },
+
+    /// Search secret keys across services
+    Search {
+        /// Search query (case-insensitive)
+        query: String,
+
+        /// Also search decrypted values (requires interactive terminal)
+        #[arg(long)]
+        values: bool,
     },
 
     /// Run a command with injected environment variables
@@ -87,6 +117,17 @@ pub enum Commands {
         args: Vec<String>,
     },
 
+    /// Diagnose local project health and check for common issues
+    Doctor {
+        /// Attempt to fix recoverable issues (e.g., pending rotation journal)
+        #[arg(long)]
+        fix: bool,
+
+        /// Force plain text output (disable TUI)
+        #[arg(long)]
+        plain: bool,
+    },
+
     /// Export secrets as KEY=value lines (suitable for shell sourcing)
     Export {
         /// Optional service scope (e.g., api, web). Defaults to the inferred nested directory.
@@ -96,6 +137,10 @@ pub enum Commands {
         /// Directory to write one .env file per environment when exporting a service
         #[arg(short, long)]
         out: Option<String>,
+
+        /// Force plain text output (disable TUI)
+        #[arg(long)]
+        plain: bool,
 
         /// Service or environment name
         first: Option<String>,
@@ -161,6 +206,13 @@ pub enum Commands {
     },
 
     #[cfg(feature = "server")]
+    /// Manage project tokens (list, revoke)
+    Token {
+        #[command(subcommand)]
+        command: TokenCommands,
+    },
+
+    #[cfg(feature = "server")]
     /// Manage remote projects (join, list, approve, delete)
     Project {
         #[command(subcommand)]
@@ -209,6 +261,24 @@ pub enum Commands {
         token: Option<String>,
     },
 
+    /// Create a backup of the project and local credentials
+    Backup {
+        /// Output directory for the backup
+        #[arg(short, long)]
+        out: String,
+    },
+
+    /// Restore a project from a backup
+    Restore {
+        /// Backup directory to restore from
+        #[arg(short, long)]
+        from: String,
+
+        /// Overwrite existing files without prompting
+        #[arg(long)]
+        force: bool,
+    },
+
     #[cfg(feature = "server")]
     /// Compare local and remote revisions
     Status,
@@ -238,13 +308,21 @@ pub enum EnvCommands {
     Del {
         /// Environment name to delete
         env: String,
+
+        /// Force plain text output (disable TUI)
+        #[arg(long)]
+        plain: bool,
     },
 }
 
 #[derive(Subcommand)]
 pub enum MemberCommands {
     /// List active members and pending join requests
-    List,
+    List {
+        /// Force plain text output (disable TUI)
+        #[arg(long)]
+        plain: bool,
+    },
 
     /// Request to join this project from a new device
     Join {
@@ -278,6 +356,46 @@ pub enum RemoteCommands {
         /// Admin token from server first startup
         #[arg(long)]
         token: String,
+    },
+
+    /// Query server audit logs (admin only)
+    Audit {
+        /// Remote server URL (optional if saved via `kagi remote login`)
+        #[arg(long)]
+        remote: Option<String>,
+
+        /// Filter by project ID
+        #[arg(long)]
+        project_id: Option<String>,
+
+        /// Maximum number of events to return (1-500)
+        #[arg(long, default_value = "50")]
+        limit: i64,
+
+        /// Force plain text output (disable TUI)
+        #[arg(long)]
+        plain: bool,
+    },
+}
+
+#[cfg(feature = "server")]
+#[derive(Subcommand)]
+pub enum TokenCommands {
+    /// List project tokens on the remote server
+    List {
+        /// Remote server URL (optional if saved via `kagi remote login`)
+        #[arg(long)]
+        remote: Option<String>,
+    },
+
+    /// Revoke a project token
+    Revoke {
+        /// Remote server URL (optional if saved via `kagi remote login`)
+        #[arg(long)]
+        remote: Option<String>,
+
+        /// Token ID to revoke
+        token_id: String,
     },
 }
 

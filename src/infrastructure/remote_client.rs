@@ -354,6 +354,94 @@ impl RemoteClient {
             .map_err(Self::map_request_error)?;
         serde_json::from_value(data).map_err(|e| ClientError::RequestFailed(e.to_string()))
     }
+
+    pub async fn send_list_tokens(
+        &self,
+        project_id: &str,
+        token: &str,
+        identity: &x25519::Identity,
+    ) -> Result<serde_json::Value, ClientError> {
+        let request_id = format!("kgr_{}", nanoid::nanoid!(12));
+        let plaintext = RequestPlaintext {
+            version: 1,
+            request_id: request_id.clone(),
+            issued_at: time::OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap(),
+            operation: "token_list".into(),
+            method: "POST".into(),
+            path: format!("/v1/projects/{}/tokens/list", project_id),
+            project_id: Some(project_id.to_string()),
+            token: Some(token.to_string()),
+            claim_secret: None,
+            payload: serde_json::json!({}),
+        };
+        self.send_request(&plaintext, identity)
+            .await
+            .map_err(Self::map_request_error)
+    }
+
+    pub async fn send_revoke_tokens(
+        &self,
+        project_id: &str,
+        token: &str,
+        token_ids: &[String],
+        identity: &x25519::Identity,
+    ) -> Result<serde_json::Value, ClientError> {
+        let request_id = format!("kgr_{}", nanoid::nanoid!(12));
+        let plaintext = RequestPlaintext {
+            version: 1,
+            request_id: request_id.clone(),
+            issued_at: time::OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap(),
+            operation: "token_revoke".into(),
+            method: "POST".into(),
+            path: format!("/v1/projects/{}/tokens/revoke", project_id),
+            project_id: Some(project_id.to_string()),
+            token: Some(token.to_string()),
+            claim_secret: None,
+            payload: serde_json::json!({
+                "token_ids": token_ids,
+            }),
+        };
+        self.send_request(&plaintext, identity)
+            .await
+            .map_err(Self::map_request_error)
+    }
+
+    pub async fn send_audit_query(
+        &self,
+        token: &str,
+        project_id: Option<&str>,
+        limit: i64,
+        identity: &x25519::Identity,
+    ) -> Result<serde_json::Value, ClientError> {
+        let request_id = format!("kgr_{}", nanoid::nanoid!(12));
+        let mut payload = serde_json::json!({
+            "limit": limit.clamp(1, 500),
+        });
+        if let Some(pid) = project_id {
+            payload["project_id"] = serde_json::json!(pid);
+        }
+        let plaintext = RequestPlaintext {
+            version: 1,
+            request_id: request_id.clone(),
+            issued_at: time::OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap(),
+            operation: "audit".into(),
+            method: "POST".into(),
+            path: "/v1/audit".to_string(),
+            project_id: None,
+            token: Some(token.to_string()),
+            claim_secret: None,
+            payload,
+        };
+        self.send_request(&plaintext, identity)
+            .await
+            .map_err(Self::map_request_error)
+    }
 }
 
 #[cfg(test)]

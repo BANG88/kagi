@@ -33,6 +33,7 @@ pub async fn serve(
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
     let addr = listener.local_addr()?;
+    println!("kagi: server running on http://{}", addr);
     tracing::info!("kagi: listening on http://{}", addr);
 
     if bind.ip().is_unspecified() || !bind.ip().is_loopback() {
@@ -291,5 +292,18 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp2.status(), 429);
+    }
+
+    #[tokio::test]
+    async fn test_metrics_endpoint_requires_auth() {
+        let (addr, _db_dir, _key_dir) = spawn_test_server(10 * 1024 * 1024).await;
+        let client = test_http_client();
+        // No auth header -> should fail
+        let resp = client
+            .get(format!("http://{}/v1/metrics", addr))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 401);
     }
 }

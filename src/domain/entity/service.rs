@@ -23,6 +23,10 @@ impl Service {
     pub fn get_secret(&self, key: &str) -> Option<&Secret> {
         self.secrets.get(key)
     }
+
+    pub fn delete_secret(&mut self, key: &str) -> bool {
+        self.secrets.remove(key).is_some()
+    }
 }
 
 #[cfg(test)]

@@ -375,6 +375,44 @@ impl SqliteRemoteRepository {
         Ok(())
     }
 
+    pub async fn list_project_tokens(
+        &self,
+        project_id: &str,
+    ) -> Result<
+        Vec<(
+            String,
+            String,
+            Option<String>,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+        )>,
+        sqlx::Error,
+    > {
+        let rows = sqlx::query(
+            "SELECT token_id, capabilities_json, member_id, status, created_at, activated_at, revoked_at FROM project_tokens WHERE project_id = ? ORDER BY created_at DESC"
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                (
+                    r.try_get("token_id").unwrap_or_default(),
+                    r.try_get("capabilities_json").unwrap_or_default(),
+                    r.try_get("member_id").ok(),
+                    r.try_get("status").unwrap_or_default(),
+                    r.try_get("created_at").unwrap_or_default(),
+                    r.try_get("activated_at").ok(),
+                    r.try_get("revoked_at").ok(),
+                )
+            })
+            .collect())
+    }
+
     pub async fn get_project_meta(
         &self,
         project_id: &str,
@@ -807,6 +845,26 @@ impl SqliteRemoteRepository {
             })
             .collect())
     }
+
+    pub async fn get_metrics(&self) -> Result<(i64, i64, i64, i64), sqlx::Error> {
+        let projects: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM projects")
+            .fetch_one(&self.pool)
+            .await?;
+        let tokens: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM project_tokens WHERE status != 'revoked'")
+                .fetch_one(&self.pool)
+                .await?;
+        let admins: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM admin_tokens WHERE status = 'active'")
+                .fetch_one(&self.pool)
+                .await?;
+        let db_size: i64 = sqlx::query_scalar(
+            "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok((projects, tokens, admins, db_size))
+    }
 }
 
 #[cfg(test)]
@@ -1191,5 +1249,16 @@ mod tests {
         assert!(!meta.contains("secret"));
         assert!(!meta.contains("token"));
         assert!(!meta.contains("claim_secret"));
+    }
+
+    #[tokio::test]
+    async fn test_metrics() {
+        let repo = test_repo().await;
+        repo.create_project("kgp_test").await.unwrap();
+        let (projects, tokens, admins, db_size) = repo.get_metrics().await.unwrap();
+        assert_eq!(projects, 1);
+        assert_eq!(tokens, 0);
+        assert_eq!(admins, 0);
+        assert!(db_size > 0);
     }
 }

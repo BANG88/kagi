@@ -3,11 +3,13 @@ use crate::application::get_secret::GetSecretService;
 use crate::application::init_service::InitService;
 use crate::application::list_services::ListServicesService;
 use crate::application::run_command::RunCommandService;
+use crate::application::search_secrets::SearchSecretsService;
 use crate::application::set_secret::SetSecretService;
 use crate::application::sync_service::SyncService;
+use crate::application::unset_secret::UnsetSecretService;
 use crate::cli::args::{Cli, Commands, EnvCommands, MemberCommands};
 #[cfg(feature = "server")]
-use crate::cli::args::{ProjectCommands, RemoteCommands};
+use crate::cli::args::{ProjectCommands, RemoteCommands, TokenCommands};
 use crate::cli::style::Palette;
 use crate::domain::config::{DEFAULT_ENV_NAME, KagiConfig};
 use crate::domain::repository::secret_repo::SecretRepository;
@@ -629,6 +631,31 @@ fn confirm_env_delete(tty: bool, env: &str, c: &Palette) -> anyhow::Result<()> {
     }
 }
 
+fn confirm_unset(tty: bool, scope: &str, key: &str, c: &Palette) -> anyhow::Result<()> {
+    if !tty || !io::stdin().is_terminal() {
+        return Err(anyhow::anyhow!(
+            "kagi unset deletes encrypted secrets and requires an interactive terminal."
+        ));
+    }
+
+    eprint!(
+        "{} {} {} [y/N]: ",
+        c.prefix(),
+        c.warning("warning:"),
+        c.info(&format!(
+            "this will delete '{}.{}' permanently.",
+            scope, key
+        ))
+    );
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    if input.trim().eq_ignore_ascii_case("y") {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("aborted"))
+    }
+}
+
 fn confirm_member_remove(tty: bool, member_id: &str, c: &Palette) -> anyhow::Result<()> {
     if !tty || !io::stdin().is_terminal() {
         return Err(anyhow::anyhow!(
@@ -976,6 +1003,287 @@ async fn member_approve_server_mode(
     Ok(())
 }
 
+pub struct DoctorCheck {
+    pub name: &'static str,
+    pub ok: bool,
+    pub detail: String,
+}
+
+pub fn collect_doctor_checks(base_path: &Path) -> anyhow::Result<(Vec<DoctorCheck>, usize, usize)> {
+    let mut checks: Vec<DoctorCheck> = Vec::new();
+    let mut warnings = 0;
+    let mut errors = 0;
+
+    // Check 1: kagi.json exists and is valid
+    let kagi_json_path = base_path.join("kagi.json");
+    if !kagi_json_path.exists() {
+        checks.push(DoctorCheck {
+            name: "kagi.json exists",
+            ok: false,
+            detail: "missing .kagi/kagi.json — run `kagi init`".to_string(),
+        });
+        errors += 1;
+    } else {
+        let content = fs::read_to_string(&kagi_json_path)?;
+        match serde_json::from_str::<serde_json::Value>(&content) {
+            Ok(json) => {
+                let version = json.get("version").and_then(|v| v.as_str()).unwrap_or("");
+                if version == "2" || version == "3" {
+                    checks.push(DoctorCheck {
+                        name: "kagi.json format",
+                        ok: true,
+                        detail: "valid v2/v3 format".to_string(),
+                    });
+                } else {
+                    checks.push(DoctorCheck {
+                        name: "kagi.json format",
+                        ok: false,
+                        detail: format!("unsupported version '{}'", version),
+                    });
+                    errors += 1;
+                }
+            }
+            Err(e) => {
+                checks.push(DoctorCheck {
+                    name: "kagi.json format",
+                    ok: false,
+                    detail: format!("invalid JSON: {}", e),
+                });
+                errors += 1;
+            }
+        }
+    }
+
+    // Check 2: access.json exists and is valid JSON
+    let access_json_path = base_path.join("access.json");
+    if !access_json_path.exists() {
+        checks.push(DoctorCheck {
+            name: "access.json exists",
+            ok: false,
+            detail: "missing .kagi/access.json".to_string(),
+        });
+        errors += 1;
+    } else {
+        let content = fs::read_to_string(&access_json_path)?;
+        match serde_json::from_str::<serde_json::Value>(&content) {
+            Ok(_) => checks.push(DoctorCheck {
+                name: "access.json format",
+                ok: true,
+                detail: "valid JSON".to_string(),
+            }),
+            Err(e) => {
+                checks.push(DoctorCheck {
+                    name: "access.json format",
+                    ok: false,
+                    detail: format!("invalid JSON: {}", e),
+                });
+                errors += 1;
+            }
+        }
+    }
+
+    // Check 3: secrets directory exists
+    let secrets_path = base_path.join("secrets");
+    if !secrets_path.exists() {
+        checks.push(DoctorCheck {
+            name: "secrets directory",
+            ok: false,
+            detail: "missing .kagi/secrets/".to_string(),
+        });
+        warnings += 1;
+    } else {
+        checks.push(DoctorCheck {
+            name: "secrets directory",
+            ok: true,
+            detail: "exists".to_string(),
+        });
+    }
+
+    // Check 4: project key can be loaded
+    let key_result = load_project_key(base_path);
+    match &key_result {
+        Ok(_) => checks.push(DoctorCheck {
+            name: "project key",
+            ok: true,
+            detail: "loadable".to_string(),
+        }),
+        Err(e) => {
+            checks.push(DoctorCheck {
+                name: "project key",
+                ok: false,
+                detail: format!("cannot load: {}", e),
+            });
+            errors += 1;
+        }
+    }
+
+    // Check 5: all services can be decrypted
+    if let Ok(key) = &key_result {
+        let store = store_from_project_key(base_path.to_path_buf(), key)?;
+        match store.list_services() {
+            Ok(services) => {
+                let mut decrypt_ok = 0;
+                let mut decrypt_fail = 0;
+                for service in services {
+                    match store.load(&service) {
+                        Ok(_) => decrypt_ok += 1,
+                        Err(e) => {
+                            decrypt_fail += 1;
+                            if decrypt_fail <= 3 {
+                                checks.push(DoctorCheck {
+                                    name: "service decrypt",
+                                    ok: false,
+                                    detail: format!("{}: {}", service, e),
+                                });
+                            }
+                        }
+                    }
+                }
+                if decrypt_fail == 0 {
+                    checks.push(DoctorCheck {
+                        name: "service decrypt",
+                        ok: true,
+                        detail: format!("{} services decrypted", decrypt_ok),
+                    });
+                } else {
+                    errors += 1;
+                    if decrypt_fail > 3 {
+                        checks.push(DoctorCheck {
+                            name: "service decrypt",
+                            ok: false,
+                            detail: format!("... and {} more failures", decrypt_fail - 3),
+                        });
+                    }
+                }
+            }
+            Err(e) => {
+                checks.push(DoctorCheck {
+                    name: "service list",
+                    ok: false,
+                    detail: format!("cannot list: {}", e),
+                });
+                errors += 1;
+            }
+        }
+    }
+
+    // Check 6: rotation journal
+    let journal_path = KeyManager::new(base_path.to_path_buf())
+        .rotation_journal_path()
+        .unwrap_or_else(|_| base_path.join("rotation.journal.json"));
+    if journal_path.exists() {
+        checks.push(DoctorCheck {
+            name: "rotation journal",
+            ok: false,
+            detail: "pending rotation journal found — run `kagi doctor --fix` to recover"
+                .to_string(),
+        });
+        warnings += 1;
+    } else {
+        checks.push(DoctorCheck {
+            name: "rotation journal",
+            ok: true,
+            detail: "no pending journal".to_string(),
+        });
+    }
+
+    Ok((checks, warnings, errors))
+}
+
+fn run_doctor(base_path: &Path, fix: bool, tty: bool, c: &Palette) -> anyhow::Result<()> {
+    let (checks, warnings, errors) = collect_doctor_checks(base_path)?;
+
+    // Print report
+    println!("{} {}", c.prefix(), c.accent("Kagi Doctor"));
+    for check in checks {
+        if check.ok {
+            println!(
+                "{} {} {}",
+                c.prefix(),
+                c.success("✓"),
+                c.muted(&format!("{} — {}", check.name, check.detail))
+            );
+        } else {
+            println!(
+                "{} {} {}",
+                c.prefix(),
+                c.error("✗"),
+                c.info(&format!("{} — {}", check.name, check.detail))
+            );
+        }
+    }
+
+    let summary = if errors > 0 {
+        format!("{} error(s), {} warning(s)", errors, warnings)
+    } else if warnings > 0 {
+        format!("{} warning(s)", warnings)
+    } else {
+        "all checks passed".to_string()
+    };
+    println!("{} {}", c.prefix(), c.accent(&summary));
+
+    // Fix mode
+    let journal_path = KeyManager::new(base_path.to_path_buf())
+        .rotation_journal_path()
+        .unwrap_or_else(|_| base_path.join("rotation.journal.json"));
+    if fix && journal_path.exists() {
+        if !tty || !io::stdin().is_terminal() {
+            return Err(anyhow::anyhow!(
+                "kagi doctor --fix requires an interactive terminal."
+            ));
+        }
+        eprint!(
+            "{} {} {} [y/N]: ",
+            c.prefix(),
+            c.warning("warning:"),
+            c.info("recover pending rotation journal?")
+        );
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if input.trim().eq_ignore_ascii_case("y") {
+            let recovered = recover_pending_rotation(base_path)?;
+            if recovered {
+                println!(
+                    "{} {}",
+                    c.prefix(),
+                    c.success("recovered pending rotation.")
+                );
+            } else {
+                println!(
+                    "{} {}",
+                    c.prefix(),
+                    c.warning("no pending rotation to recover.")
+                );
+            }
+            // Recompute status after fix
+            let (_checks_after, warnings_after, errors_after) = collect_doctor_checks(base_path)?;
+            let summary = if errors_after > 0 {
+                format!("{} error(s), {} warning(s)", errors_after, warnings_after)
+            } else if warnings_after > 0 {
+                format!("{} warning(s)", warnings_after)
+            } else {
+                "all checks passed".to_string()
+            };
+            println!("{} {}", c.prefix(), c.accent(&summary));
+            if errors_after > 0 {
+                std::process::exit(2);
+            } else if warnings_after > 0 {
+                std::process::exit(1);
+            }
+            return Ok(());
+        } else {
+            println!("{} {}", c.prefix(), c.muted("skipped."));
+        }
+    }
+
+    if errors > 0 {
+        std::process::exit(2);
+    } else if warnings > 0 {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
 fn resolve_kagi_base() -> anyhow::Result<(PathBuf, Option<String>)> {
     let cwd = std::env::current_dir()?;
 
@@ -1073,7 +1381,7 @@ fn store_from_project_key(base_path: PathBuf, project_key: &[u8]) -> anyhow::Res
     Ok(FileStore::new(base_path, Box::new(encryptor)))
 }
 
-fn recover_pending_rotation(base_path: &Path) -> anyhow::Result<bool> {
+pub(crate) fn recover_pending_rotation(base_path: &Path) -> anyhow::Result<bool> {
     let key_manager = KeyManager::new(base_path.to_path_buf());
     recover_pending_rotation_with_key_manager(base_path, &key_manager)
 }
@@ -1282,6 +1590,16 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 )
             );
         }
+        Commands::Doctor { fix, plain } => {
+            let (base_path, _inferred) = resolve_kagi_base()?;
+            #[cfg(feature = "tui")]
+            if !plain && tty {
+                return crate::cli::tui::run_tui_doctor(&base_path, fix);
+            }
+            #[cfg(not(feature = "tui"))]
+            let _ = plain;
+            run_doctor(&base_path, fix, tty, &c)?;
+        }
         Commands::Set {
             service: service_name,
             desc,
@@ -1326,11 +1644,18 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Get {
             service: service_name,
             show_values,
+            plain,
             first,
             second,
             third,
         } => {
             let (store, inferred) = resolve_store()?;
+            #[cfg(feature = "tui")]
+            if !plain && tty {
+                return crate::cli::tui::run_tui_get(store, show_values);
+            }
+            #[cfg(not(feature = "tui"))]
+            let _ = plain;
             let default_envs = store
                 .default_envs()
                 .map_err(|e| anyhow::anyhow!("Failed to read default envs: {}", e))?;
@@ -1398,6 +1723,90 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                         println!("{}", value);
                     }
                 }
+            }
+        }
+        Commands::Unset {
+            service: service_name,
+            first,
+            second,
+            third,
+        } => {
+            let (store, inferred) = resolve_store()?;
+            let default_envs = store
+                .default_envs()
+                .map_err(|e| anyhow::anyhow!("Failed to read default envs: {}", e))?;
+            let default_env = store
+                .default_env()
+                .unwrap_or_else(|_| DEFAULT_ENV_NAME.to_string());
+            let services = store
+                .list_services()
+                .map_err(|e| anyhow::anyhow!("Failed to list services: {}", e))?;
+            let selection = parse_get_selection(
+                &services,
+                TargetContext {
+                    default_envs: &default_envs,
+                    default_env: &default_env,
+                    inferred_service: inferred,
+                    service_flag: service_name,
+                },
+                first,
+                second,
+                third,
+            )?;
+            match selection {
+                GetSelection::Key(scope, key) => {
+                    confirm_unset(tty, &scope, &key, &c)?;
+                    let unset_service = UnsetSecretService::new(store);
+                    let existed = unset_service.execute(&scope, &key)?;
+                    if existed {
+                        println!(
+                            "{} {} {}.{}",
+                            c.prefix(),
+                            c.success("unset"),
+                            c.accent(&scope),
+                            c.key(&key)
+                        );
+                    } else {
+                        println!(
+                            "{} {} {}.{} {}",
+                            c.prefix(),
+                            c.warning("warning:"),
+                            c.accent(&scope),
+                            c.key(&key),
+                            c.muted("did not exist")
+                        );
+                    }
+                }
+                _ => {
+                    return Err(anyhow::anyhow!(
+                        "Usage: kagi unset [--service <service>] [env] <key>\n\nUnset only supports a single key. Use 'kagi env del' to remove an entire environment."
+                    ));
+                }
+            }
+        }
+        Commands::Search { query, values } => {
+            let (store, _inferred) = resolve_store()?;
+            let search_service = SearchSecretsService::new(store);
+            let results = if values {
+                confirm_secret_output(tty, "search", &c)?;
+                search_service.search_values(&query)?
+            } else {
+                search_service.search_keys(&query)?
+            };
+            if results.is_empty() {
+                println!("{} {}", c.prefix(), c.muted("no matches found."));
+            } else {
+                let items: Vec<(String, String, Option<String>)> = results
+                    .into_iter()
+                    .map(|r| {
+                        (
+                            format!("{}.{}", r.scope, r.key),
+                            String::new(),
+                            r.description,
+                        )
+                    })
+                    .collect();
+                draw_key_table(&items, false, &c);
             }
         }
         Commands::Run {
@@ -1513,54 +1922,60 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Export {
             service: service_name,
             out,
+            plain,
             first,
             second,
         } => {
-            confirm_secret_output(tty, "kagi export", &c)?;
             let (store, inferred) = resolve_store()?;
             let default_envs = store
                 .default_envs()
                 .map_err(|e| anyhow::anyhow!("Failed to read default envs: {}", e))?;
             let selection =
                 parse_export_selection(&default_envs, inferred, service_name, first, second)?;
-            match selection {
-                ScopeSelection::One(scope) => {
-                    let export_service = ExportEnvService::new(store);
-                    let output = export_service.execute(&scope)?;
-                    if let Some(out) = out {
-                        let path = write_export_file(Path::new(&out), &scope, &output)?;
-                        println!(
-                            "{} {} {}",
-                            c.prefix(),
-                            c.success("exported"),
-                            c.accent(&path.display().to_string())
-                        );
-                    } else {
-                        println!("{}", output);
-                    }
-                }
+            #[cfg(feature = "tui")]
+            if !plain && tty {
+                let scopes = match &selection {
+                    ScopeSelection::One(scope) => vec![scope.clone()],
+                    ScopeSelection::Service(service) => service_scopes_from_store(&store, service)?,
+                };
+                return crate::cli::tui::run_tui_export(store, scopes, out);
+            }
+            #[cfg(not(feature = "tui"))]
+            let _ = plain;
+            confirm_secret_output(tty, "kagi export", &c)?;
+            let scopes = match &selection {
+                ScopeSelection::One(scope) => vec![scope.clone()],
                 ScopeSelection::Service(service) => {
-                    let Some(out) = out else {
+                    if out.is_none() {
                         return Err(anyhow::anyhow!(
                             "Exporting all environments for a service requires --out <dir>. Use `kagi export {} <env>` for stdout.",
                             service
                         ));
-                    };
-                    let out_dir = Path::new(&out);
-                    let scopes = service_scopes_from_store(&store, &service)?;
-                    let export_service = ExportEnvService::new(store);
-                    for scope in scopes {
-                        let output = export_service.execute(&scope)?;
-                        let path = write_export_file(out_dir, &scope, &output)?;
-                        println!(
-                            "{} {} {}",
-                            c.prefix(),
-                            c.success("exported"),
-                            c.accent(&path.display().to_string())
-                        );
                     }
+                    service_scopes_from_store(&store, service)?
+                }
+            };
+            let export_service = ExportEnvService::new(store);
+            for scope in scopes {
+                let output = export_service.execute(&scope)?;
+                if let Some(ref out) = out {
+                    let path = write_export_file(Path::new(out), &scope, &output)?;
+                    println!(
+                        "{} {} {}",
+                        c.prefix(),
+                        c.success("exported"),
+                        c.accent(&path.display().to_string())
+                    );
+                } else {
+                    println!("{}", output);
                 }
             }
+        }
+        Commands::Backup { out } => {
+            run_backup(&out, &c)?;
+        }
+        Commands::Restore { from, force } => {
+            run_restore(&from, force, &c)?;
         }
         Commands::Import {
             service: service_name,
@@ -1730,8 +2145,25 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                         c.accent(&new)
                     );
                 }
-                EnvCommands::Del { env } => {
-                    confirm_env_delete(tty, &env, &c)?;
+                EnvCommands::Del { env, plain } => {
+                    #[cfg(feature = "tui")]
+                    {
+                        let mut tui_confirmed = false;
+                        if !plain && tty {
+                            if !crate::cli::tui::run_tui_env_del(&store, &env)? {
+                                return Ok(());
+                            }
+                            tui_confirmed = true;
+                        }
+                        if !tui_confirmed {
+                            confirm_env_delete(tty, &env, &c)?;
+                        }
+                    }
+                    #[cfg(not(feature = "tui"))]
+                    {
+                        let _ = plain;
+                        confirm_env_delete(tty, &env, &c)?;
+                    }
                     store.delete_env(&env)?;
                     println!(
                         "{} {} {}",
@@ -1746,7 +2178,13 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let (base_path, _) = resolve_kagi_base()?;
             let key_manager = KeyManager::new(base_path.clone());
             match command {
-                MemberCommands::List => {
+                MemberCommands::List { plain } => {
+                    #[cfg(feature = "tui")]
+                    if !plain && tty {
+                        return crate::cli::tui::run_tui_member_list();
+                    }
+                    #[cfg(not(feature = "tui"))]
+                    let _ = plain;
                     let members = key_manager.list_members()?;
                     let requests = key_manager.list_join_requests()?;
                     #[cfg(feature = "server")]
@@ -1938,7 +2376,6 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 ));
             }
 
-            println!("kagi: starting server on http://{}", bind_addr);
             println!("kagi: database: {}", db_path.display());
             println!("kagi: key file: {}", key_file_path.display());
             crate::server::serve(bind_addr, &db_path, &key_file_path, max_body_size).await?;
@@ -1947,6 +2384,175 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Remote { command } => match command {
             RemoteCommands::Login { remote, token } => {
                 remote_login(&remote, &token, &c, allow_insecure).await?;
+            }
+            RemoteCommands::Audit {
+                remote,
+                project_id,
+                limit,
+                plain,
+            } => {
+                let remote_url = resolve_admin_remote(remote).await?;
+                #[cfg(feature = "tui")]
+                if !plain && tty {
+                    let events = load_audit_events(
+                        &remote_url,
+                        project_id.as_deref(),
+                        limit,
+                        allow_insecure,
+                    )
+                    .await?;
+                    return crate::cli::tui::run_tui_audit_log(events);
+                }
+                #[cfg(not(feature = "tui"))]
+                let _ = plain;
+                remote_audit(
+                    &remote_url,
+                    project_id.as_deref(),
+                    limit,
+                    &c,
+                    allow_insecure,
+                )
+                .await?;
+            }
+        },
+        #[cfg(feature = "server")]
+        Commands::Token { command } => match command {
+            TokenCommands::List { remote } => {
+                let (base_path, _) = resolve_kagi_base()?;
+                let config_path = base_path.join(crate::domain::config::KAGI_CONFIG_FILE);
+                let config: serde_json::Value =
+                    serde_json::from_str(&fs::read_to_string(&config_path)?)?;
+                let project_id = config["project_id"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("missing project_id"))?;
+                let remote_url =
+                    config["settings"]["sync"]["remote"]
+                        .as_str()
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("missing remote URL. Run kagi init --remote first.")
+                        })?;
+                let remote_url = if let Some(url) = remote {
+                    url.clone()
+                } else {
+                    remote_url.to_string()
+                };
+                let local_data_dir = local_data_dir()?;
+                let remote_store =
+                    crate::infrastructure::remote_local::RemoteLocalStore::new(local_data_dir);
+                let token = remote_store
+                    .load_token(project_id)?
+                    .ok_or_else(|| anyhow::anyhow!("no project token found"))?;
+                let meta = remote_store
+                    .load_remote_metadata(project_id)?
+                    .ok_or_else(|| anyhow::anyhow!("no remote metadata found"))?;
+                let key_manager = KeyManager::new(base_path.clone());
+                let identity = key_manager.load_or_create_identity()?;
+                let client = crate::infrastructure::remote_client::RemoteClient::new_pinned(
+                    remote_url,
+                    &meta.server_fingerprint,
+                    allow_insecure,
+                )
+                .await?;
+                let data = client
+                    .send_list_tokens(project_id, &token, &identity)
+                    .await?;
+                let tokens = data
+                    .get("tokens")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| anyhow::anyhow!("invalid response: missing tokens"))?;
+                if tokens.is_empty() {
+                    println!("{} {}", c.prefix(), c.muted("no tokens found."));
+                } else {
+                    println!(
+                        "{} {}",
+                        c.prefix(),
+                        c.accent(&format!("{} token(s)", tokens.len()))
+                    );
+                    for t in tokens {
+                        let id = t["token_id"].as_str().unwrap_or("?");
+                        let caps: Vec<String> = t["capabilities"]
+                            .as_array()
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        let status = t["status"].as_str().unwrap_or("?");
+                        let member = t["member_id"].as_str().unwrap_or("?");
+                        let created = t["created_at"].as_str().unwrap_or("?");
+                        println!(
+                            "  {} {} | {} | {} | {}",
+                            c.key(id),
+                            c.muted(&format!("[{}]", status)),
+                            c.accent(member),
+                            c.info(&caps.join(", ")),
+                            c.muted(created)
+                        );
+                    }
+                }
+            }
+            TokenCommands::Revoke { remote, token_id } => {
+                let (base_path, _) = resolve_kagi_base()?;
+                let config_path = base_path.join(crate::domain::config::KAGI_CONFIG_FILE);
+                let config: serde_json::Value =
+                    serde_json::from_str(&fs::read_to_string(&config_path)?)?;
+                let project_id = config["project_id"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("missing project_id"))?;
+                let remote_url =
+                    config["settings"]["sync"]["remote"]
+                        .as_str()
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("missing remote URL. Run kagi init --remote first.")
+                        })?;
+                let remote_url = if let Some(url) = remote {
+                    url.clone()
+                } else {
+                    remote_url.to_string()
+                };
+                let local_data_dir = local_data_dir()?;
+                let remote_store =
+                    crate::infrastructure::remote_local::RemoteLocalStore::new(local_data_dir);
+                let token = remote_store
+                    .load_token(project_id)?
+                    .ok_or_else(|| anyhow::anyhow!("no project token found"))?;
+                let meta = remote_store
+                    .load_remote_metadata(project_id)?
+                    .ok_or_else(|| anyhow::anyhow!("no remote metadata found"))?;
+                let key_manager = KeyManager::new(base_path.clone());
+                let identity = key_manager.load_or_create_identity()?;
+                let client = crate::infrastructure::remote_client::RemoteClient::new_pinned(
+                    remote_url,
+                    &meta.server_fingerprint,
+                    allow_insecure,
+                )
+                .await?;
+                let data = client
+                    .send_revoke_tokens(
+                        project_id,
+                        &token,
+                        std::slice::from_ref(&token_id),
+                        &identity,
+                    )
+                    .await?;
+                let revoked = data
+                    .get("revoked_token_ids")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect::<Vec<String>>()
+                    })
+                    .unwrap_or_default();
+                println!(
+                    "{} {}",
+                    c.prefix(),
+                    c.success(&format!("revoked {} token(s)", revoked.len()))
+                );
+                for id in revoked {
+                    println!("  {}", c.key(&id));
+                }
             }
         },
         #[cfg(feature = "server")]
@@ -2408,7 +3014,6 @@ fn default_server_key_path() -> anyhow::Result<PathBuf> {
     Ok(base.join("server/server.key.json"))
 }
 
-#[cfg(feature = "server")]
 fn local_data_dir() -> anyhow::Result<PathBuf> {
     #[cfg(test)]
     {
@@ -2964,6 +3569,67 @@ async fn remote_login(
 }
 
 #[cfg(feature = "server")]
+async fn remote_audit(
+    remote_url: &str,
+    project_id: Option<&str>,
+    limit: i64,
+    c: &Palette,
+    allow_insecure: bool,
+) -> anyhow::Result<()> {
+    let events = load_audit_events(remote_url, project_id, limit, allow_insecure).await?;
+    if events.is_empty() {
+        println!("{} {}", c.prefix(), c.muted("no audit events found."));
+    } else {
+        println!(
+            "{} {}",
+            c.prefix(),
+            c.accent(&format!("{} event(s)", events.len()))
+        );
+        for e in events {
+            let ts = e["created_at"].as_str().unwrap_or("?");
+            let event_type = e["event_type"].as_str().unwrap_or("?");
+            let pid = e["project_id"].as_str().unwrap_or("-");
+            let actor = e["actor_token_id"].as_str().unwrap_or("-");
+            let meta = e["metadata_json"].as_str().unwrap_or("");
+            println!(
+                "  {} {} {} {} {}",
+                c.muted(ts),
+                c.accent(event_type),
+                c.info(pid),
+                c.muted(&format!("({})", actor)),
+                c.muted(meta)
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "server")]
+async fn load_audit_events(
+    remote_url: &str,
+    project_id: Option<&str>,
+    limit: i64,
+    allow_insecure: bool,
+) -> anyhow::Result<Vec<serde_json::Value>> {
+    let remote_client = crate::infrastructure::remote_client::RemoteClient::new(
+        remote_url.to_string(),
+        allow_insecure,
+    )
+    .await?;
+    let token = resolve_admin_token(remote_client.fingerprint())?;
+    let key_manager = KeyManager::new(local_data_dir()?.join("identities"));
+    let identity = key_manager.load_or_create_identity()?;
+    let data = remote_client
+        .send_audit_query(&token, project_id, limit, &identity)
+        .await?;
+    let events = data
+        .get("events")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| anyhow::anyhow!("invalid response: missing events"))?;
+    Ok(events.clone())
+}
+
+#[cfg(feature = "server")]
 async fn resolve_admin_remote(remote: Option<String>) -> anyhow::Result<String> {
     if let Some(url) = remote {
         return Ok(url);
@@ -3287,6 +3953,325 @@ async fn project_del_remote(
         c.accent(project_id)
     );
     Ok(())
+}
+
+fn run_backup(out: &str, c: &Palette) -> anyhow::Result<()> {
+    let out_dir = Path::new(out);
+    if out_dir.exists() {
+        return Err(anyhow::anyhow!(
+            "output directory '{}' already exists. Choose a different path.",
+            out
+        ));
+    }
+
+    let (base_path, _) = resolve_kagi_base()?;
+    let local_data_dir = local_data_dir()?;
+    let key_manager = KeyManager::new(base_path.clone());
+    let project_id = key_manager.project_id()?;
+
+    let kagi_backup = out_dir.join("kagi");
+    let home_backup = out_dir.join("home");
+
+    // Prevent destination-inside-source recursion
+    let canonical_out = out_dir
+        .canonicalize()
+        .unwrap_or_else(|_| out_dir.to_path_buf());
+    let canonical_base = base_path
+        .canonicalize()
+        .unwrap_or_else(|_| base_path.to_path_buf());
+    let canonical_home = local_data_dir
+        .canonicalize()
+        .unwrap_or_else(|_| local_data_dir.clone());
+    if canonical_out.starts_with(&canonical_base) || canonical_out.starts_with(&canonical_home) {
+        return Err(anyhow::anyhow!(
+            "output directory '{}' is inside the source tree. Choose a different path.",
+            out
+        ));
+    }
+
+    // Copy .kagi/ directory
+    copy_dir_all(&base_path, &kagi_backup)?;
+
+    // Copy KAGI_HOME relevant files (scope to current project only)
+    let mut copied_home_files = Vec::new();
+    if local_data_dir.exists() {
+        fs::create_dir_all(&home_backup)?;
+        // identities and admins are global (not project-specific)
+        for rel_path in ["identities", "admins"] {
+            let src = local_data_dir.join(rel_path);
+            if src.exists() {
+                let dst = home_backup.join(rel_path);
+                copy_dir_all(&src, &dst)?;
+                copied_home_files.push(rel_path.to_string());
+            }
+        }
+        // projects/ is scoped to current project only
+        let projects_src = local_data_dir.join("projects");
+        if projects_src.exists() {
+            let project_src = projects_src.join(&project_id);
+            if project_src.exists() {
+                let dst = home_backup.join(format!("projects/{}", project_id));
+                fs::create_dir_all(dst.parent().unwrap())?;
+                copy_dir_all(&project_src, &dst)?;
+                copied_home_files.push(format!("projects/{}", project_id));
+            }
+        }
+    }
+
+    // Check if project key is in keyring
+    let mut keyring_exported = false;
+    if let Ok(Some(key)) = key_manager.load_keyring_project_key(&project_id) {
+        let key_path = out_dir.join("keyring_project_key.hex");
+        fs::write(&key_path, hex::encode(key.as_slice()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600))?;
+        }
+        keyring_exported = true;
+    }
+
+    // Write manifest
+    let mut manifest = serde_json::Map::new();
+    manifest.insert("version".to_string(), serde_json::json!(1));
+    manifest.insert("project_id".to_string(), serde_json::json!(project_id));
+    let now = std::time::SystemTime::now();
+    let created_at = format!(
+        "{}",
+        now.duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    );
+    manifest.insert("created_at".to_string(), serde_json::json!(created_at));
+    manifest.insert(
+        "keyring_exported".to_string(),
+        serde_json::json!(keyring_exported),
+    );
+    manifest.insert(
+        "home_files".to_string(),
+        serde_json::json!(copied_home_files),
+    );
+
+    let manifest_path = out_dir.join("manifest.json");
+    fs::write(&manifest_path, serde_json::to_string_pretty(&manifest)?)?;
+
+    // Compute checksums
+    let mut checksums = serde_json::Map::new();
+    collect_checksums(out_dir, out_dir, &mut checksums)?;
+    let checksum_path = out_dir.join("checksums.json");
+    fs::write(&checksum_path, serde_json::to_string_pretty(&checksums)?)?;
+
+    println!(
+        "{} {} {}",
+        c.prefix(),
+        c.success("backup created"),
+        c.accent(
+            &out_dir
+                .canonicalize()
+                .unwrap_or_else(|_| out_dir.to_path_buf())
+                .display()
+                .to_string()
+        )
+    );
+    if keyring_exported {
+        println!(
+            "{} {} {}",
+            c.prefix(),
+            c.warning("note:"),
+            c.info("project key was exported from OS keychain to 'keyring_project_key.hex'. Store this backup securely.")
+        );
+    }
+    println!(
+        "{} {} {}",
+        c.prefix(),
+        c.muted("manifest:"),
+        c.muted(&manifest_path.display().to_string())
+    );
+    Ok(())
+}
+
+fn run_restore(from: &str, force: bool, c: &Palette) -> anyhow::Result<()> {
+    let from_dir = Path::new(from);
+    if !from_dir.is_dir() {
+        return Err(anyhow::anyhow!("'{}' is not a directory", from));
+    }
+
+    let manifest_path = from_dir.join("manifest.json");
+    let checksum_path = from_dir.join("checksums.json");
+    if !manifest_path.exists() {
+        return Err(anyhow::anyhow!("missing manifest.json in backup directory"));
+    }
+    if !checksum_path.exists() {
+        return Err(anyhow::anyhow!(
+            "missing checksums.json in backup directory"
+        ));
+    }
+
+    let manifest: serde_json::Value = serde_json::from_str(&fs::read_to_string(&manifest_path)?)?;
+    let expected_checksums: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&checksum_path)?)?;
+    let version = manifest["version"].as_u64().unwrap_or(0);
+    if version != 1 {
+        return Err(anyhow::anyhow!("unsupported backup version: {}", version));
+    }
+
+    // Verify checksums
+    let mut actual_checksums = serde_json::Map::new();
+    collect_checksums(from_dir, from_dir, &mut actual_checksums)?;
+    let expected = expected_checksums
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("invalid checksums.json"))?;
+    for (path, expected_hash) in expected {
+        let expected_hash = expected_hash.as_str().unwrap_or("");
+        let actual_hash = actual_checksums
+            .get(path)
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if actual_hash != expected_hash {
+            return Err(anyhow::anyhow!(
+                "checksum mismatch for {}: expected {}, got {}",
+                path,
+                expected_hash,
+                actual_hash
+            ));
+        }
+    }
+
+    let project_id = manifest["project_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing project_id in manifest"))?;
+    let keyring_exported = manifest["keyring_exported"].as_bool().unwrap_or(false);
+
+    // Restore .kagi/ to current directory
+    let kagi_backup = from_dir.join("kagi");
+    let cwd = std::env::current_dir()?;
+    let target_kagi = cwd.join(".kagi");
+    if target_kagi.exists() && !force {
+        return Err(anyhow::anyhow!(
+            ".kagi/ already exists in current directory. Use --force to overwrite."
+        ));
+    }
+    if kagi_backup.exists() {
+        if target_kagi.exists() {
+            fs::remove_dir_all(&target_kagi)?;
+        }
+        copy_dir_all(&kagi_backup, &target_kagi)?;
+    }
+
+    // Restore KAGI_HOME files
+    let home_backup = from_dir.join("home");
+    let local_data_dir = local_data_dir()?;
+    if home_backup.exists()
+        && let Some(home_files) = manifest["home_files"].as_array()
+    {
+        for rel_path in home_files {
+            if let Some(rel_path) = rel_path.as_str() {
+                // Validate path: no path traversal, no absolute paths
+                if rel_path.starts_with('/') || rel_path.contains("..") {
+                    return Err(anyhow::anyhow!(
+                        "invalid path in backup manifest: '{}'. Refusing to restore.",
+                        rel_path
+                    ));
+                }
+                let src = home_backup.join(rel_path);
+                let dst = local_data_dir.join(rel_path);
+                if src.exists() {
+                    if dst.exists() && !force {
+                        return Err(anyhow::anyhow!(
+                            "{} already exists. Use --force to overwrite.",
+                            dst.display()
+                        ));
+                    }
+                    if dst.exists() {
+                        fs::remove_dir_all(&dst)?;
+                    }
+                    copy_dir_all(&src, &dst)?;
+                }
+            }
+        }
+    }
+
+    // Re-import keyring if exported
+    if keyring_exported {
+        let key_path = from_dir.join("keyring_project_key.hex");
+        if key_path.exists() {
+            let key_hex = fs::read_to_string(&key_path)?;
+            let key_manager = KeyManager::new(target_kagi.clone());
+            let key = decode_hex(key_hex.trim())?;
+            key_manager.save_keyring_project_key(project_id, &key)?;
+            // Securely remove the exported key file after import
+            #[cfg(unix)]
+            {
+                let mut file = fs::OpenOptions::new().write(true).open(&key_path)?;
+                let len = file.metadata()?.len();
+                file.write_all(&vec![0u8; len as usize])?;
+            }
+            let _ = fs::remove_file(&key_path);
+            println!(
+                "{} {} {}",
+                c.prefix(),
+                c.success("restored project key to OS keychain"),
+                c.muted("(exported key file wiped)")
+            );
+        }
+    }
+
+    println!(
+        "{} {} {}",
+        c.prefix(),
+        c.success("restored from backup"),
+        c.accent(from)
+    );
+    println!(
+        "{} {} {}",
+        c.prefix(),
+        c.info("run"),
+        c.accent("kagi doctor")
+    );
+    Ok(())
+}
+
+fn copy_dir_all(src: &Path, dst: &Path) -> anyhow::Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let path = entry.path();
+        let dest = dst.join(entry.file_name());
+        if path.is_dir() {
+            copy_dir_all(&path, &dest)?;
+        } else {
+            fs::copy(&path, &dest)?;
+        }
+    }
+    Ok(())
+}
+
+fn collect_checksums(
+    base: &Path,
+    dir: &Path,
+    out: &mut serde_json::Map<String, serde_json::Value>,
+) -> anyhow::Result<()> {
+    use sha2::{Digest, Sha256};
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_checksums(base, &path, out)?;
+        } else {
+            let rel = path.strip_prefix(base).unwrap_or(&path);
+            let rel_str = rel.to_string_lossy().to_string();
+            let content = fs::read(&path)?;
+            let hash = Sha256::digest(&content);
+            let hash_hex = hex::encode(hash);
+            out.insert(rel_str, serde_json::json!(hash_hex));
+        }
+    }
+    Ok(())
+}
+
+fn decode_hex(s: &str) -> anyhow::Result<zeroize::Zeroizing<Vec<u8>>> {
+    let bytes = hex::decode(s.trim())?;
+    Ok(zeroize::Zeroizing::new(bytes))
 }
 
 #[cfg(test)]

@@ -750,16 +750,160 @@ fn test_team_doctor_and_key_commands_do_not_exist() {
         .stderr(predicate::str::contains("unrecognized subcommand"));
 
     let mut cmd = kagi_bin();
-    cmd.arg("doctor");
-    cmd.assert()
-        .failure()
-        .stderr(predicate::str::contains("unrecognized subcommand"));
-
-    let mut cmd = kagi_bin();
     cmd.arg("key");
     cmd.assert()
         .failure()
         .stderr(predicate::str::contains("unrecognized subcommand"));
+}
+
+#[test]
+fn test_unset_requires_interactive() {
+    let dir = TempDir::new().unwrap();
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["unset", "api", "KEY"]);
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("requires an interactive terminal"));
+}
+
+#[test]
+fn test_unset_rejects_non_key_selection() {
+    let dir = TempDir::new().unwrap();
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["unset", "api"]);
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("Unset only supports a single key"));
+}
+
+#[test]
+fn test_doctor_reports_issues_on_uninitialized_dir() {
+    let dir = TempDir::new().unwrap();
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.arg("doctor");
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("No .kagi directory found"));
+}
+
+#[test]
+fn test_doctor_passes_on_healthy_project() {
+    let dir = TempDir::new().unwrap();
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.arg("doctor");
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("all checks passed"));
+}
+
+#[test]
+fn test_doctor_fix_requires_interactive() {
+    let dir = TempDir::new().unwrap();
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    // Create a fake rotation journal in the correct path so --fix has something to recover
+    let kagi_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join(".kagi/kagi.json")).unwrap())
+            .unwrap();
+    let project_id = kagi_json["project_id"].as_str().unwrap().to_string();
+    let access_json = std::fs::read_to_string(dir.path().join(".kagi/access.json")).unwrap();
+    let journal = serde_json::json!({
+        "version": 1,
+        "project_id": project_id,
+        "access_json": access_json,
+        "files": {}
+    });
+    let kagi_home = std::env::temp_dir().join("kagi-integration-tests");
+    let journal_dir = kagi_home.join("projects");
+    std::fs::create_dir_all(&journal_dir).unwrap();
+    let journal_path = journal_dir.join(format!("{}.rotation.json", project_id));
+    std::fs::write(
+        &journal_path,
+        serde_json::to_string_pretty(&journal).unwrap(),
+    )
+    .unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["doctor", "--fix"]);
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("requires an interactive terminal"));
+}
+
+#[test]
+fn test_search_finds_keys() {
+    let dir = TempDir::new().unwrap();
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["set", "api", "DB_HOST", "localhost"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["search", "DB"]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("DB_HOST"));
+}
+
+#[test]
+fn test_search_no_matches() {
+    let dir = TempDir::new().unwrap();
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["search", "NONEXISTENT"]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("no matches found"));
+}
+
+#[test]
+fn test_search_values_blocks_non_interactive() {
+    let dir = TempDir::new().unwrap();
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["search", "--values", "localhost"]);
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("requires an interactive terminal"));
 }
 
 #[test]

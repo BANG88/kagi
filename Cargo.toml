@@ -23,6 +23,7 @@ server = [
     "dep:sqlx",
     "dep:subtle",
 ]
+tui = ["dep:ratatui", "dep:crossterm"]
 
 [dependencies]
 age = "0.11.3"
@@ -67,6 +68,10 @@ sqlx = { version = "0.9", optional = true, default-features = false, features = 
 hmac = "0.13.0"
 sha2 = "0.11.0"
 subtle = { version = "2.6", optional = true }
+
+# TUI dependencies
+ratatui = { version = "0.29", optional = true }
+crossterm = { version = "0.28", optional = true }
 
 # utilities (shared)
 time = { version = "0.3", features = ["serde", "formatting", "parsing"] }

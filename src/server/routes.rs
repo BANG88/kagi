@@ -21,6 +21,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/", get(health_check_handler))
         .route("/v1/server-key", get(server_key_handler))
+        .route("/v1/metrics", get(metrics_handler))
         .route("/v1/projects", post(create_project_handler))
         .route("/v1/projects/{project_id}/push", post(push_handler))
         .route("/v1/projects/{project_id}/pull", post(pull_handler))
@@ -34,6 +35,11 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/v1/projects/{project_id}/tokens/revoke",
             post(token_revoke_handler),
         )
+        .route(
+            "/v1/projects/{project_id}/tokens/list",
+            post(token_list_handler),
+        )
+        .route("/v1/audit", post(audit_handler))
         .route(
             "/v1/projects/requests",
             post(create_project_request_handler),
@@ -78,6 +84,44 @@ async fn server_key_handler(State(state): State<Arc<AppState>>) -> impl IntoResp
         "recipient": state.identity.to_public().to_string(),
         "fingerprint": state.fingerprint,
     }))
+}
+
+async fn metrics_handler(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<serde_json::Value>, ServerError> {
+    let auth = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let token = auth.strip_prefix("Bearer ").unwrap_or(auth).trim();
+    if token.is_empty() {
+        return Err(ServerError::AuthFailed);
+    }
+
+    let token_hash = state.hash_token(token);
+    let is_admin = state
+        .repo
+        .authenticate_admin_token(&token_hash)
+        .await
+        .map_err(|e| ServerError::Internal(e.to_string()))?
+        .is_some();
+    if !is_admin {
+        return Err(ServerError::AuthFailed);
+    }
+
+    let (projects, tokens, admins, db_size) = state
+        .repo
+        .get_metrics()
+        .await
+        .map_err(|e| ServerError::Internal(e.to_string()))?;
+
+    Ok(Json(json!({
+        "active_projects": projects,
+        "active_tokens": tokens,
+        "active_admins": admins,
+        "db_size": db_size,
+    })))
 }
 
 async fn create_project_handler(
@@ -1043,6 +1087,142 @@ async fn token_revoke_handler(
     let response = json!({"revoked_token_ids": token_ids});
     encrypt_success_response(&state, &plaintext, &response_recipient, response)
 }
+
+async fn token_list_handler(
+    State(state): State<Arc<AppState>>,
+    AxumPath(project_id): AxumPath<String>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Json(envelope): Json<RequestEnvelope>,
+) -> Result<axum::response::Response, ServerError> {
+    let (plaintext, response_recipient) = decrypt_and_verify_envelope(
+        &state,
+        envelope,
+        &format!("/v1/projects/{}/tokens/list", project_id),
+        "POST",
+    )
+    .await?;
+    let token_str = plaintext.token.as_ref().ok_or(ServerError::AuthFailed)?;
+    let (token_id, caps, _member_id) = authenticate(&state, &project_id, token_str).await?;
+    if !caps.iter().any(|c| c == "rotate" || c == "admin") {
+        return Err(ServerError::Forbidden);
+    }
+
+    let tokens = state
+        .repo
+        .list_project_tokens(&project_id)
+        .await
+        .map_err(|e| ServerError::Internal(e.to_string()))?;
+
+    let token_list: Vec<serde_json::Value> = tokens
+        .into_iter()
+        .map(
+            |(id, caps_json, member_id, status, created_at, activated_at, revoked_at)| {
+                let caps: Vec<String> = serde_json::from_str(&caps_json).unwrap_or_default();
+                json!({
+                    "token_id": id,
+                    "capabilities": caps,
+                    "member_id": member_id,
+                    "status": status,
+                    "created_at": created_at,
+                    "activated_at": activated_at,
+                    "revoked_at": revoked_at,
+                })
+            },
+        )
+        .collect();
+
+    let _ = state
+        .repo
+        .create_audit_event(
+            &format!("kae_{}", nanoid::nanoid!(12)),
+            Some(&project_id),
+            None,
+            Some(&token_id),
+            "token_listed",
+            Some(&plaintext.request_id),
+            Some(&addr.to_string()),
+            Some(&json!({"token_count": token_list.len()}).to_string()),
+        )
+        .await;
+
+    let response = json!({"tokens": token_list});
+    encrypt_success_response(&state, &plaintext, &response_recipient, response)
+}
+
+async fn audit_handler(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Json(envelope): Json<RequestEnvelope>,
+) -> Result<axum::response::Response, ServerError> {
+    let (plaintext, response_recipient) =
+        decrypt_and_verify_envelope(&state, envelope, "/v1/audit", "POST").await?;
+    let token_str = plaintext.token.as_ref().ok_or(ServerError::AuthFailed)?;
+    let (token_id, caps) = authenticate_admin(&state, token_str).await?;
+    if !caps.iter().any(|c| c == "admin") {
+        return Err(ServerError::Forbidden);
+    }
+
+    let project_id = plaintext.payload.get("project_id").and_then(|v| v.as_str());
+    let limit = plaintext
+        .payload
+        .get("limit")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(50)
+        .clamp(1, 500);
+
+    let events = state
+        .repo
+        .list_audit_events(project_id, limit)
+        .await
+        .map_err(|e| ServerError::Internal(e.to_string()))?;
+
+    let event_list: Vec<serde_json::Value> = events
+        .into_iter()
+        .map(
+            |(
+                event_id,
+                created_at,
+                project_id,
+                actor_member_id,
+                actor_token_id,
+                event_type,
+                request_id,
+                remote_addr,
+                metadata_json,
+            )| {
+                json!({
+                    "event_id": event_id,
+                    "created_at": created_at,
+                    "project_id": project_id,
+                    "actor_member_id": actor_member_id,
+                    "actor_token_id": actor_token_id,
+                    "event_type": event_type,
+                    "request_id": request_id,
+                    "remote_addr": remote_addr,
+                    "metadata_json": metadata_json,
+                })
+            },
+        )
+        .collect();
+
+    let _ = state
+        .repo
+        .create_audit_event(
+            &format!("kae_{}", nanoid::nanoid!(12)),
+            project_id,
+            None,
+            Some(&token_id),
+            "audit_queried",
+            Some(&plaintext.request_id),
+            Some(&addr.to_string()),
+            Some(&json!({"event_count": event_list.len()}).to_string()),
+        )
+        .await;
+
+    let response = json!({"events": event_list});
+    encrypt_success_response(&state, &plaintext, &response_recipient, response)
+}
+
 async fn decrypt_and_verify_envelope(
     state: &AppState,
     envelope: RequestEnvelope,
@@ -2632,5 +2812,178 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, ServerError::DecryptFailed(_)));
+    }
+
+    #[tokio::test]
+    async fn test_handler_token_list_success() {
+        let repo = test_repo().await;
+        repo.create_project("kgp_test").await.unwrap();
+        let state = test_state(repo);
+        let token = "rotate_token";
+        let token_hash = state.hash_token(token);
+        state
+            .repo
+            .create_token(
+                "kgp_test",
+                "kgt_123",
+                &token_hash,
+                "[\"rotate\"]",
+                None,
+                "active",
+            )
+            .await
+            .unwrap();
+
+        let client_identity = x25519::Identity::generate();
+        let mut plaintext = plaintext_now("kgr_1", "/v1/projects/kgp_test/tokens/list", "POST");
+        plaintext.token = Some(token.into());
+        plaintext.payload = json!({});
+        let envelope = make_envelope(&state, &plaintext, &client_identity);
+
+        let response = token_list_handler(
+            State(state),
+            AxumPath("kgp_test".into()),
+            dummy_addr(),
+            Json(envelope),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_handler_token_list_requires_rotate() {
+        let repo = test_repo().await;
+        repo.create_project("kgp_test").await.unwrap();
+        let state = test_state(repo);
+        let token = "pull_token";
+        let token_hash = state.hash_token(token);
+        state
+            .repo
+            .create_token(
+                "kgp_test",
+                "kgt_123",
+                &token_hash,
+                "[\"pull\"]",
+                None,
+                "active",
+            )
+            .await
+            .unwrap();
+
+        let client_identity = x25519::Identity::generate();
+        let mut plaintext = plaintext_now("kgr_1", "/v1/projects/kgp_test/tokens/list", "POST");
+        plaintext.token = Some(token.into());
+        plaintext.payload = json!({});
+        let envelope = make_envelope(&state, &plaintext, &client_identity);
+
+        let err = token_list_handler(
+            State(state),
+            AxumPath("kgp_test".into()),
+            dummy_addr(),
+            Json(envelope),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ServerError::Forbidden));
+    }
+
+    #[tokio::test]
+    async fn test_handler_audit_success() {
+        let repo = test_repo().await;
+        let state = test_state(repo);
+        let token = "admin_token";
+        let token_hash = state.hash_token(token);
+        state
+            .repo
+            .create_admin_token(
+                "kgt_admin",
+                &token_hash,
+                "[\"admin\"]",
+                "2024-01-01T00:00:00Z",
+            )
+            .await
+            .unwrap();
+
+        let client_identity = x25519::Identity::generate();
+        let mut plaintext = plaintext_now("kgr_1", "/v1/audit", "POST");
+        plaintext.token = Some(token.into());
+        plaintext.payload = json!({"limit": 10});
+        let envelope = make_envelope(&state, &plaintext, &client_identity);
+
+        let response = audit_handler(State(state), dummy_addr(), Json(envelope))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_handler_audit_requires_admin() {
+        let repo = test_repo().await;
+        let state = test_state(repo);
+        let token = "admin_token";
+        let token_hash = state.hash_token(token);
+        state
+            .repo
+            .create_admin_token(
+                "kgt_admin",
+                &token_hash,
+                "[\"rotate\"]",
+                "2024-01-01T00:00:00Z",
+            )
+            .await
+            .unwrap();
+
+        let client_identity = x25519::Identity::generate();
+        let mut plaintext = plaintext_now("kgr_1", "/v1/audit", "POST");
+        plaintext.token = Some(token.into());
+        plaintext.payload = json!({"limit": 10});
+        let envelope = make_envelope(&state, &plaintext, &client_identity);
+
+        let err = audit_handler(State(state), dummy_addr(), Json(envelope))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ServerError::Forbidden));
+    }
+
+    #[tokio::test]
+    async fn test_handler_metrics_no_auth() {
+        let repo = test_repo().await;
+        let state = test_state(repo);
+        let headers = axum::http::HeaderMap::new();
+        let err = metrics_handler(State(state), headers).await.unwrap_err();
+        assert!(matches!(err, ServerError::AuthFailed));
+    }
+
+    #[tokio::test]
+    async fn test_handler_metrics_with_admin_token() {
+        let repo = test_repo().await;
+        let state = test_state(repo);
+        let token = "admin_token";
+        let token_hash = state.hash_token(token);
+        state
+            .repo
+            .create_admin_token(
+                "kgt_admin",
+                &token_hash,
+                "[\"admin\"]",
+                "2024-01-01T00:00:00Z",
+            )
+            .await
+            .unwrap();
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "authorization",
+            format!("Bearer {}", token).parse().unwrap(),
+        );
+        let resp = metrics_handler(State(state), headers).await.unwrap();
+        let (parts, body) = resp.into_response().into_parts();
+        assert_eq!(parts.status, 200);
+        let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["active_projects"], 0);
+        assert_eq!(json["active_tokens"], 0);
+        assert_eq!(json["active_admins"], 1);
+        assert!(json["db_size"].as_i64().unwrap() > 0);
     }
 }
