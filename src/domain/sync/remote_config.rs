@@ -30,4 +30,8 @@ pub struct RemoteMetadata {
     pub last_pushed_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_manifest_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_token_ids: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_accepted_member_ids: Option<Vec<String>>,
 }

@@ -14,6 +14,12 @@ pub enum DomainError {
     DecryptFailed(String),
     #[error("Store corrupted: {0}")]
     StoreCorrupted(String),
+    #[cfg(feature = "server")]
+    #[error("Project token unavailable: {0}")]
+    ProjectTokenUnavailable(String),
+    #[cfg(feature = "server")]
+    #[error("Remote rejected request ({code}): {message}")]
+    RemoteRejected { code: String, message: String },
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
     #[error("Serialization error: {0}")]

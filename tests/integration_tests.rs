@@ -1,6 +1,8 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 use serde_json::Value;
+#[cfg(feature = "server")]
+use std::io::{Read, Write};
 use std::path::Path;
 use tempfile::TempDir;
 
@@ -22,6 +24,159 @@ fn kagi_bin_with_keyring(xdg_data_home: &Path) -> Command {
     cmd.env_remove("KAGI_HOME");
     cmd.env("XDG_DATA_HOME", xdg_data_home);
     cmd
+}
+
+#[cfg(feature = "server")]
+fn kagi_bin_with_home(home: &Path) -> Command {
+    let mut cmd = Command::cargo_bin("kagi").unwrap();
+    cmd.env("KAGI_DISABLE_KEYRING", "1");
+    cmd.env("KAGI_HOME", home);
+    cmd
+}
+
+#[cfg(feature = "server")]
+struct ServerGuard {
+    child: std::process::Child,
+    _dir: TempDir,
+}
+
+#[cfg(feature = "server")]
+impl Drop for ServerGuard {
+    fn drop(&mut self) {
+        if let Err(e) = self.child.kill() {
+            eprintln!("Warning: failed to kill server process: {}", e);
+        }
+        let _ = self.child.wait();
+    }
+}
+
+#[cfg(feature = "server")]
+fn parse_port_from_line(line: &str) -> Option<u16> {
+    let prefix = "kagi: listening on http://";
+    let start = line.find(prefix)?;
+    let rest = &line[start + prefix.len()..];
+    let colon = rest.rfind(':')?;
+    let port_str = &rest[colon + 1..];
+    port_str.parse().ok()
+}
+
+#[cfg(feature = "server")]
+fn spawn_server() -> (ServerGuard, String, u16) {
+    let server_dir = TempDir::new().unwrap();
+    let db_path = server_dir.path().join("server.db");
+    let key_path = server_dir.path().join("server.key");
+
+    let mut cmd = std::process::Command::new(
+        std::env::var("CARGO_BIN_EXE_kagi").expect("CARGO_BIN_EXE_kagi not set"),
+    );
+    cmd.env("KAGI_DISABLE_KEYRING", "1");
+    cmd.env("KAGI_HOME", server_dir.path().join("kagi-home"));
+    cmd.env("RUST_LOG", "info");
+    cmd.args([
+        "serve",
+        "--bind",
+        "127.0.0.1:0",
+        "--db",
+        db_path.to_str().unwrap(),
+        "--key-file",
+        key_path.to_str().unwrap(),
+    ]);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let mut child = cmd.spawn().expect("failed to spawn kagi serve");
+
+    // Drain stderr in a background thread early to prevent pipe buffer fill-up
+    let stderr = child.stderr.take().unwrap();
+    std::thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(stderr);
+        for _ in std::io::BufRead::lines(&mut reader) {}
+    });
+
+    let stdout = child.stdout.take().unwrap();
+    let reader = std::io::BufReader::new(stdout);
+    let (line_tx, line_rx) = std::sync::mpsc::channel();
+
+    std::thread::spawn(move || {
+        let mut reader = reader;
+        for line in std::io::BufRead::lines(&mut reader).map_while(Result::ok) {
+            let _ = line_tx.send(line);
+        }
+    });
+
+    let mut token = String::new();
+    let mut port: Option<u16> = None;
+    let timeout = std::time::Duration::from_secs(10);
+    let start = std::time::Instant::now();
+
+    while token.is_empty() || port.is_none() {
+        if start.elapsed() > timeout {
+            let _ = child.kill();
+            panic!(
+                "server startup timed out after {}s (token_found={}, port_found={})",
+                timeout.as_secs(),
+                !token.is_empty(),
+                port.is_some()
+            );
+        }
+
+        match line_rx.recv_timeout(std::time::Duration::from_millis(100)) {
+            Ok(line) => {
+                if line.contains("generated admin token:") {
+                    token = line
+                        .split("generated admin token:")
+                        .nth(1)
+                        .unwrap()
+                        .trim()
+                        .to_string();
+                }
+                if let Some(p) = parse_port_from_line(&line) {
+                    port = Some(p);
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = child.kill();
+                panic!("server stdout closed unexpectedly before startup completed");
+            }
+        }
+    }
+
+    let port = port.unwrap();
+
+    // Verify HTTP readiness by performing a simple GET request
+    let mut ready = false;
+    for _ in 0..50 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if let Ok(mut stream) = std::net::TcpStream::connect(format!("127.0.0.1:{}", port))
+            && stream
+                .write_all(b"GET /v1/server-key HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                .is_ok()
+        {
+            let mut buf = [0u8; 12];
+            if stream.read(&mut buf).is_ok() && buf.starts_with(b"HTTP/1.1") {
+                ready = true;
+                break;
+            }
+        }
+    }
+
+    if !ready {
+        let _ = child.kill();
+        panic!(
+            "server did not become HTTP-ready on port {} within 5 seconds",
+            port
+        );
+    }
+
+    (
+        ServerGuard {
+            child,
+            _dir: server_dir,
+        },
+        token,
+        port,
+    )
 }
 
 struct KeyringCleanup {
@@ -1357,4 +1512,184 @@ fn test_import_captures_description_from_comment() {
     // Verify the values were imported by running them
     assert_run_env(dir.path(), &["api"], "API_KEY", "secret");
     assert_run_env(dir.path(), &["api"], "DB_URL", "postgres://localhost");
+}
+
+#[test]
+#[cfg(feature = "server")]
+fn test_server_member_join_approve_flow() {
+    let (_server, admin_token, port) = spawn_server();
+    let server_url = format!("http://127.0.0.1:{}", port);
+
+    let project_dir = TempDir::new().unwrap();
+    let kagi_home = TempDir::new().unwrap();
+
+    let mut cmd = kagi_bin_with_home(kagi_home.path());
+    cmd.current_dir(&project_dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin_with_home(kagi_home.path());
+    cmd.current_dir(&project_dir);
+    cmd.args(["project", "join", "--remote", &server_url]);
+    cmd.assert().success();
+
+    let kagi_json_path = project_dir.path().join(".kagi/kagi.json");
+    let config: Value =
+        serde_json::from_str(&std::fs::read_to_string(&kagi_json_path).unwrap()).unwrap();
+    let project_id = config["project_id"].as_str().unwrap().to_string();
+
+    let mut cmd = kagi_bin_with_home(kagi_home.path());
+    cmd.current_dir(&project_dir);
+    cmd.env("KAGI_ADMIN_TOKEN", &admin_token);
+    cmd.args(["project", "approve", "--remote", &server_url, &project_id]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin_with_home(kagi_home.path());
+    cmd.current_dir(&project_dir);
+    cmd.arg("pull");
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin_with_home(kagi_home.path());
+    cmd.current_dir(&project_dir);
+    cmd.args(["member", "join", "--name", "alice"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin_with_home(kagi_home.path());
+    cmd.current_dir(&project_dir);
+    cmd.args(["member", "list"]);
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("alice"));
+    assert!(stdout.contains("pending"));
+
+    let access_path = project_dir.path().join(".kagi/access.json");
+    let access: Value =
+        serde_json::from_str(&std::fs::read_to_string(&access_path).unwrap()).unwrap();
+    let pending = access["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["status"] == "pending")
+        .unwrap();
+    let member_id = pending["member_id"].as_str().unwrap().to_string();
+
+    let mut cmd = kagi_bin_with_home(kagi_home.path());
+    cmd.current_dir(&project_dir);
+    cmd.args(["member", "approve", &member_id]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin_with_home(kagi_home.path());
+    cmd.current_dir(&project_dir);
+    cmd.arg("push");
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin_with_home(kagi_home.path());
+    cmd.current_dir(&project_dir);
+    cmd.args(["member", "list"]);
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("alice"));
+    assert!(stdout.contains("active"));
+
+    let access: Value =
+        serde_json::from_str(&std::fs::read_to_string(&access_path).unwrap()).unwrap();
+    let member = access["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["member_id"] == member_id)
+        .unwrap();
+    assert_eq!(member["status"], "active");
+    assert!(
+        member["wrapped_key"].as_str().unwrap().len() > 20,
+        "expected wrapped_key to be present"
+    );
+}
+
+#[test]
+#[cfg(feature = "server")]
+fn test_server_push_pull_status() {
+    let (_server, admin_token, port) = spawn_server();
+    let server_url = format!("http://127.0.0.1:{}", port);
+
+    let project_dir = TempDir::new().unwrap();
+    let kagi_home = TempDir::new().unwrap();
+
+    let mut cmd = kagi_bin_with_home(kagi_home.path());
+    cmd.current_dir(&project_dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin_with_home(kagi_home.path());
+    cmd.current_dir(&project_dir);
+    cmd.args(["project", "join", "--remote", &server_url]);
+    cmd.assert().success();
+
+    let config: Value = serde_json::from_str(
+        &std::fs::read_to_string(project_dir.path().join(".kagi/kagi.json")).unwrap(),
+    )
+    .unwrap();
+    let project_id = config["project_id"].as_str().unwrap().to_string();
+
+    let mut cmd = kagi_bin_with_home(kagi_home.path());
+    cmd.current_dir(&project_dir);
+    cmd.env("KAGI_ADMIN_TOKEN", &admin_token);
+    cmd.args(["project", "approve", "--remote", &server_url, &project_id]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin_with_home(kagi_home.path());
+    cmd.current_dir(&project_dir);
+    cmd.arg("pull");
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin_with_home(kagi_home.path());
+    cmd.current_dir(&project_dir);
+    cmd.args(["set", "api", "KEY", "val"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin_with_home(kagi_home.path());
+    cmd.current_dir(&project_dir);
+    cmd.arg("push");
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("kagi: pushed revision"));
+
+    let mut cmd = kagi_bin_with_home(kagi_home.path());
+    cmd.current_dir(&project_dir);
+    cmd.arg("pull");
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("kagi: pulled revision"));
+
+    let mut cmd = kagi_bin_with_home(kagi_home.path());
+    cmd.current_dir(&project_dir);
+    cmd.arg("status");
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("equal"),
+        "expected status to show equal: {}",
+        stdout
+    );
+
+    let mut cmd = kagi_bin_with_home(kagi_home.path());
+    cmd.current_dir(&project_dir);
+    cmd.args(["set", "api", "KEY", "val2"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin_with_home(kagi_home.path());
+    cmd.current_dir(&project_dir);
+    cmd.arg("push");
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin_with_home(kagi_home.path());
+    cmd.current_dir(&project_dir);
+    cmd.arg("status");
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("equal"),
+        "expected status to show equal after re-push: {}",
+        stdout
+    );
 }

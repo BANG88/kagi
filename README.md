@@ -69,20 +69,6 @@ This copies the skill into the agent's skills directory. To force reinstall:
 npx skills add BANG88/kagi --force
 ```
 
-#### Manual install
-
-If you prefer not to use `npx skills`, copy the skill files manually:
-
-```bash
-# For OpenCode
-mkdir -p ~/.config/opencode/skills/kagi
-cp skills/kagi/SKILL.md ~/.config/opencode/skills/kagi/
-
-# For Codex (legacy)
-mkdir -p ${CODEX_HOME:-$HOME/.codex}/skills/kagi
-cp skills/kagi/SKILL.md ${CODEX_HOME:-$HOME/.codex}/skills/kagi/
-```
-
 ---
 
 ## Daily Development

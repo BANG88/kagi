@@ -5,6 +5,8 @@ use crate::infrastructure::remote_envelope::{decrypt_response, encrypt_request, 
 use age::x25519;
 use base64::Engine;
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use url::Url;
 
 pub struct RemoteClient {
@@ -29,6 +31,36 @@ fn is_localhost_url(url: &str) -> bool {
         Some(url::Host::Ipv6(ip)) if ip.is_loopback() => true,
         _ => false,
     }
+}
+
+#[derive(Error, Debug)]
+pub enum ClientError {
+    #[error("invalid token")]
+    InvalidToken,
+    #[error("project not found")]
+    ProjectNotFound,
+    #[error("project state conflict")]
+    ProjectStateConflict,
+    #[error("request failed: {0}")]
+    RequestFailed(String),
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct MemberJoinRequest {
+    pub member_id: String,
+    pub name: String,
+    pub recipient: String,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct JoinResponse {}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct TokenIssueResponse {
+    pub token_id: String,
+    pub project_token: String,
+    #[allow(dead_code)]
+    pub status: String,
 }
 
 pub fn validate_http_transport(remote_url: &str, allow_insecure: bool) -> Result<(), DomainError> {
@@ -185,13 +217,142 @@ impl RemoteClient {
                 .get("message")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown error");
-            return Err(DomainError::StoreCorrupted(format!(
-                "{}: {}",
-                code, message
-            )));
+            return Err(DomainError::RemoteRejected {
+                code: code.to_string(),
+                message: message.to_string(),
+            });
         }
 
         Ok(decrypted.get("data").cloned().unwrap_or_default())
+    }
+
+    fn map_request_error(e: DomainError) -> ClientError {
+        if let DomainError::RemoteRejected { ref code, .. } = e {
+            if code == "auth_failed" {
+                return ClientError::InvalidToken;
+            }
+            if code == "not_found" {
+                return ClientError::ProjectNotFound;
+            }
+            if code == "conflict" {
+                return ClientError::ProjectStateConflict;
+            }
+        }
+        ClientError::RequestFailed(e.to_string())
+    }
+
+    pub async fn get_token_from_claim_secret(
+        &self,
+        project_id: &str,
+        member_id: &str,
+        claim_secret: &str,
+        identity: &x25519::Identity,
+    ) -> Result<String, DomainError> {
+        let request_id = format!("kgr_{}", nanoid::nanoid!(12));
+        let plaintext = RequestPlaintext {
+            version: 1,
+            request_id: request_id.clone(),
+            issued_at: time::OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap(),
+            operation: "pull".into(),
+            method: "POST".into(),
+            path: format!("/v1/projects/{}/pull", project_id),
+            project_id: Some(project_id.to_string()),
+            token: None,
+            claim_secret: Some(claim_secret.to_string()),
+            payload: serde_json::json!({
+                "member_id": member_id,
+            }),
+        };
+        let data = self.send_request(&plaintext, identity).await?;
+        if let Some(wrapped_b64) = data.get("wrapped_project_token").and_then(|v| v.as_str()) {
+            let wrapped = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(wrapped_b64)
+                .map_err(|e| {
+                    DomainError::StoreCorrupted(format!("invalid wrapped token: {}", e))
+                })?;
+            let decrypted = crate::infrastructure::remote_envelope::decrypt_bytes(
+                &wrapped, identity,
+            )
+            .map_err(|e| {
+                DomainError::StoreCorrupted(format!("failed to decrypt wrapped token: {}", e))
+            })?;
+            String::from_utf8(decrypted)
+                .map_err(|e| DomainError::StoreCorrupted(format!("invalid token: {}", e)))
+        } else {
+            Err(DomainError::ProjectTokenUnavailable(
+                "no project token available; ask an active member/admin to approve this member, then run `kagi pull`"
+                    .into(),
+            ))
+        }
+    }
+
+    pub async fn send_member_join_request(
+        &self,
+        project_id: &str,
+        token: &str,
+        join_request: &MemberJoinRequest,
+        identity: &x25519::Identity,
+    ) -> Result<JoinResponse, ClientError> {
+        let request_id = format!("kgr_{}", nanoid::nanoid!(12));
+        let plaintext = RequestPlaintext {
+            version: 1,
+            request_id: request_id.clone(),
+            issued_at: time::OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap(),
+            operation: "join".into(),
+            method: "POST".into(),
+            path: format!("/v1/projects/{}/join", project_id),
+            project_id: Some(project_id.to_string()),
+            token: Some(token.to_string()),
+            claim_secret: None,
+            payload: serde_json::json!({
+                "join_request": {
+                    "member_id": join_request.member_id,
+                    "name": join_request.name,
+                    "recipient": join_request.recipient,
+                }
+            }),
+        };
+        let data = self
+            .send_request(&plaintext, identity)
+            .await
+            .map_err(Self::map_request_error)?;
+        serde_json::from_value(data).map_err(|e| ClientError::RequestFailed(e.to_string()))
+    }
+
+    pub async fn send_member_token_issue(
+        &self,
+        project_id: &str,
+        token: &str,
+        member_id: &str,
+        identity: &x25519::Identity,
+    ) -> Result<TokenIssueResponse, ClientError> {
+        let request_id = format!("kgr_{}", nanoid::nanoid!(12));
+        let plaintext = RequestPlaintext {
+            version: 1,
+            request_id: request_id.clone(),
+            issued_at: time::OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap(),
+            operation: "token_issue".into(),
+            method: "POST".into(),
+            path: format!("/v1/projects/{}/tokens/issue", project_id),
+            project_id: Some(project_id.to_string()),
+            token: Some(token.to_string()),
+            claim_secret: None,
+            payload: serde_json::json!({
+                "member_id": member_id,
+                "capabilities": ["pull", "push"],
+            }),
+        };
+        let data = self
+            .send_request(&plaintext, identity)
+            .await
+            .map_err(Self::map_request_error)?;
+        serde_json::from_value(data).map_err(|e| ClientError::RequestFailed(e.to_string()))
     }
 }
 

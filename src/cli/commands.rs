@@ -14,21 +14,36 @@ use crate::domain::repository::secret_repo::SecretRepository;
 use crate::domain::runner::CommandRunner;
 #[cfg(feature = "server")]
 use crate::domain::sync::project_token::base64_encode_url;
+#[cfg(feature = "server")]
+use crate::domain::sync::remote_config::RemoteMetadata;
 use crate::infrastructure::env_injector::SystemCommandRunner;
 use crate::infrastructure::fs_store::FileStore;
 use crate::infrastructure::key_manager::KeyManager;
 #[cfg(feature = "server")]
+use crate::infrastructure::key_manager::MemberMetadata;
+#[cfg(feature = "server")]
 use crate::infrastructure::key_manager::default_member_name;
+#[cfg(feature = "server")]
+use crate::infrastructure::remote_client::MemberJoinRequest;
+#[cfg(feature = "server")]
+use crate::infrastructure::remote_client::TokenIssueResponse;
+#[cfg(feature = "server")]
+use crate::infrastructure::remote_local::RemoteLocalStore;
 use crate::infrastructure::xchacha_crypto::XChaChaEncryptor;
 use anyhow::Context;
+#[cfg(feature = "server")]
 use base64::Engine as _;
 #[cfg(feature = "server")]
 use ed25519_dalek::Signer;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
+#[cfg(feature = "server")]
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
+#[cfg(feature = "server")]
+use std::str::FromStr;
 
 const ROTATION_JOURNAL_VERSION: u8 = 1;
 
@@ -640,6 +655,229 @@ fn confirm_member_remove(tty: bool, member_id: &str, c: &Palette) -> anyhow::Res
     }
 }
 
+fn print_member_approval_instruction(member_id: &str, c: &Palette) {
+    println!("{} {}", c.prefix(), c.muted("Ask an active member to run:"));
+    println!(
+        "  {} {} {}",
+        c.accent("kagi"),
+        c.accent("member approve"),
+        c.key(member_id)
+    );
+}
+
+#[cfg(feature = "server")]
+fn warn_join_request_cleanup_failed(member_id: &str, error: &dyn std::error::Error, c: &Palette) {
+    eprintln!(
+        "{} {} failed to clean up pending join request {} after server rejection: {}",
+        c.prefix(),
+        c.warning("warning:"),
+        c.accent(member_id),
+        error
+    );
+}
+
+#[cfg(feature = "server")]
+fn add_pending_remote_approval(
+    mut meta: RemoteMetadata,
+    member_id: &str,
+    token_id: &str,
+) -> RemoteMetadata {
+    let mut accepted_member_ids = meta.pending_accepted_member_ids.unwrap_or_default();
+    if !accepted_member_ids.iter().any(|id| id == member_id) {
+        accepted_member_ids.push(member_id.to_string());
+    }
+    meta.pending_accepted_member_ids = Some(accepted_member_ids);
+
+    let mut token_ids = meta.pending_token_ids.unwrap_or_default();
+    if !token_ids.iter().any(|id| id == token_id) {
+        token_ids.push(token_id.to_string());
+    }
+    meta.pending_token_ids = Some(token_ids);
+
+    meta
+}
+
+#[cfg(feature = "server")]
+fn apply_server_member_approval(
+    key_manager: &KeyManager,
+    remote_store: &RemoteLocalStore,
+    meta: RemoteMetadata,
+    member_id: &str,
+    response: TokenIssueResponse,
+) -> anyhow::Result<MemberMetadata> {
+    let pending_member = key_manager
+        .find_member(member_id)?
+        .filter(|member| member.status == "pending")
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "server issued a token for `{}` but the local pending join request is missing. Recovery: run `kagi pull`; if the member is still pending, rerun `kagi member approve {}`.",
+                member_id,
+                member_id
+            )
+        })?;
+    let recipient = age::x25519::Recipient::from_str(&pending_member.recipient)
+        .map_err(|e| anyhow::anyhow!("invalid member recipient: {}", e))?;
+    let encrypted = crate::infrastructure::remote_envelope::encrypt_bytes(
+        response.project_token.as_bytes(),
+        &recipient,
+    )
+    .map_err(|e| anyhow::anyhow!("failed to encrypt token: {}", e))?;
+    let wrapped_token = base64::engine::general_purpose::STANDARD.encode(&encrypted);
+
+    let remote_meta = add_pending_remote_approval(meta, member_id, &response.token_id);
+    remote_store.save_remote_metadata(&remote_meta).with_context(|| {
+        format!(
+            "server issued a token for `{}` but kagi could not save pending remote approval metadata. Recovery: fix local kagi data directory permissions, then rerun `kagi member approve {}`.",
+            member_id, member_id
+        )
+    })?;
+    let member = key_manager
+        .approve_join_request_with_wrapped_token(member_id, &wrapped_token)
+        .with_context(|| {
+            format!(
+                "server issued a token for `{}` and pending remote approval metadata was saved, but kagi could not persist local access state. Recovery: fix .kagi/access.json or filesystem permissions, then rerun `kagi member approve {}`.",
+                member_id, member_id
+            )
+        })?;
+
+    Ok(member)
+}
+
+#[cfg(feature = "server")]
+async fn member_join_server_mode(
+    key_manager: &KeyManager,
+    member: &MemberMetadata,
+    config: &serde_json::Value,
+    sync: &serde_json::Value,
+    allow_insecure: bool,
+    c: &Palette,
+) -> anyhow::Result<()> {
+    let project_id = config["project_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing project_id"))?
+        .to_string();
+    let remote_url = sync
+        .get("remote")
+        .and_then(|v| v.as_str())
+        .or_else(|| config.get("kagi_url").and_then(|v| v.as_str()))
+        .ok_or_else(|| anyhow::anyhow!("missing remote URL"))?
+        .to_string();
+
+    let remote_store = RemoteLocalStore::new(local_data_dir()?);
+    let meta = remote_store
+        .load_remote_metadata(&project_id)?
+        .ok_or_else(|| anyhow::anyhow!("no remote metadata found"))?;
+
+    let token = match remote_store.load_token(&project_id)? {
+        Some(token) => token,
+        None => {
+            let claim_secret = remote_store
+                .load_claim_secret(&project_id)?
+                .ok_or_else(|| anyhow::anyhow!(
+                    "Server token required to join project. Try 'kagi pull' first to obtain a token."
+                ))?;
+            let client = crate::infrastructure::remote_client::RemoteClient::new_pinned(
+                remote_url.to_string(),
+                &meta.server_fingerprint,
+                allow_insecure,
+            )
+            .await?;
+            let identity = key_manager.load_or_create_identity()?;
+            let active_member_id = key_manager.member_id()?;
+            client
+                .get_token_from_claim_secret(
+                    &project_id,
+                    &active_member_id,
+                    &claim_secret,
+                    &identity,
+                )
+                .await?
+        }
+    };
+
+    let client = crate::infrastructure::remote_client::RemoteClient::new_pinned(
+        remote_url.to_string(),
+        &meta.server_fingerprint,
+        allow_insecure,
+    )
+    .await?;
+    let identity = key_manager.load_or_create_identity()?;
+    let join_request = MemberJoinRequest {
+        member_id: member.member_id.clone(),
+        name: member.name.clone(),
+        recipient: member.recipient.clone(),
+    };
+    if let Err(e) = client
+        .send_member_join_request(&project_id, &token, &join_request, &identity)
+        .await
+    {
+        if let Err(cleanup_error) = key_manager.delete_join_request(&member.member_id) {
+            warn_join_request_cleanup_failed(&member.member_id, &cleanup_error, c);
+        }
+        return Err(e.into());
+    }
+    println!(
+        "{} {} {}",
+        c.prefix(),
+        c.success("Request sent to server"),
+        c.accent(&member.member_id)
+    );
+    print_member_approval_instruction(&member.member_id, c);
+    Ok(())
+}
+
+#[cfg(feature = "server")]
+async fn member_approve_server_mode(
+    key_manager: &KeyManager,
+    member_id: &str,
+    config: &serde_json::Value,
+    allow_insecure: bool,
+    c: &Palette,
+) -> anyhow::Result<()> {
+    let project_id = config["project_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing project_id"))?
+        .to_string();
+    let remote_url = config
+        .get("settings")
+        .and_then(|s| s.get("sync"))
+        .and_then(|s| s.get("remote"))
+        .and_then(|v| v.as_str())
+        .or_else(|| config.get("kagi_url").and_then(|v| v.as_str()))
+        .ok_or_else(|| anyhow::anyhow!("missing remote URL"))?
+        .to_string();
+
+    let local_data_dir = local_data_dir()?;
+    let remote_store = crate::infrastructure::remote_local::RemoteLocalStore::new(local_data_dir);
+    let token = remote_store
+        .load_token(&project_id)?
+        .ok_or_else(|| anyhow::anyhow!("Server token required to approve member"))?;
+    let meta = remote_store
+        .load_remote_metadata(&project_id)?
+        .ok_or_else(|| anyhow::anyhow!("no remote metadata found"))?;
+
+    let client = crate::infrastructure::remote_client::RemoteClient::new_pinned(
+        remote_url.to_string(),
+        &meta.server_fingerprint,
+        allow_insecure,
+    )
+    .await?;
+    let identity = key_manager.load_or_create_identity()?;
+    let response = client
+        .send_member_token_issue(&project_id, &token, member_id, &identity)
+        .await?;
+    let member =
+        apply_server_member_approval(key_manager, &remote_store, meta, member_id, response)?;
+
+    println!(
+        "{} {} {}",
+        c.prefix(),
+        c.success("Member approved. Token will be activated on next push."),
+        c.accent(&member.member_id)
+    );
+    Ok(())
+}
+
 fn resolve_kagi_base() -> anyhow::Result<(PathBuf, Option<String>)> {
     let cwd = std::env::current_dir()?;
 
@@ -888,6 +1126,7 @@ fn rotate_project_key(base_path: &Path, remove_member_id: Option<&str>) -> anyho
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
     let tty = io::stdout().is_terminal();
     let c = Palette::new(tty);
+    #[cfg(feature = "server")]
     let allow_insecure = cli.allow_insecure_http
         || std::env::var("KAGI_ALLOW_INSECURE_HTTP")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -1447,28 +1686,83 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 }
                 MemberCommands::Join { name } => {
                     let member = key_manager.create_join_request(name)?;
-                    println!(
-                        "{} {} {}",
-                        c.prefix(),
-                        c.success("created join request"),
-                        c.accent(&member.member_id)
-                    );
-                    println!("{} {}", c.prefix(), c.muted("Ask an active member to run:"));
-                    println!(
-                        "  {} {} {}",
-                        c.accent("kagi"),
-                        c.accent("member approve"),
-                        c.key(&member.member_id)
-                    );
+                    let config_path = base_path.join(crate::domain::config::KAGI_CONFIG_FILE);
+                    let config: serde_json::Value =
+                        serde_json::from_str(&fs::read_to_string(&config_path)?)?;
+                    let sync = config.get("settings").and_then(|s| s.get("sync"));
+                    let is_server_mode =
+                        sync.and_then(|s| s.get("mode")).and_then(|v| v.as_str()) == Some("server");
+
+                    if !is_server_mode {
+                        println!(
+                            "{} {} {}",
+                            c.prefix(),
+                            c.success("created join request"),
+                            c.accent(&member.member_id)
+                        );
+                        print_member_approval_instruction(&member.member_id, &c);
+                        return Ok(());
+                    }
+                    #[cfg(feature = "server")]
+                    {
+                        let sync = sync.ok_or_else(|| anyhow::anyhow!("missing sync settings"))?;
+                        member_join_server_mode(
+                            &key_manager,
+                            &member,
+                            &config,
+                            sync,
+                            allow_insecure,
+                            &c,
+                        )
+                        .await?;
+                    }
+                    #[cfg(not(feature = "server"))]
+                    {
+                        return Err(anyhow::anyhow!("server mode not available"));
+                    }
                 }
                 MemberCommands::Approve { member_id } => {
-                    let member = key_manager.approve_join_request(&member_id)?;
-                    println!(
-                        "{} {} {}",
-                        c.prefix(),
-                        c.success("approved member"),
-                        c.accent(&member.member_id)
-                    );
+                    let config_path = base_path.join(crate::domain::config::KAGI_CONFIG_FILE);
+                    let config: serde_json::Value =
+                        serde_json::from_str(&fs::read_to_string(&config_path)?)?;
+                    let is_server_mode = config
+                        .get("settings")
+                        .and_then(|s| s.get("sync"))
+                        .and_then(|s| s.get("mode"))
+                        .and_then(|v| v.as_str())
+                        == Some("server");
+                    if is_server_mode {
+                        if key_manager
+                            .find_member(&member_id)?
+                            .filter(|member| member.status == "pending")
+                            .is_none()
+                        {
+                            return Err(anyhow::anyhow!("join request not found: {}", member_id));
+                        }
+                        #[cfg(feature = "server")]
+                        {
+                            member_approve_server_mode(
+                                &key_manager,
+                                &member_id,
+                                &config,
+                                allow_insecure,
+                                &c,
+                            )
+                            .await?;
+                        }
+                        #[cfg(not(feature = "server"))]
+                        {
+                            return Err(anyhow::anyhow!("server mode not available"));
+                        }
+                    } else {
+                        let member = key_manager.approve_join_request(&member_id)?;
+                        println!(
+                            "{} {} {}",
+                            c.prefix(),
+                            c.success("approved member"),
+                            c.accent(&member.member_id)
+                        );
+                    }
                 }
                 MemberCommands::Del { member_id } => {
                     confirm_member_remove(tty, &member_id, &c)?;
@@ -1650,6 +1944,19 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let signature_b64 =
                 base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
 
+            let mut payload = serde_json::json!({
+                "base_revision": base_revision,
+                "state": project_state,
+                "manifest": manifest_json,
+                "manifest_signature": signature_b64,
+            });
+            if let Some(ref token_ids) = meta.pending_token_ids {
+                payload["activate_token_ids"] = serde_json::json!(token_ids);
+            }
+            if let Some(ref member_ids) = meta.pending_accepted_member_ids {
+                payload["accepted_join_member_ids"] = serde_json::json!(member_ids);
+            }
+
             let request_id = format!("kgr_{}", nanoid::nanoid!(12));
             let plaintext = crate::domain::sync::envelope::RequestPlaintext {
                 version: 1,
@@ -1663,12 +1970,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 project_id: Some(project_id.to_string()),
                 token: Some(token),
                 claim_secret: None,
-                payload: serde_json::json!({
-                    "base_revision": base_revision,
-                    "state": project_state,
-                    "manifest": manifest_json,
-                    "manifest_signature": signature_b64,
-                }),
+                payload,
             };
 
             let client = crate::infrastructure::remote_client::RemoteClient::new_pinned(
@@ -1695,6 +1997,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                             .unwrap(),
                     ),
                     last_manifest_hash: Some(manifest_hash),
+                    pending_token_ids: None,
+                    pending_accepted_member_ids: None,
                 },
             )?;
 
@@ -1853,6 +2157,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                             .and_then(|value| value.as_str())
                             .map(str::to_string)
                             .or(meta.last_manifest_hash),
+                        pending_token_ids: meta.pending_token_ids,
+                        pending_accepted_member_ids: meta.pending_accepted_member_ids,
                     },
                 )?;
 
@@ -2326,6 +2632,12 @@ async fn pull_with_token(token_str: &str, c: &Palette, allow_insecure: bool) -> 
     let last_manifest_hash = existing_meta
         .as_ref()
         .and_then(|m| m.last_manifest_hash.as_deref());
+    let pending_token_ids = existing_meta
+        .as_ref()
+        .and_then(|m| m.pending_token_ids.clone());
+    let pending_accepted_member_ids = existing_meta
+        .as_ref()
+        .and_then(|m| m.pending_accepted_member_ids.clone());
 
     let request_id = format!("kgr_{}", nanoid::nanoid!(12));
     let plaintext = crate::domain::sync::envelope::RequestPlaintext {
@@ -2383,6 +2695,8 @@ async fn pull_with_token(token_str: &str, c: &Palette, allow_insecure: bool) -> 
             .get("manifest_hash")
             .and_then(|value| value.as_str())
             .map(str::to_string),
+        pending_token_ids,
+        pending_accepted_member_ids,
     })?;
 
     println!(
@@ -2597,6 +2911,8 @@ async fn project_join_remote(
         last_pulled_at: None,
         last_pushed_at: None,
         last_manifest_hash: None,
+        pending_token_ids: None,
+        pending_accepted_member_ids: None,
     })?;
     remote_store.save_claim_secret(project_id, &claim_secret)?;
 

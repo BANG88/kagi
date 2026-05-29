@@ -31,6 +31,8 @@ pub struct MemberMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wrapped_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wrapped_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signing_public_key: Option<String>,
 }
 
@@ -130,6 +132,7 @@ impl KeyManager {
             recipient: recipient.to_string(),
             status: "active".to_string(),
             wrapped_key: Some(wrap_key_for_recipient(&recipient, &key)?),
+            wrapped_token: None,
             signing_public_key: Some(signing_public_key),
         };
         self.save_access_state(&AccessState {
@@ -156,6 +159,7 @@ impl KeyManager {
             recipient: identity.to_public().to_string(),
             status: "pending".to_string(),
             wrapped_key: None,
+            wrapped_token: None,
             signing_public_key: Some(signing_public_key),
         };
         let mut state = self.load_access_state()?;
@@ -186,7 +190,49 @@ impl KeyManager {
         Ok(members)
     }
 
+    pub fn find_member(&self, member_id: &str) -> Result<Option<MemberMetadata>, DomainError> {
+        let state = self.load_access_state()?;
+        Ok(state
+            .members
+            .into_iter()
+            .find(|member| member.member_id == member_id))
+    }
+
     pub fn approve_join_request(&self, member_id: &str) -> Result<MemberMetadata, DomainError> {
+        self.approve_join_request_with_optional_wrapped_token(member_id, None)
+    }
+
+    #[cfg(feature = "server")]
+    pub fn delete_join_request(&self, member_id: &str) -> Result<(), DomainError> {
+        let mut state = self.load_access_state()?;
+        let before = state.members.len();
+        state
+            .members
+            .retain(|member| member.member_id != member_id || member.status != "pending");
+        if state.members.len() == before {
+            return Err(DomainError::StoreCorrupted(format!(
+                "pending member not found: {}",
+                member_id
+            )));
+        }
+        self.save_access_state(&state)?;
+        Ok(())
+    }
+
+    #[cfg(feature = "server")]
+    pub fn approve_join_request_with_wrapped_token(
+        &self,
+        member_id: &str,
+        wrapped_token: &str,
+    ) -> Result<MemberMetadata, DomainError> {
+        self.approve_join_request_with_optional_wrapped_token(member_id, Some(wrapped_token))
+    }
+
+    fn approve_join_request_with_optional_wrapped_token(
+        &self,
+        member_id: &str,
+        wrapped_token: Option<&str>,
+    ) -> Result<MemberMetadata, DomainError> {
         let key = self.load()?;
         let mut state = self.load_access_state()?;
         let member = state
@@ -200,6 +246,9 @@ impl KeyManager {
             .map_err(|e| DomainError::StoreCorrupted(format!("invalid member recipient: {}", e)))?;
         member.status = "active".to_string();
         member.wrapped_key = Some(wrap_key_for_recipient(&recipient, &key)?);
+        if let Some(wrapped_token) = wrapped_token {
+            member.wrapped_token = Some(wrapped_token.to_string());
+        }
         let member = member.clone();
         self.save_access_state(&state)?;
         Ok(member)
@@ -276,6 +325,7 @@ impl KeyManager {
             }
             member.status = "removed".to_string();
             member.wrapped_key = None;
+            member.wrapped_token = None;
         }
 
         let mut active_count = 0usize;
@@ -458,7 +508,7 @@ impl KeyManager {
         Ok(())
     }
 
-    #[allow(dead_code)]
+    #[cfg(feature = "server")]
     pub fn load_signing_key(
         &self,
         member_id: &str,
@@ -478,6 +528,7 @@ impl KeyManager {
         Ok(ed25519_dalek::SigningKey::from_bytes(&arr))
     }
 
+    #[cfg(feature = "server")]
     pub fn ensure_signing_key(
         &self,
         member_id: &str,
