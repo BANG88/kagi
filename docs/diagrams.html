@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: "SF Mono", "Monaco", "Inconsolata", "Fira Code", "Consolas", "Courier New", monospace;
+  background: #fff;
+  padding: 40px;
+  color: #1a1a2e;
+}
+.diagram {
+  width: 900px;
+  margin-bottom: 60px;
+  background: #fff;
+  border: 2px solid #1a1a2e;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.title {
+  background: #1a1a2e;
+  color: #fff;
+  padding: 14px 24px;
+  font-size: 16px;
+  font-weight: bold;
+  letter-spacing: 0.5px;
+}
+.content {
+  padding: 32px 24px;
+  position: relative;
+}
+
+/* Node styles */
+.node {
+  border: 2px solid #1a1a2e;
+  border-radius: 6px;
+  padding: 14px 18px;
+  text-align: center;
+  font-size: 13px;
+  background: #fff;
+  min-width: 120px;
+  line-height: 1.6;
+}
+.node .label {
+  font-weight: bold;
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+.node .sub {
+  color: #666;
+  font-size: 12px;
+}
+.node.server {
+  background: #f0f4f8;
+  border-color: #4a5568;
+}
+.node.admin {
+  background: #fff5f5;
+  border-color: #c53030;
+}
+.node.git {
+  background: #f0fff4;
+  border-color: #276749;
+}
+
+/* Arrow styles */
+.arrow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: #4a5568;
+  position: relative;
+}
+.arrow-h {
+  height: 40px;
+}
+.arrow-h::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: #1a1a2e;
+  transform: translateY(-50%);
+}
+.arrow-left::after {
+  content: "◄";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  background: #fff;
+  padding: 0 4px;
+  font-size: 14px;
+  z-index: 1;
+}
+.arrow-right::after {
+  content: "►";
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  background: #fff;
+  padding: 0 4px;
+  font-size: 14px;
+  z-index: 1;
+}
+.arrow-both::after {
+  content: "◄────────────►";
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  background: #fff;
+  padding: 0 4px;
+  font-size: 14px;
+  z-index: 1;
+  letter-spacing: 2px;
+}
+.arrow-label {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  background: #fff;
+  padding: 0 8px;
+  font-size: 12px;
+  z-index: 2;
+  color: #1a1a2e;
+  font-weight: 500;
+}
+
+.arrow-v {
+  width: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+.arrow-v::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #1a1a2e;
+  transform: translateX(-50%);
+}
+.arrow-v.down::after {
+  content: "▼";
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #fff;
+  padding: 2px;
+  font-size: 12px;
+  z-index: 1;
+}
+.arrow-v.up::after {
+  content: "▲";
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #fff;
+  padding: 2px;
+  font-size: 12px;
+  z-index: 1;
+}
+
+/* Grid layouts */
+.grid-3 {
+  display: grid;
+  grid-template-columns: 1fr 140px 1fr;
+  gap: 0;
+  align-items: center;
+}
+.grid-3-mid {
+  display: grid;
+  grid-template-columns: 1fr 160px 1fr;
+  gap: 0;
+  align-items: center;
+}
+
+.grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+.code-block {
+  background: #f7fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 12px 16px;
+  font-size: 12px;
+  line-height: 1.8;
+  color: #2d3748;
+  font-family: inherit;
+  white-space: pre-wrap;
+}
+
+.hr {
+  height: 1px;
+  background: #e2e8f0;
+  margin: 24px 0;
+}
+
+.note {
+  background: #fffaf0;
+  border-left: 4px solid #ed8936;
+  padding: 12px 16px;
+  font-size: 13px;
+  color: #744210;
+  margin-top: 16px;
+}
+
+.server-box {
+  border: 2px solid #4a5568;
+  border-radius: 8px;
+  padding: 20px;
+  background: #f7fafc;
+  margin: 16px 0;
+}
+.server-box .header {
+  font-weight: bold;
+  font-size: 14px;
+  margin-bottom: 12px;
+  color: #2d3748;
+}
+
+.flow-step {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin: 12px 0;
+}
+.flow-step .num {
+  background: #1a1a2e;
+  color: #fff;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: bold;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.flow-step .text {
+  font-size: 13px;
+  line-height: 1.7;
+  color: #2d3748;
+}
+
+.choice {
+  margin-top: 16px;
+}
+.choice-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 6px 0;
+  font-size: 13px;
+}
+.choice-dot {
+  color: #1a1a2e;
+  font-weight: bold;
+}
+
+.tree {
+  font-size: 13px;
+  line-height: 1.8;
+  color: #2d3748;
+  font-family: inherit;
+}
+</style>
+</head>
+<body>
+
+<!-- Diagram 1: Git-backed -->
+<div class="diagram" id="diag1">
+  <div class="title">Without Server (Git-backed)</div>
+  <div class="content">
+    <div style="display: grid; grid-template-columns: 1fr 120px 1fr 120px 1fr; gap: 0; align-items: center;">
+      <div class="node">
+        <div class="label">Alice</div>
+        <div class="sub">(member)</div>
+      </div>
+      <div class="arrow arrow-h arrow-both">
+        <span class="arrow-label">push</span>
+      </div>
+      <div class="node git">
+        <div class="label">GitHub</div>
+        <div class="sub">.kagi/ committed</div>
+      </div>
+      <div class="arrow arrow-h arrow-both">
+        <span class="arrow-label">pull</span>
+      </div>
+      <div class="node">
+        <div class="label">Bob</div>
+        <div class="sub">(member)</div>
+      </div>
+    </div>
+    <div style="display: grid; grid-template-columns: 1fr 120px 1fr 120px 1fr; margin-top: 8px;">
+      <div class="arrow-v down" style="justify-self: center;"></div>
+      <div></div>
+      <div class="arrow-v down" style="justify-self: center;"></div>
+      <div></div>
+      <div class="arrow-v down" style="justify-self: center;"></div>
+    </div>
+    <div style="display: grid; grid-template-columns: 1fr 120px 1fr 120px 1fr; margin-top: 8px;">
+      <div style="justify-self: center; font-size: 12px; color: #666;">
+        .kagi/<br>
+        ├─ kagi.json<br>
+        ├─ access.json<br>
+        └─ secrets/
+      </div>
+      <div></div>
+      <div style="justify-self: center; font-size: 12px; color: #666;">
+        .kagi/<br>
+        ├─ kagi.json<br>
+        ├─ access.json<br>
+        └─ secrets/
+      </div>
+      <div></div>
+      <div style="justify-self: center; font-size: 12px; color: #666;">
+        .kagi/<br>
+        ├─ kagi.json<br>
+        ├─ access.json<br>
+        └─ secrets/
+      </div>
+    </div>
+    <div class="note">
+      Encrypted secrets are shared through Git commits and pulls. New members use <code>kagi member join</code> to request access, and existing members use <code>kagi member approve</code> to grant it.
+    </div>
+  </div>
+</div>
+
+<!-- Diagram 2: Server Init -->
+<div class="diagram" id="diag2">
+  <div class="title">With Server — Init Flow</div>
+  <div class="content">
+    <div class="flow-step">
+      <div class="num">1</div>
+      <div class="text">
+        Admin starts the server<br>
+        <div class="code-block">kagi serve --db ./kagi.db --key-file ./server.key.json --bind 127.0.0.1:8787</div>
+      </div>
+    </div>
+    <div class="arrow-v down" style="height: 30px; margin-left: 12px;"></div>
+    <div class="server-box">
+      <div class="header">Kagi Server</div>
+      <div style="font-size: 13px; color: #4a5568;">
+        └─ kagi.db (projects / members)
+      </div>
+    </div>
+    <div class="arrow-v down" style="height: 30px; margin-left: 12px;"></div>
+    <div class="flow-step">
+      <div class="num">2</div>
+      <div class="text">
+        First boot generates admin token, admin logs in<br>
+        <div class="code-block">kagi remote login --remote http://127.0.0.1:8787 --token kagi_admin_v1_...</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Diagram 3: Server Team -->
+<div class="diagram" id="diag3">
+  <div class="title">With Server — Team Flow</div>
+  <div class="content">
+    <div class="grid-3-mid">
+      <div class="node">
+        <div class="label">Alice</div>
+        <div class="sub">(member)</div>
+      </div>
+      <div class="arrow arrow-h arrow-both">
+        <span class="arrow-label">kagi push / pull</span>
+      </div>
+      <div class="node server">
+        <div class="label">Kagi Server</div>
+        <div class="sub">kagi.db</div>
+      </div>
+    </div>
+    <div style="display: grid; grid-template-columns: 1fr 160px 1fr; margin-top: 8px;">
+      <div class="arrow-v down" style="justify-self: center;"></div>
+      <div></div>
+      <div class="arrow-v down" style="justify-self: center;"></div>
+    </div>
+    <div style="display: grid; grid-template-columns: 1fr 160px 1fr; margin-top: 8px;">
+      <div class="code-block" style="justify-self: center; font-size: 11px;">
+kagi init
+kagi project join --remote ...
+      </div>
+      <div></div>
+      <div class="code-block" style="justify-self: center; font-size: 11px;">
+kagi pull &lt;token&gt;
+kagi push
+      </div>
+    </div>
+    <div class="hr"></div>
+    <div class="flow-step">
+      <div class="num">1</div>
+      <div class="text">Alice initializes local project and requests to join the server</div>
+    </div>
+    <div class="flow-step">
+      <div class="num">2</div>
+      <div class="text">Admin reviews and approves:<br>
+        <div class="code-block">kagi project list --remote ...
+kagi project approve &lt;project_id&gt;</div>
+        After approval, prints project token and gives it to Alice
+      </div>
+    </div>
+    <div class="flow-step">
+      <div class="num">3</div>
+      <div class="text">Alice pulls the project with the token, then uses <code>kagi push / pull</code> to sync encrypted secrets</div>
+    </div>
+    <div class="note">
+      .kagi/ stays local and out of Git. Project tokens contain the remote URL, project ID, and server fingerprint.
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

@@ -827,6 +827,83 @@ async fn member_join_server_mode(
 }
 
 #[cfg(feature = "server")]
+async fn fetch_server_join_requests(
+    key_manager: &KeyManager,
+    config: &serde_json::Value,
+    allow_insecure: bool,
+) -> anyhow::Result<Vec<MemberMetadata>> {
+    let project_id = config["project_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing project_id"))?
+        .to_string();
+    let remote_url = config
+        .get("settings")
+        .and_then(|s| s.get("sync"))
+        .and_then(|s| s.get("remote"))
+        .and_then(|v| v.as_str())
+        .or_else(|| config.get("kagi_url").and_then(|v| v.as_str()))
+        .ok_or_else(|| anyhow::anyhow!("missing remote URL"))?
+        .to_string();
+
+    let local_data_dir = local_data_dir()?;
+    let remote_store = crate::infrastructure::remote_local::RemoteLocalStore::new(local_data_dir);
+    let token = remote_store
+        .load_token(&project_id)?
+        .ok_or_else(|| anyhow::anyhow!("no project token found"))?;
+    let meta = remote_store
+        .load_remote_metadata(&project_id)?
+        .ok_or_else(|| anyhow::anyhow!("no remote metadata found"))?;
+
+    let identity = key_manager.load_or_create_identity()?;
+    let request_id = format!("kgr_{}", nanoid::nanoid!(12));
+    let plaintext = crate::domain::sync::envelope::RequestPlaintext {
+        version: 1,
+        request_id: request_id.clone(),
+        issued_at: time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap(),
+        operation: "status".into(),
+        method: "POST".into(),
+        path: format!("/v1/projects/{}/status", project_id),
+        project_id: Some(project_id.to_string()),
+        token: Some(token),
+        claim_secret: None,
+        payload: serde_json::json!({ "local_revision": meta.local_revision.unwrap_or(0) }),
+    };
+
+    let client = crate::infrastructure::remote_client::RemoteClient::new_pinned(
+        remote_url.to_string(),
+        &meta.server_fingerprint,
+        allow_insecure,
+    )
+    .await?;
+    let data = client.send_request(&plaintext, &identity).await?;
+    let requests = data
+        .get("join_requests")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut members = Vec::new();
+    for req in requests {
+        if let Some(member_id) = req.get("member_id").and_then(|v| v.as_str()) {
+            let name = req.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let recipient = req.get("recipient").and_then(|v| v.as_str()).unwrap_or("");
+            let signing_public_key: Option<String> = None; // server does not expose this in status response
+            members.push(MemberMetadata {
+                member_id: member_id.to_string(),
+                name: name.to_string(),
+                recipient: recipient.to_string(),
+                status: "pending".to_string(),
+                wrapped_key: None,
+                wrapped_token: None,
+                signing_public_key,
+            });
+        }
+    }
+    Ok(members)
+}
+
+#[cfg(feature = "server")]
 async fn member_approve_server_mode(
     key_manager: &KeyManager,
     member_id: &str,
@@ -863,6 +940,27 @@ async fn member_approve_server_mode(
     )
     .await?;
     let identity = key_manager.load_or_create_identity()?;
+
+    // If the local pending member is missing, try to create it from server data
+    if key_manager
+        .find_member(member_id)?
+        .filter(|member| member.status == "pending")
+        .is_none()
+    {
+        let server_requests =
+            fetch_server_join_requests(key_manager, config, allow_insecure).await?;
+        let server_request = server_requests
+            .into_iter()
+            .find(|r| r.member_id == member_id)
+            .ok_or_else(|| anyhow::anyhow!("join request not found on server: {}", member_id))?;
+        key_manager.create_pending_member_from_server(
+            member_id,
+            &server_request.name,
+            &server_request.recipient,
+            None,
+        )?;
+    }
+
     let response = client
         .send_member_token_issue(&project_id, &token, member_id, &identity)
         .await?;
@@ -1651,6 +1749,40 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 MemberCommands::List => {
                     let members = key_manager.list_members()?;
                     let requests = key_manager.list_join_requests()?;
+                    #[cfg(feature = "server")]
+                    let mut requests = requests;
+                    let config_path = base_path.join(crate::domain::config::KAGI_CONFIG_FILE);
+                    let config: serde_json::Value =
+                        serde_json::from_str(&fs::read_to_string(&config_path)?)?;
+                    let is_server_mode = config
+                        .get("settings")
+                        .and_then(|s| s.get("sync"))
+                        .and_then(|s| s.get("mode"))
+                        .and_then(|v| v.as_str())
+                        == Some("server");
+                    if is_server_mode {
+                        #[cfg(feature = "server")]
+                        match fetch_server_join_requests(&key_manager, &config, allow_insecure)
+                            .await
+                        {
+                            Ok(server_requests) => {
+                                // Merge: for each server request, add if not already present locally
+                                for sr in server_requests {
+                                    if !requests.iter().any(|r| r.member_id == sr.member_id) {
+                                        requests.push(sr);
+                                    }
+                                }
+                                requests.sort_by(|a, b| a.member_id.cmp(&b.member_id));
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "{} warning: could not fetch server join requests: {}",
+                                    c.prefix(),
+                                    e
+                                );
+                            }
+                        }
+                    }
                     println!("{}", c.warning("Members"));
                     if members.is_empty() {
                         println!("  {}", c.muted("none"));
@@ -1732,13 +1864,6 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                         .and_then(|v| v.as_str())
                         == Some("server");
                     if is_server_mode {
-                        if key_manager
-                            .find_member(&member_id)?
-                            .filter(|member| member.status == "pending")
-                            .is_none()
-                        {
-                            return Err(anyhow::anyhow!("join request not found: {}", member_id));
-                        }
                         #[cfg(feature = "server")]
                         {
                             member_approve_server_mode(
@@ -1869,6 +1994,13 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
 
             let base_revision = meta.local_revision.unwrap_or(0);
 
+            let key_manager = KeyManager::new(base_path.clone());
+            let identity = key_manager.load_or_create_identity()?;
+            let member_id = key_manager.member_id()?;
+            let signing_key = key_manager.ensure_signing_key(&member_id)?;
+            let signing_public_key = base64::engine::general_purpose::STANDARD
+                .encode(signing_key.verifying_key().to_bytes());
+
             let store = resolve_store()?.0;
             let kagi_json = fs::read_to_string(&config_path)?;
             let access_json = fs::read_to_string(base_path.join("access.json"))
@@ -1897,13 +2029,6 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 access_json,
                 files,
             };
-
-            let key_manager = KeyManager::new(base_path);
-            let identity = key_manager.load_or_create_identity()?;
-            let member_id = key_manager.member_id()?;
-            let signing_key = key_manager.ensure_signing_key(&member_id)?;
-            let signing_public_key = base64::engine::general_purpose::STANDARD
-                .encode(signing_key.verifying_key().to_bytes());
 
             let previous_manifest_hash = if base_revision > 0 {
                 Some(meta.last_manifest_hash.clone().ok_or_else(|| {
@@ -2119,7 +2244,6 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 )
                 .await?;
                 let data = client.send_request(&plaintext, &identity).await?;
-                let remote_revision = data["revision"].as_i64().unwrap_or(0);
                 let state = data["state"].clone();
 
                 let _manifest_hash = verify_pulled_manifest(
@@ -2131,6 +2255,29 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                     &local_access_json,
                     parsed_token.payload.bootstrap_signer_public_key.as_deref(),
                 )?;
+
+                let remote_revision = data["revision"].as_i64().unwrap_or(0);
+                let pulled_access_json = state
+                    .get("access_json")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("{}");
+
+                let has_pending = meta
+                    .pending_token_ids
+                    .as_ref()
+                    .is_some_and(|v| !v.is_empty())
+                    || meta
+                        .pending_accepted_member_ids
+                        .as_ref()
+                        .is_some_and(|v| !v.is_empty());
+                let would_change_state =
+                    remote_revision != known_revision || pulled_access_json != local_access_json;
+
+                if has_pending && would_change_state {
+                    return Err(anyhow::anyhow!(
+                        "Cannot pull while member approval metadata is pending. Run `kagi push` to publish the approval, or resolve the pending member approval before pulling."
+                    ));
+                }
 
                 apply_pulled_state(&base_path, &state)?;
 
@@ -2674,6 +2821,24 @@ async fn pull_with_token(token_str: &str, c: &Palette, allow_insecure: bool) -> 
         &local_access_json,
         token.payload.bootstrap_signer_public_key.as_deref(),
     )?;
+
+    let pulled_access_json = state
+        .get("access_json")
+        .and_then(|v| v.as_str())
+        .unwrap_or("{}");
+
+    let has_pending = pending_token_ids.as_ref().is_some_and(|v| !v.is_empty())
+        || pending_accepted_member_ids
+            .as_ref()
+            .is_some_and(|v| !v.is_empty());
+    let would_change_state =
+        remote_revision != known_revision || pulled_access_json != local_access_json;
+
+    if has_pending && would_change_state {
+        return Err(anyhow::anyhow!(
+            "Cannot pull while member approval metadata is pending. Run `kagi push` to publish the approval, or resolve the pending member approval before pulling."
+        ));
+    }
 
     apply_pulled_state(&base_path, &state)?;
 

@@ -190,6 +190,7 @@ impl KeyManager {
         Ok(members)
     }
 
+    #[cfg(feature = "server")]
     pub fn find_member(&self, member_id: &str) -> Result<Option<MemberMetadata>, DomainError> {
         let state = self.load_access_state()?;
         Ok(state
@@ -217,6 +218,29 @@ impl KeyManager {
         }
         self.save_access_state(&state)?;
         Ok(())
+    }
+
+    #[cfg(feature = "server")]
+    pub fn create_pending_member_from_server(
+        &self,
+        member_id: &str,
+        name: &str,
+        recipient: &str,
+        signing_public_key: Option<&str>,
+    ) -> Result<MemberMetadata, DomainError> {
+        let member = MemberMetadata {
+            member_id: member_id.to_string(),
+            name: name.to_string(),
+            recipient: recipient.to_string(),
+            status: "pending".to_string(),
+            wrapped_key: None,
+            wrapped_token: None,
+            signing_public_key: signing_public_key.map(|s| s.to_string()),
+        };
+        let mut state = self.load_access_state()?;
+        upsert_member(&mut state.members, member.clone());
+        self.save_access_state(&state)?;
+        Ok(member)
     }
 
     #[cfg(feature = "server")]
@@ -534,7 +558,24 @@ impl KeyManager {
         member_id: &str,
     ) -> Result<ed25519_dalek::SigningKey, DomainError> {
         match self.load_signing_key(member_id) {
-            Ok(key) => Ok(key),
+            Ok(key) => {
+                let public_key = base64_encode(&key.verifying_key().to_bytes());
+                let mut state = self.load_access_state()?;
+                let mut updated = false;
+                for member in &mut state.members {
+                    if member.member_id == member_id {
+                        if member.signing_public_key.as_deref() != Some(&public_key) {
+                            member.signing_public_key = Some(public_key);
+                            updated = true;
+                        }
+                        break;
+                    }
+                }
+                if updated {
+                    self.save_access_state(&state)?;
+                }
+                Ok(key)
+            }
             Err(_) => {
                 let key = generate_signing_keypair();
                 let public_key = base64_encode(&key.verifying_key().to_bytes());

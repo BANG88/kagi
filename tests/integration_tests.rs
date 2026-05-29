@@ -1693,3 +1693,263 @@ fn test_server_push_pull_status() {
         stdout
     );
 }
+
+#[cfg(feature = "server")]
+fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        if ty.is_dir() {
+            copy_dir_all(&entry.path(), &dst.join(entry.file_name()))?;
+        } else {
+            std::fs::copy(entry.path(), dst.join(entry.file_name()))?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+#[cfg(feature = "server")]
+fn test_server_cross_checkout_join_request_visible() {
+    let (_server, admin_token, port) = spawn_server();
+    let server_url = format!("http://127.0.0.1:{}", port);
+
+    let owner_dir = TempDir::new().unwrap();
+    let owner_home = TempDir::new().unwrap();
+    let joiner_dir = TempDir::new().unwrap();
+    let joiner_home = TempDir::new().unwrap();
+
+    let mut cmd = kagi_bin_with_home(owner_home.path());
+    cmd.current_dir(&owner_dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin_with_home(owner_home.path());
+    cmd.current_dir(&owner_dir);
+    cmd.args(["project", "join", "--remote", &server_url]);
+    cmd.assert().success();
+
+    let kagi_json_path = owner_dir.path().join(".kagi/kagi.json");
+    let config: Value =
+        serde_json::from_str(&std::fs::read_to_string(&kagi_json_path).unwrap()).unwrap();
+    let project_id = config["project_id"].as_str().unwrap().to_string();
+
+    let mut cmd = kagi_bin_with_home(owner_home.path());
+    cmd.current_dir(&owner_dir);
+    cmd.env("KAGI_ADMIN_TOKEN", &admin_token);
+    cmd.args(["project", "approve", "--remote", &server_url, &project_id]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin_with_home(owner_home.path());
+    cmd.current_dir(&owner_dir);
+    cmd.arg("pull");
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin_with_home(owner_home.path());
+    cmd.current_dir(&owner_dir);
+    cmd.arg("push");
+    cmd.assert().success();
+
+    copy_dir_all(
+        &owner_dir.path().join(".kagi"),
+        &joiner_dir.path().join(".kagi"),
+    )
+    .unwrap();
+    copy_dir_all(
+        &owner_home.path().join(format!("projects/{}", project_id)),
+        &joiner_home.path().join(format!("projects/{}", project_id)),
+    )
+    .unwrap();
+
+    let mut cmd = kagi_bin_with_home(joiner_home.path());
+    cmd.current_dir(&joiner_dir);
+    cmd.args(["member", "join", "--name", "alice"]);
+    cmd.assert().success();
+
+    let joiner_access_path = joiner_dir.path().join(".kagi/access.json");
+    let access: Value =
+        serde_json::from_str(&std::fs::read_to_string(&joiner_access_path).unwrap()).unwrap();
+    let pending = access["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["status"] == "pending")
+        .unwrap();
+    let member_id = pending["member_id"].as_str().unwrap().to_string();
+
+    let owner_access_path = owner_dir.path().join(".kagi/access.json");
+    let owner_access: Value =
+        serde_json::from_str(&std::fs::read_to_string(&owner_access_path).unwrap()).unwrap();
+    assert!(
+        owner_access["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m["member_id"] != member_id),
+        "owner checkout should not have the joiner's pending member locally before listing"
+    );
+
+    let mut cmd = kagi_bin_with_home(owner_home.path());
+    cmd.current_dir(&owner_dir);
+    cmd.args(["member", "list"]);
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("alice"),
+        "expected alice in member list: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("pending"),
+        "expected pending status: {}",
+        stdout
+    );
+
+    let mut cmd = kagi_bin_with_home(owner_home.path());
+    cmd.current_dir(&owner_dir);
+    cmd.args(["member", "approve", &member_id]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin_with_home(owner_home.path());
+    cmd.current_dir(&owner_dir);
+    cmd.arg("push");
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin_with_home(owner_home.path());
+    cmd.current_dir(&owner_dir);
+    cmd.args(["member", "list"]);
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("alice"),
+        "expected alice after push: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("active"),
+        "expected active status after push: {}",
+        stdout
+    );
+
+    let access: Value =
+        serde_json::from_str(&std::fs::read_to_string(&owner_access_path).unwrap()).unwrap();
+    let member = access["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["member_id"] == member_id)
+        .unwrap();
+    assert_eq!(member["status"], "active");
+    assert!(
+        member["wrapped_key"].as_str().unwrap().len() > 20,
+        "expected wrapped_key to be present"
+    );
+    assert!(
+        member["wrapped_token"].as_str().unwrap().len() > 20,
+        "expected wrapped_token to be present"
+    );
+}
+
+#[test]
+#[cfg(feature = "server")]
+fn test_server_pull_blocks_with_pending_approval() {
+    let (_server, admin_token, port) = spawn_server();
+    let server_url = format!("http://127.0.0.1:{}", port);
+
+    let project_dir = TempDir::new().unwrap();
+    let kagi_home = TempDir::new().unwrap();
+
+    let mut cmd = kagi_bin_with_home(kagi_home.path());
+    cmd.current_dir(&project_dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin_with_home(kagi_home.path());
+    cmd.current_dir(&project_dir);
+    cmd.args(["project", "join", "--remote", &server_url]);
+    cmd.assert().success();
+
+    let kagi_json_path = project_dir.path().join(".kagi/kagi.json");
+    let config: Value =
+        serde_json::from_str(&std::fs::read_to_string(&kagi_json_path).unwrap()).unwrap();
+    let project_id = config["project_id"].as_str().unwrap().to_string();
+
+    let mut cmd = kagi_bin_with_home(kagi_home.path());
+    cmd.current_dir(&project_dir);
+    cmd.env("KAGI_ADMIN_TOKEN", &admin_token);
+    cmd.args(["project", "approve", "--remote", &server_url, &project_id]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin_with_home(kagi_home.path());
+    cmd.current_dir(&project_dir);
+    cmd.arg("pull");
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin_with_home(kagi_home.path());
+    cmd.current_dir(&project_dir);
+    cmd.args(["member", "join", "--name", "bob"]);
+    cmd.assert().success();
+
+    let access_path = project_dir.path().join(".kagi/access.json");
+    let access: Value =
+        serde_json::from_str(&std::fs::read_to_string(&access_path).unwrap()).unwrap();
+    let pending = access["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["status"] == "pending")
+        .unwrap();
+    let member_id = pending["member_id"].as_str().unwrap().to_string();
+
+    let mut cmd = kagi_bin_with_home(kagi_home.path());
+    cmd.current_dir(&project_dir);
+    cmd.args(["member", "approve", &member_id]);
+    cmd.assert().success();
+
+    // Create a second checkout and push to make the server ahead
+    let project_dir2 = TempDir::new().unwrap();
+    let kagi_home2 = TempDir::new().unwrap();
+    copy_dir_all(project_dir.path(), project_dir2.path()).unwrap();
+    copy_dir_all(kagi_home.path(), kagi_home2.path()).unwrap();
+
+    let mut cmd = kagi_bin_with_home(kagi_home2.path());
+    cmd.current_dir(&project_dir2);
+    cmd.args(["set", "api", "KEY", "val"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin_with_home(kagi_home2.path());
+    cmd.current_dir(&project_dir2);
+    cmd.arg("push");
+    cmd.assert().success();
+
+    // In the original, pull should fail because remote is ahead and local has pending approval
+    let mut cmd = kagi_bin_with_home(kagi_home.path());
+    cmd.current_dir(&project_dir);
+    cmd.arg("pull");
+    let assert = cmd.assert().failure();
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+    assert!(
+        stderr.contains("Cannot pull while member approval metadata is pending"),
+        "expected pull guard error, got: {}",
+        stderr
+    );
+
+    // Verify the pending approval metadata is still present after the failed pull
+    let local_data_dir = kagi_home.path().join("projects");
+    let project_dir_entry = std::fs::read_dir(&local_data_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .find(|e| e.file_type().unwrap().is_dir())
+        .unwrap();
+    let meta_path = project_dir_entry.path().join("remote.json");
+    let meta: Value = serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+    let has_pending = meta["pending_accepted_member_ids"]
+        .as_array()
+        .map(|arr| !arr.is_empty())
+        .unwrap_or(false);
+    assert!(
+        has_pending,
+        "expected pending approval metadata to survive the failed pull"
+    );
+}

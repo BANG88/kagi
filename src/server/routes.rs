@@ -787,23 +787,26 @@ async fn status_handler(
         "behind"
     };
 
-    let join_count = if caps.iter().any(|c| c == "push" || c == "rotate") {
-        state
-            .repo
-            .list_join_requests(&project_id)
-            .await
-            .map_err(|e| ServerError::Internal(e.to_string()))?
-            .len() as i64
-    } else {
-        0
-    };
-
-    let response = json!({
+    let mut response = json!({
         "remote_revision": remote_revision,
         "local_revision": local_revision,
         "state": state_str,
-        "pending_join_count": join_count,
+        "pending_join_count": 0,
     });
+
+    if caps.iter().any(|c| c == "push" || c == "rotate") {
+        let join_requests = state
+            .repo
+            .list_join_requests(&project_id)
+            .await
+            .map_err(|e| ServerError::Internal(e.to_string()))?;
+        let requests_json: Vec<serde_json::Value> = join_requests.into_iter().map(|(member_id, name, recipient, created_at)| {
+            json!({"member_id": member_id, "name": name, "recipient": recipient, "created_at": created_at})
+        }).collect();
+        response["pending_join_count"] = json!(requests_json.len() as i64);
+        response["join_requests"] = json!(requests_json);
+    }
+
     encrypt_success_response(&state, &plaintext, &response_recipient, response)
 }
 

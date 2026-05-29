@@ -276,6 +276,33 @@ journal outside the repository and retries safely on the next command.
 
 ---
 
+## Architecture Overview
+
+### Without Server (Git-backed)
+
+![Git-backed workflow](docs/diagram-git-backed.png)
+
+Encrypted secrets are shared through Git commits and pulls. New members use `kagi member join` to request access, and existing members use `kagi member approve` to grant it.
+
+### With Server (Remote Sync)
+
+**1. Server initialization**
+
+![Server init flow](docs/diagram-server-init.png)
+
+**2. Team collaboration**
+
+![Server team flow](docs/diagram-server-team.png)
+
+- `.kagi/` stays local and out of Git.
+- Project tokens contain the remote URL, project ID, and server fingerprint.
+
+**Choose:**
+- **Without Server**: commit `.kagi/` to Git (default, simple).
+- **With Server**: keep `.kagi/` local, use remote sync (team control).
+
+---
+
 ## Remote Server Sync
 
 Git-backed `.kagi/` sharing is the default workflow. If a team does not want to
