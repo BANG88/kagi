@@ -1,6 +1,7 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 use std::fs;
+#[cfg(unix)]
 use std::path::Path;
 use tempfile::TempDir;
 
@@ -37,11 +38,28 @@ fn run_kagi_interactive(
     let script_cmd = format!("{} {}", bin_path, args_quoted.join(" "));
 
     let mut cmd = std::process::Command::new("script");
-    cmd.arg("-q")
-        .arg("-c")
-        .arg(&script_cmd)
-        .arg("/dev/null")
-        .env("KAGI_DISABLE_KEYRING", "1")
+    cmd.arg("-q");
+    #[cfg(target_os = "linux")]
+    {
+        cmd.arg("-c")
+            .arg(&script_cmd)
+            .arg("/dev/null");
+    }
+    #[cfg(target_os = "macos")]
+    {
+        cmd.arg("/dev/null")
+            .arg("sh")
+            .arg("-c")
+            .arg(&script_cmd);
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        // Fallback for other Unix systems — try Linux-style first
+        cmd.arg("-c")
+            .arg(&script_cmd)
+            .arg("/dev/null");
+    }
+    cmd.env("KAGI_DISABLE_KEYRING", "1")
         .env("KAGI_HOME", kagi_home)
         .current_dir(current_dir)
         .stdin(std::process::Stdio::piped())
