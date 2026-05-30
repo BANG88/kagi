@@ -145,13 +145,13 @@ to development.
 When editing kagi itself, keep behavior in the owning layer:
 
 - `crates/kagi-domain/`: entities, config, parsers, traits, and domain errors.
-- `crates/kagi-cli/src/application/`: use-case services such as `init`, `set`, `get`, `run`,
+- `crates/kagi-app/src/application/`: use-case services such as `init`, `set`, `get`, `run`,
   `export`, `import`, `sync`, and `list`.
 - `crates/kagi-store/`: filesystem storage, key management, and environment injection.
 - `crates/kagi-crypto/`: XChaCha20-Poly1305 encryption.
 - `crates/kagi-sync/`: remote sync protocol and HTTP client.
 - `crates/kagi-server/`: Axum server and SQLite backend.
-- `crates/kagi-cli/`: Clap arguments, command dispatch, and terminal styling.
+- `crates/kagi-app/`: Clap arguments, command dispatch, and terminal styling.
 
 For user-visible CLI behavior, add or update integration coverage in
 `tests/integration_tests.rs`.

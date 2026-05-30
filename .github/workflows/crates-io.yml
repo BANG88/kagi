@@ -41,8 +41,8 @@ jobs:
       - name: Wait for index propagation
         run: sleep 45
 
-      - name: Publish kagi-cli
-        run: cargo publish -p kagi-cli --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Publish kagi-app
+        run: cargo publish -p kagi-app --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
       - name: Wait for index propagation
         run: sleep 45

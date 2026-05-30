@@ -9,8 +9,8 @@
 - `crates/kagi-store/`: local storage (`FileStore`), key manager, and environment injection.
 - `crates/kagi-sync/`: sync protocol types and remote HTTP client (`age`-encrypted transport).
 - `crates/kagi-server/`: Axum HTTP server and SQLite remote backend.
-- `crates/kagi-cli/`: CLI application — Clap argument definitions, command dispatch, TUI, and use-case services.
-- `kagi-vault` (root): meta-package that provides the `kagi` binary by re-exporting `kagi-cli`.
+- `crates/kagi-app/`: CLI application — Clap argument definitions, command dispatch, TUI, and use-case services.
+- `kagi-vault` (root): meta-package that provides the `kagi` binary by re-exporting `kagi-app`.
 - `tests/integration_tests.rs`: end-to-end CLI tests using temporary directories.
 - `docs/`: docs and README assets.
 

@@ -123,11 +123,11 @@ following are completely omitted from compilation:
 
 The code still needs a hard internal boundary:
 
-- `kagi-cli` owns Clap arguments, terminal output, and command dispatch.
+- `kagi-app` owns Clap arguments, terminal output, and command dispatch.
 - `kagi-server` owns Axum routes, HTTP errors, server startup, request limits, and rate
   limiting.
-- `kagi-cli` must not call `kagi_server::routes` or depend on Axum types.
-- `kagi-server` must not depend on `kagi-cli` formatting or Clap types.
+- `kagi-app` must not call `kagi_server::routes` or depend on Axum types.
+- `kagi-server` must not depend on `kagi-app` formatting or Clap types.
 - Shared request/response structs live in `kagi-sync` domain.
 - CLI-side HTTP code lives in `kagi-sync/src/infrastructure/remote_client.rs`.
 - Server-side SQLite code lives in `kagi-server/src/sqlite_remote.rs`.
@@ -136,7 +136,7 @@ If the server later becomes a larger product, add a second binary while keeping
 shared code in the same crate workspace:
 
 ```text
-crates/kagi-cli/src/main.rs
+crates/kagi-app/src/main.rs
 crates/kagi-server/src/main.rs
 ```
 
@@ -154,7 +154,7 @@ crates/kagi-sync/src/domain/
   project_token.rs     token payload, capabilities, ids
   remote_config.rs     sync settings and local metadata structs
 
-crates/kagi-cli/src/application/
+crates/kagi-app/src/application/
   remote_sync/
     push.rs
     pull.rs

@@ -463,8 +463,8 @@ kagi is organized as a Cargo workspace with 6 crates:
 | **kagi-store** | Local storage (`FileStore`), key manager, env injector | kagi-domain, kagi-crypto |
 | **kagi-sync** | Sync protocol types + remote client (`age`-encrypted HTTP transport) | kagi-domain |
 | **kagi-server** | Axum HTTP server + SQLite remote backend | kagi-domain, kagi-sync |
-| **kagi-cli** | CLI application: argument parsing, command dispatch, TUI | kagi-domain, kagi-crypto, kagi-store, kagi-sync |
-| **kagi-vault** | Meta-package: provides the `kagi` binary by re-exporting `kagi-cli` | kagi-cli |
+| **kagi-app** | CLI application: argument parsing, command dispatch, TUI | kagi-domain, kagi-crypto, kagi-store, kagi-sync |
+| **kagi-vault** | Meta-package: provides the `kagi` binary by re-exporting `kagi-app` | kagi-app |
 
 All crates share the same version via `version.workspace = true`. The design
 lets you depend on individual crates (e.g., `kagi-domain` for types, or

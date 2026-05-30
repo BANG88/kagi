@@ -1,13 +1,13 @@
 [package]
-name = "kagi-cli"
+name = "kagi-app"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "CLI binary for Kagi secrets manager"
+description = "CLI application for Kagi secrets manager"
 
 [lib]
-name = "kagi_cli"
+name = "kagi_app"
 path = "src/lib.rs"
 
 [features]
