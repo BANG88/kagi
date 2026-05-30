@@ -3566,6 +3566,18 @@ fn resolve_admin_token(fingerprint: &str) -> anyhow::Result<String> {
         validate_admin_token_for_fingerprint(&token, fingerprint)?;
         return Ok(token);
     }
+    if admin_keyring_disabled() {
+        let remote_store =
+            crate::infrastructure::remote_local::RemoteLocalStore::new(local_data_dir()?);
+        if let Some(token) = remote_store.load_admin_token(fingerprint)? {
+            validate_admin_token_for_fingerprint(&token, fingerprint)?;
+            return Ok(token);
+        }
+        return Err(anyhow::anyhow!(
+            "admin token not found for server {}. Run `kagi remote login --remote <url> --token <token>` or set KAGI_ADMIN_TOKEN.",
+            fingerprint
+        ));
+    }
     let entry =
         crate::infrastructure::key_manager::keyring_admin_entry(fingerprint).map_err(|e| {
             anyhow::anyhow!(
@@ -3624,19 +3636,25 @@ async fn remote_login(
     .map_err(|e| anyhow::anyhow!("failed to connect to remote: {}", e))?;
     let fingerprint = remote_client.fingerprint();
     validate_admin_token_for_fingerprint(token, fingerprint)?;
-    let entry =
-        crate::infrastructure::key_manager::keyring_admin_entry(fingerprint).map_err(|e| {
-            anyhow::anyhow!(
-                "keyring unavailable: {}. admin token requires OS keychain.",
-                e
-            )
-        })?;
-    entry
-        .set_password(token)
-        .map_err(|e| anyhow::anyhow!("failed to save admin token to keyring: {}", e))?;
 
     let local_data_dir = local_data_dir()?;
     let remote_store = crate::infrastructure::remote_local::RemoteLocalStore::new(local_data_dir);
+    if admin_keyring_disabled() {
+        remote_store
+            .save_admin_token(fingerprint, token)
+            .map_err(|e| anyhow::anyhow!("failed to save admin token: {}", e))?;
+    } else {
+        let entry =
+            crate::infrastructure::key_manager::keyring_admin_entry(fingerprint).map_err(|e| {
+                anyhow::anyhow!(
+                    "keyring unavailable: {}. admin token requires OS keychain.",
+                    e
+                )
+            })?;
+        entry
+            .set_password(token)
+            .map_err(|e| anyhow::anyhow!("failed to save admin token to keyring: {}", e))?;
+    }
     remote_store
         .save_admin_remote(fingerprint, remote_url)
         .map_err(|e| anyhow::anyhow!("failed to save admin remote config: {}", e))?;
@@ -3648,6 +3666,11 @@ async fn remote_login(
         c.muted(remote_url)
     );
     Ok(())
+}
+
+#[cfg(feature = "server")]
+fn admin_keyring_disabled() -> bool {
+    std::env::var_os("KAGI_DISABLE_KEYRING").is_some() || std::env::var_os("KAGI_HOME").is_some()
 }
 
 #[cfg(feature = "server")]
@@ -4055,9 +4078,7 @@ fn run_backup(out: &str, c: &Palette) -> anyhow::Result<()> {
     let home_backup = out_dir.join("home");
 
     // Prevent destination-inside-source recursion
-    let canonical_out = out_dir
-        .canonicalize()
-        .unwrap_or_else(|_| out_dir.to_path_buf());
+    let canonical_out = canonicalize_existing_path_prefix(out_dir)?;
     let canonical_base = base_path
         .canonicalize()
         .unwrap_or_else(|_| base_path.to_path_buf());
@@ -4311,6 +4332,40 @@ fn run_restore(from: &str, force: bool, c: &Palette) -> anyhow::Result<()> {
         c.accent("kagi doctor")
     );
     Ok(())
+}
+
+fn canonicalize_existing_path_prefix(path: &Path) -> anyhow::Result<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    if let Ok(canonical) = absolute.canonicalize() {
+        return Ok(canonical);
+    }
+
+    let mut current = absolute.as_path();
+    let mut missing = Vec::new();
+    while !current.exists() {
+        let Some(name) = current.file_name() else {
+            break;
+        };
+        missing.push(name.to_os_string());
+        current = current.parent().ok_or_else(|| {
+            anyhow::anyhow!(
+                "failed to inspect output directory '{}'",
+                absolute.display()
+            )
+        })?;
+    }
+
+    let mut canonical = current
+        .canonicalize()
+        .unwrap_or_else(|_| current.to_path_buf());
+    for component in missing.iter().rev() {
+        canonical.push(component);
+    }
+    Ok(canonical)
 }
 
 fn copy_dir_all(src: &Path, dst: &Path) -> anyhow::Result<()> {

@@ -19,6 +19,13 @@ pub struct ClaimSecretStore {
     pub claim_secret: String,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct AdminTokenStore {
+    pub version: u8,
+    pub server_fingerprint: String,
+    pub token: String,
+}
+
 pub struct RemoteLocalStore {
     local_data_dir: PathBuf,
 }
@@ -118,8 +125,39 @@ impl RemoteLocalStore {
         Ok(())
     }
 
-    // Admin tokens are stored exclusively in the OS keychain.
-    // File-based storage has been removed for security.
+    pub fn admin_token_path(&self, server_fingerprint: &str) -> PathBuf {
+        self.local_data_dir
+            .join(format!("admins/{}/token.json", server_fingerprint))
+    }
+
+    pub fn save_admin_token(
+        &self,
+        server_fingerprint: &str,
+        token: &str,
+    ) -> Result<(), DomainError> {
+        let path = self.admin_token_path(server_fingerprint);
+        ensure_private_dir(path.parent().unwrap())?;
+        let store = AdminTokenStore {
+            version: 1,
+            server_fingerprint: server_fingerprint.to_string(),
+            token: token.to_string(),
+        };
+        write_private_file(&path, serde_json::to_string_pretty(&store)?.as_bytes())?;
+        Ok(())
+    }
+
+    pub fn load_admin_token(
+        &self,
+        server_fingerprint: &str,
+    ) -> Result<Option<String>, DomainError> {
+        let path = self.admin_token_path(server_fingerprint);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let content = fs::read_to_string(path)?;
+        let store: AdminTokenStore = serde_json::from_str(&content)?;
+        Ok(Some(store.token))
+    }
 
     pub fn admin_remote_path(&self, server_fingerprint: &str) -> PathBuf {
         self.local_data_dir
@@ -285,5 +323,13 @@ mod tests {
         let store = test_store();
         let loaded = store.load_admin_remote("kgs_missing").unwrap();
         assert!(loaded.is_none());
+    }
+
+    #[test]
+    fn test_save_and_load_admin_token() {
+        let store = test_store();
+        store.save_admin_token("kgs_abc", "admin-token").unwrap();
+        let loaded = store.load_admin_token("kgs_abc").unwrap();
+        assert_eq!(loaded, Some("admin-token".to_string()));
     }
 }

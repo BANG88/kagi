@@ -25,59 +25,67 @@ fn run_kagi_interactive(
 ) -> (std::process::ExitStatus, String) {
     let bin_path = std::env::var("CARGO_BIN_EXE_kagi").unwrap_or_else(|_| "kagi".to_string());
 
-    let args_quoted: Vec<String> = args
-        .iter()
-        .map(|a| {
-            if a.contains(' ') || a.contains('\'') || a.contains('"') {
-                format!("'{}'", a.replace('\'', "'\"'\"'"))
-            } else {
-                a.to_string()
-            }
-        })
-        .collect();
-    let script_cmd = format!("{} {}", bin_path, args_quoted.join(" "));
+    const PTY_RUNNER: &str = r#"
+import os
+import pty
+import select
+import subprocess
+import sys
 
-    let mut cmd = std::process::Command::new("script");
-    cmd.arg("-q");
-    #[cfg(target_os = "linux")]
-    {
-        cmd.arg("-c").arg(&script_cmd).arg("/dev/null");
-    }
-    #[cfg(target_os = "macos")]
-    {
-        cmd.arg("/dev/null").arg("sh").arg("-c").arg(&script_cmd);
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        // Fallback for other Unix systems — try Linux-style first
-        cmd.arg("-c").arg(&script_cmd).arg("/dev/null");
-    }
+master, slave = pty.openpty()
+child = subprocess.Popen(sys.argv[1:], stdin=slave, stdout=slave, stderr=subprocess.STDOUT, close_fds=True)
+os.close(slave)
+
+inputs = os.environ.get("KAGI_E2E_INPUTS", "")
+for line in inputs.split("\n"):
+    if line:
+        os.write(master, line.encode())
+        os.write(master, b"\n")
+
+while True:
+    ready, _, _ = select.select([master], [], [], 0.05)
+    if ready:
+        try:
+            data = os.read(master, 4096)
+        except OSError:
+            break
+        if not data:
+            break
+        sys.stdout.buffer.write(data)
+        sys.stdout.buffer.flush()
+    if child.poll() is not None:
+        while True:
+            ready, _, _ = select.select([master], [], [], 0)
+            if not ready:
+                break
+            try:
+                data = os.read(master, 4096)
+            except OSError:
+                break
+            if not data:
+                break
+            sys.stdout.buffer.write(data)
+            sys.stdout.buffer.flush()
+        break
+
+os.close(master)
+sys.exit(child.wait())
+"#;
+
+    let mut cmd = std::process::Command::new("python3");
+    cmd.arg("-c").arg(PTY_RUNNER).arg(&bin_path).args(args);
     cmd.env("KAGI_DISABLE_KEYRING", "1")
         .env("KAGI_HOME", kagi_home)
+        .env("KAGI_E2E_INPUTS", inputs.join("\n"))
         .current_dir(current_dir)
-        .stdin(std::process::Stdio::piped())
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
+        .stderr(std::process::Stdio::piped());
 
-    let mut child = cmd.spawn().expect("failed to spawn script");
-
-    if let Some(mut stdin) = child.stdin.take() {
-        for input in inputs {
-            std::io::Write::write_all(&mut stdin, input.as_bytes()).unwrap();
-            std::io::Write::write_all(&mut stdin, b"\n").unwrap();
-        }
-    }
-
-    let status = child.wait().expect("wait failed");
-    let output = child
-        .stdout
-        .map(|mut f| {
-            let mut s = String::new();
-            std::io::Read::read_to_string(&mut f, &mut s).ok();
-            s
-        })
-        .unwrap_or_default();
-    (status, output)
+    let output = cmd.output().expect("failed to run pty helper");
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    (output.status, text)
 }
 
 #[test]
