@@ -19,4 +19,5 @@ jobs:
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test
       - run: cargo test --no-default-features
-      - run: cargo package --allow-dirty
+      - run: cargo check --all-targets --all-features
+      - run: cargo check --no-default-features

@@ -6,7 +6,7 @@
 
 A secure, team-ready CLI for managing encrypted secrets and environment variables — a drop-in replacement for `.env` files with per-service isolation and team sharing.
 
-**kagi** (鍵, Japanese for "key") keeps your secrets encrypted at rest using XChaCha20-Poly1305 while making them easy to inject into applications during development and deployment.
+**kagi** keeps your secrets encrypted at rest using XChaCha20-Poly1305 while making them easy to inject into applications during development and deployment.
 
 ---
 
@@ -47,6 +47,27 @@ cargo install --path .
 
 # CLI-only: excludes server code and server-related commands
 cargo install --path . --no-default-features
+```
+
+### As a library
+
+Individual crates can be added as dependencies:
+
+```bash
+# Core domain types and traits
+cargo add kagi-domain
+
+# Encryption (XChaCha20-Poly1305)
+cargo add kagi-crypto
+
+# Local storage and key management
+cargo add kagi-store
+
+# Remote sync client
+cargo add kagi-sync
+
+# HTTP server (requires server feature)
+cargo add kagi-server
 ```
 
 ### Optional Codex / OpenCode skill
@@ -433,16 +454,21 @@ the encrypted secrets are unrecoverable by design.
 
 ## Architecture
 
-kagi follows **Clean Architecture** with four layers:
+kagi is organized as a Cargo workspace with 6 crates:
 
-| Layer | Responsibility |
-|-------|----------------|
-| **Domain** | Entities (`Service`, `Secret`), repository traits, error types, parsers |
-| **Application** | Use cases: `InitService`, `SetSecretService`, `GetSecretService`, `RunCommandService`, etc. |
-| **Infrastructure** | Concrete implementations: `FileStore`, `XChaChaEncryptor`, `KeyManager`, `SystemCommandRunner` |
-| **CLI** | Argument parsing (`clap`), command dispatch, terminal styling |
+| Crate | Purpose | Dependencies |
+|-------|---------|-------------|
+| **kagi-domain** | Core domain: entities (`Service`, `Secret`), config, errors, parsers, repository traits | None |
+| **kagi-crypto** | XChaCha20-Poly1305 encryption | kagi-domain |
+| **kagi-store** | Local storage (`FileStore`), key manager, env injector | kagi-domain, kagi-crypto |
+| **kagi-sync** | Sync protocol types + remote client (`age`-encrypted HTTP transport) | kagi-domain |
+| **kagi-server** | Axum HTTP server + SQLite remote backend | kagi-domain, kagi-sync |
+| **kagi-cli** | CLI application: argument parsing, command dispatch, TUI | kagi-domain, kagi-crypto, kagi-store, kagi-sync |
+| **kagi-vault** | Meta-package: provides the `kagi` binary by re-exporting `kagi-cli` | kagi-cli |
 
-This makes it trivial to swap the file-based store for a remote backend or replace the crypto implementation without touching business logic.
+All crates share the same version via `version.workspace = true`. The design
+lets you depend on individual crates (e.g., `kagi-domain` for types, or
+`kagi-crypto` for encryption) without pulling in the entire CLI or server.
 
 ---
 
@@ -461,6 +487,10 @@ cargo test --test integration_tests
 # Run the real OS keychain smoke test
 cargo test test_os_keychain_project_key_survives_local_data_loss -- --ignored
 
+# Test a single crate
+cargo test -p kagi-domain
+cargo test -p kagi-store
+
 # Try the Bun example
 cd tests
 kagi init --nested --envs
@@ -473,6 +503,38 @@ cargo install --path .
 ```
 
 The default test suite uses isolated local storage so it can run in CI. The ignored keychain smoke test requires a real unlocked OS keychain/session and verifies that kagi can still load the project key after local data files are removed.
+
+## Releasing
+
+### Tag-based release (recommended)
+
+Push a git tag and let GitHub Actions handle everything:
+
+```bash
+# Create and push tag (triggers CI: tests, builds, GitHub Release, crates.io)
+VERSION=0.1.3 make tag
+```
+
+GitHub Actions workflow (`release.yml`) runs automatically on tag push:
+1. Tests on all platforms
+2. Builds cross-platform binaries
+3. Creates GitHub Release with artifacts
+4. Publishes all crates to crates.io
+
+### Full cargo-release workflow
+
+```bash
+# Preview what a release would do
+make dry-run
+
+# Bump version, commit, tag, and push
+make release
+
+# Publish all crates to crates.io (local, not via CI)
+make publish
+```
+
+`cargo-release` handles the dependency ordering automatically. See the `Makefile` for details.
 
 ---
 

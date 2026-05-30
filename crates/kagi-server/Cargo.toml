@@ -1,0 +1,37 @@
+[package]
+name = "kagi-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "HTTP server for Kagi remote sync"
+include = ["src/**/*", "migrations/**/*", "Cargo.toml"]
+
+[dependencies]
+kagi-domain = { workspace = true }
+kagi-sync = { workspace = true, features = ["server"] }
+axum = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hmac = { workspace = true }
+url = { workspace = true }
+rand = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+tower_governor = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+time = { workspace = true }
+nanoid = { workspace = true }
+base64 = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+ed25519-dalek = { workspace = true }
+subtle = { workspace = true }
+tracing = { workspace = true }
+age = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+reqwest = { workspace = true }

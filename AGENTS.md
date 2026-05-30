@@ -2,12 +2,15 @@
 
 ## Project Structure & Module Organization
 
-`kagi` is a Rust 2024 CLI for encrypted environment variables. Source lives in `src/` and follows a clean-architecture split:
+`kagi` is a Rust 2024 CLI for encrypted environment variables. It is organized as a Cargo workspace with 6 crates:
 
-- `src/domain/`: entities, config, parsers, repository traits, crypto traits, and domain errors.
-- `src/application/`: use-case services such as `init`, `set`, `get`, `run`, `export`, `import`, `sync`, and `list`.
-- `src/infrastructure/`: filesystem storage, XChaCha encryption, key management, and environment injection.
-- `src/cli/`: Clap argument definitions, command dispatch, and terminal styling.
+- `crates/kagi-domain/`: core domain — entities, config, parsers, repository traits, crypto traits, and domain errors.
+- `crates/kagi-crypto/`: XChaCha20-Poly1305 encryption implementation.
+- `crates/kagi-store/`: local storage (`FileStore`), key manager, and environment injection.
+- `crates/kagi-sync/`: sync protocol types and remote HTTP client (`age`-encrypted transport).
+- `crates/kagi-server/`: Axum HTTP server and SQLite remote backend.
+- `crates/kagi-cli/`: CLI application — Clap argument definitions, command dispatch, TUI, and use-case services.
+- `kagi-vault` (root): meta-package that provides the `kagi` binary by re-exporting `kagi-cli`.
 - `tests/integration_tests.rs`: end-to-end CLI tests using temporary directories.
 - `docs/`: docs and README assets.
 

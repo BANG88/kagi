@@ -23,7 +23,8 @@ fn run_kagi_interactive(
     args: &[&str],
     inputs: &[&str],
 ) -> (std::process::ExitStatus, String) {
-    let bin_path = std::env::var("CARGO_BIN_EXE_kagi").unwrap_or_else(|_| "kagi".to_string());
+    let bin_path = std::env::var("CARGO_BIN_EXE_kagi")
+        .unwrap_or_else(|_| assert_cmd::cargo_bin!("kagi").to_string_lossy().to_string());
 
     const PTY_RUNNER: &str = r#"
 import os
@@ -337,9 +338,7 @@ fn test_e2e_server_full_remote_workflow() {
     let db_path = server_dir.path().join("server.db");
     let key_path = server_dir.path().join("server.key");
 
-    let mut serve_cmd = std::process::Command::new(
-        std::env::var("CARGO_BIN_EXE_kagi").expect("CARGO_BIN_EXE_kagi not set"),
-    );
+    let mut serve_cmd = std::process::Command::new(assert_cmd::cargo_bin!("kagi"));
     serve_cmd.env("KAGI_DISABLE_KEYRING", "1");
     serve_cmd.env("KAGI_HOME", server_dir.path().join("kagi-home"));
     serve_cmd.args([
@@ -718,9 +717,7 @@ fn test_e2e_server_advanced() {
     let db_path = server_dir.path().join("server.db");
     let key_path = server_dir.path().join("server.key");
 
-    let mut serve_cmd = std::process::Command::new(
-        std::env::var("CARGO_BIN_EXE_kagi").expect("CARGO_BIN_EXE_kagi not set"),
-    );
+    let mut serve_cmd = std::process::Command::new(assert_cmd::cargo_bin!("kagi"));
     serve_cmd.env("KAGI_DISABLE_KEYRING", "1");
     serve_cmd.env("KAGI_HOME", server_dir.path().join("kagi-home"));
     serve_cmd.args([

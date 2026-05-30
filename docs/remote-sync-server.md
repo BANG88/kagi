@@ -114,66 +114,66 @@ kagi project join --remote http://127.0.0.1:8787
 The `server` Cargo feature gates all server-only code. When disabled, the
 following are completely omitted from compilation:
 
-- `src/server/` module and all Axum routes
-- `src/domain/sync/` module (envelope, project state, token, remote config)
-- `src/infrastructure/remote_client.rs`
-- `src/infrastructure/remote_envelope.rs`
-- `src/infrastructure/remote_local.rs`
-- `src/infrastructure/sqlite_remote.rs` (server-side repository)
+- `kagi-server` crate and all Axum routes
+- `kagi-sync` domain module (envelope, project state, token, remote config)
+- `kagi-sync` infrastructure (`remote_client.rs`, `remote_envelope.rs`, `remote_local.rs`)
+- `kagi-server/sqlite_remote.rs` (server-side repository)
 - `kagi serve`, `push`, `pull`, `status`, `project`, `remote` CLI commands
 - `axum`, `tower`, `tower-http`, `tower_governor`, `sqlx`, `subtle`
 
 The code still needs a hard internal boundary:
 
-- `cli` owns Clap arguments, terminal output, and command dispatch.
-- `server` owns Axum routes, HTTP errors, server startup, request limits, and rate
+- `kagi-cli` owns Clap arguments, terminal output, and command dispatch.
+- `kagi-server` owns Axum routes, HTTP errors, server startup, request limits, and rate
   limiting.
-- `cli` must not call `server::routes` or depend on Axum types.
-- `server` must not depend on `cli` formatting or Clap types.
-- Shared request/response structs live under `domain/sync`.
-- CLI-side HTTP code lives in `infrastructure/remote_client.rs`.
-- Server-side SQLite code lives in `infrastructure/sqlite_remote.rs`.
+- `kagi-cli` must not call `kagi_server::routes` or depend on Axum types.
+- `kagi-server` must not depend on `kagi-cli` formatting or Clap types.
+- Shared request/response structs live in `kagi-sync` domain.
+- CLI-side HTTP code lives in `kagi-sync/src/infrastructure/remote_client.rs`.
+- Server-side SQLite code lives in `kagi-server/src/sqlite_remote.rs`.
 
 If the server later becomes a larger product, add a second binary while keeping
 shared code in the same crate workspace:
 
 ```text
-src/bin/kagi.rs
-src/bin/kagi-server.rs
+crates/kagi-cli/src/main.rs
+crates/kagi-server/src/main.rs
 ```
 
 Do not start there. The first implementation should prefer one installable
-binary and clear module boundaries.
+binary and clear crate boundaries.
 
 ## Module Layout
 
-Keep the existing clean-architecture split.
+Keep the existing clean-architecture split across crates.
 
 ```text
-src/domain/sync/
+crates/kagi-sync/src/domain/
   envelope.rs          request/response envelope structs
   project_state.rs     ProjectState, ProjectFile, path validation
   project_token.rs     token payload, capabilities, ids
   remote_config.rs     sync settings and local metadata structs
 
-src/application/remote_sync/
-  push.rs
-  pull.rs
-  status.rs
-  join.rs
-  tokens.rs
+crates/kagi-cli/src/application/
+  remote_sync/
+    push.rs
+    pull.rs
+    status.rs
+    join.rs
+    tokens.rs
 
-src/infrastructure/
+crates/kagi-sync/src/infrastructure/
   remote_client.rs     reqwest client and envelope exchange
   remote_envelope.rs   age transport encryption
   remote_local.rs      local token/revision/fingerprint storage
-  sqlite_remote.rs     SQLx-backed server repository
 
-src/server/
-  mod.rs               server startup, rate limiting, body limits
-  routes.rs            Axum handlers and router
-  state.rs             AppState, token hashing, key management
-  errors.rs            server error types and responses
+crates/kagi-server/src/
+  sqlite_remote.rs     SQLx-backed server repository
+  server/
+    mod.rs             server startup, rate limiting, body limits
+    routes.rs          Axum handlers and router
+    state.rs           AppState, token hashing, key management
+    errors.rs          server error types and responses
 ```
 
 The server may depend on infrastructure and application services. Domain structs
@@ -754,7 +754,7 @@ When rate limited, the server returns `429 Too Many Requests` with optional
 
 ## SQLite Storage
 
-Use SQLx migrations under `migrations/`.
+Use SQLx migrations under `crates/kagi-server/migrations/`.
 
 Connection setup:
 

@@ -413,7 +413,7 @@ fn test_root_command_prints_help_successfully() {
     let mut cmd = kagi_bin();
     cmd.assert()
         .success()
-        .stdout(predicate::str::contains("|___/   鍵"))
+        .stdout(predicate::str::contains("|___/   K"))
         .stdout(predicate::str::contains("Core Flow"))
         .stdout(predicate::str::contains("Usage"));
 }

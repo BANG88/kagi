@@ -1,3 +1,56 @@
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.2"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/BANG88/kagi"
+
+[workspace.dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+thiserror = "2.0.18"
+anyhow = "1.0.102"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "time"] }
+time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
+base64 = "0.22.1"
+hex = "0.4.3"
+nanoid = "0.5.0"
+zeroize = { version = "1.8.2", features = ["derive"] }
+rand = "0.10.1"
+ed25519-dalek = "2.2.0"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+url = "2.5"
+hmac = "0.13.0"
+sha2 = "0.11.0"
+age = "0.11.3"
+directories = "6.0.0"
+keyring = "4.0.1"
+keyring-core = "1.0.0"
+chacha20poly1305 = "0.10.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4.6.1", features = ["derive", "color"] }
+owo-colors = "4.3.0"
+axum = { version = "0.8" }
+tower = { version = "0.5" }
+tower-http = { version = "0.6", features = ["trace", "timeout", "limit"] }
+tower_governor = { version = "0.8.0" }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros", "json", "time"] }
+subtle = { version = "2.6" }
+ratatui = { version = "0.29" }
+crossterm = { version = "0.28" }
+
+# Internal crates (version required for crates.io resolution)
+kagi-domain = { path = "crates/kagi-domain", version = "0.1.2" }
+kagi-crypto = { path = "crates/kagi-crypto", version = "0.1.2" }
+kagi-store = { path = "crates/kagi-store", version = "0.1.2" }
+kagi-sync = { path = "crates/kagi-sync", version = "0.1.2" }
+kagi-server = { path = "crates/kagi-server", version = "0.1.2" }
+kagi-cli = { path = "crates/kagi-cli", version = "0.1.2", default-features = false }
+
 [package]
 name = "kagi-vault"
 version = "0.1.2"
@@ -15,69 +68,41 @@ path = "src/main.rs"
 
 [features]
 default = ["server"]
-server = [
-    "dep:axum",
-    "dep:tower",
-    "dep:tower-http",
-    "dep:tower_governor",
-    "dep:sqlx",
-    "dep:subtle",
-]
-tui = ["dep:ratatui", "dep:crossterm"]
+server = ["kagi-cli/server"]
+tui = ["kagi-cli/tui", "ratatui", "crossterm"]
 
 [dependencies]
-age = "0.11.3"
-anyhow = "1.0.102"
-base64 = "0.22.1"
-chacha20poly1305 = "0.10.1"
-clap = { version = "4.6.1", features = ["derive", "color"] }
-directories = "6.0.0"
-hex = "0.4.3"
-keyring = "4.0.1"
-keyring-core = "1.0.0"
-nanoid = "0.5.0"
-owo-colors = "4.3.0"
-rand = "0.10.1"
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.150"
-thiserror = "2.0.18"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "time"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-url = "2.5"
-zeroize = { version = "1.8.2", features = ["derive"] }
+kagi-cli = { workspace = true, default-features = false }
+tokio = { workspace = true }
+tracing-subscriber = { workspace = true }
 
-# server-only dependencies
-axum = { version = "0.8", optional = true }
-tower = { version = "0.5", optional = true }
-tower-http = { version = "0.6", optional = true, features = ["trace", "timeout", "limit"] }
-tower_governor = { version = "0.8.0", optional = true }
+# TUI dependencies (forwarded from kagi-cli)
+ratatui = { workspace = true, optional = true }
+crossterm = { workspace = true, optional = true }
 
-# database (server-only)
-sqlx = { version = "0.9", optional = true, default-features = false, features = [
-    "runtime-tokio",
-    "sqlite",
-    "migrate",
-    "macros",
-    "json",
-    "time",
-] }
-
-# crypto utilities for token and response authentication
-hmac = "0.13.0"
-sha2 = "0.11.0"
-subtle = { version = "2.6", optional = true }
-
-# TUI dependencies
-ratatui = { version = "0.29", optional = true }
-crossterm = { version = "0.28", optional = true }
-
-# utilities (shared)
-time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
-ed25519-dalek = "2.2.0"
+[workspace.metadata.release]
+shared-version = true
+tag-name = "v{{version}}"
+pre-release-replacements = []
 
 [dev-dependencies]
 assert_cmd = "2.2.2"
 predicates = "3.1.4"
 tempfile = "3.27.0"
+serde_json = { workspace = true }
+serde = { workspace = true }
+reqwest = { workspace = true }
+base64 = { workspace = true }
+hex = { workspace = true }
+nanoid = { workspace = true }
+rand = { workspace = true }
+sha2 = { workspace = true }
+url = { workspace = true }
+time = { workspace = true }
+keyring = { workspace = true }
+keyring-core = { workspace = true }
+directories = { workspace = true }
+kagi-domain = { workspace = true, features = ["test-utils"] }
+kagi-store = { workspace = true, features = ["test-utils"] }
+kagi-sync = { workspace = true, features = ["server"] }
+kagi-server = { workspace = true }
