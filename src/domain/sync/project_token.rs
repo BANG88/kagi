@@ -29,9 +29,16 @@ impl ProjectToken {
             return None;
         };
         let rest = &token[prefix.len()..];
-        let (payload_b64, _secret_b64) = rest.split_once('.')?;
+        let (payload_b64, secret_b64) = rest.split_once('.')?;
         let payload_json = base64_decode_url(payload_b64).ok()?;
         let payload: TokenPayload = serde_json::from_slice(&payload_json).ok()?;
+        if payload.version != 1 {
+            return None;
+        }
+        let secret = base64_decode_url(secret_b64).ok()?;
+        if secret.len() != 32 {
+            return None;
+        }
         Some(Self {
             payload,
             full_token: token.to_string(),
@@ -155,6 +162,29 @@ mod tests {
     #[test]
     fn test_parse_bad_base64_payload() {
         assert!(ProjectToken::parse("kagi_proj_v1_!!!.validb64").is_none());
+    }
+
+    #[test]
+    #[cfg(feature = "server")]
+    fn test_parse_rejects_bad_secret() {
+        let token = ProjectToken::generate(
+            "http://localhost:13816".into(),
+            "kgp_test123".into(),
+            "kgs_fp123".into(),
+            vec!["pull".into()],
+            None,
+        );
+        let (prefix_and_payload, _) = token.full_token.rsplit_once('.').unwrap();
+
+        assert!(ProjectToken::parse(&format!("{}.!!!", prefix_and_payload)).is_none());
+        assert!(
+            ProjectToken::parse(&format!(
+                "{}.{}",
+                prefix_and_payload,
+                base64_encode_url(b"short")
+            ))
+            .is_none()
+        );
     }
 
     #[test]

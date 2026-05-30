@@ -1950,10 +1950,44 @@ fn test_server_cross_checkout_join_request_visible() {
         stdout
     );
 
+    let owner_access_after_list: Value =
+        serde_json::from_str(&std::fs::read_to_string(&owner_access_path).unwrap()).unwrap();
+    assert!(
+        owner_access_after_list["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m["member_id"] != member_id),
+        "member list should not persist the server join request locally: {}",
+        owner_access_after_list
+    );
+
     let mut cmd = kagi_bin_with_home(owner_home.path());
     cmd.current_dir(&owner_dir);
     cmd.args(["member", "approve", &member_id]);
-    cmd.assert().success();
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("Token will be activated"),
+        "expected server-mode approval output: {}",
+        stdout
+    );
+
+    let access_after_approve: Value =
+        serde_json::from_str(&std::fs::read_to_string(&owner_access_path).unwrap()).unwrap();
+    let member_after_approve = access_after_approve["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["member_id"] == member_id)
+        .unwrap();
+    let approved_signing_public_key = member_after_approve["signing_public_key"].as_str();
+    assert!(
+        approved_signing_public_key.is_some_and(|key| key.len() > 20),
+        "expected signing_public_key immediately after approve, got member: {}, access: {}",
+        member_after_approve,
+        access_after_approve
+    );
 
     let mut cmd = kagi_bin_with_home(owner_home.path());
     cmd.current_dir(&owner_dir);
@@ -1993,6 +2027,27 @@ fn test_server_cross_checkout_join_request_visible() {
         member["wrapped_token"].as_str().unwrap().len() > 20,
         "expected wrapped_token to be present"
     );
+    let signing_public_key = member["signing_public_key"].as_str();
+    assert!(
+        signing_public_key.is_some_and(|key| key.len() > 20),
+        "expected signing_public_key to be present, got member: {}",
+        member
+    );
+
+    let mut cmd = kagi_bin_with_home(joiner_home.path());
+    cmd.current_dir(&joiner_dir);
+    cmd.arg("pull");
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin_with_home(joiner_home.path());
+    cmd.current_dir(&joiner_dir);
+    cmd.args(["set", "api", "ALICE_KEY", "alice"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin_with_home(joiner_home.path());
+    cmd.current_dir(&joiner_dir);
+    cmd.arg("push");
+    cmd.assert().success();
 }
 
 #[test]

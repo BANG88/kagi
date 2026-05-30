@@ -32,6 +32,16 @@ pub struct CreateProjectMemberRequest<'a> {
     pub claim_secret_hash: &'a str,
 }
 
+pub struct UpsertJoinRequest<'a> {
+    pub project_id: &'a str,
+    pub member_id: &'a str,
+    pub request_token_id: &'a str,
+    pub name: &'a str,
+    pub normalized_name: &'a str,
+    pub recipient: &'a str,
+    pub signing_public_key: &'a str,
+}
+
 pub struct ApproveProjectRequest<'a> {
     pub project_id: &'a str,
     pub requester_member_id: &'a str,
@@ -300,9 +310,9 @@ impl SqliteRemoteRepository {
     pub async fn list_join_requests(
         &self,
         project_id: &str,
-    ) -> Result<Vec<(String, String, String, String)>, sqlx::Error> {
+    ) -> Result<Vec<(String, String, String, Option<String>, String)>, sqlx::Error> {
         let rows = sqlx::query(
-            "SELECT member_id, name, recipient, created_at FROM join_requests
+            "SELECT member_id, name, recipient, signing_public_key, created_at FROM join_requests
              WHERE project_id = ? AND status = 'pending'",
         )
         .bind(project_id)
@@ -316,6 +326,7 @@ impl SqliteRemoteRepository {
                     r.try_get("member_id").unwrap_or_default(),
                     r.try_get("name").unwrap_or_default(),
                     r.try_get("recipient").unwrap_or_default(),
+                    r.try_get("signing_public_key").ok(),
                     r.try_get("created_at").unwrap_or_default(),
                 )
             })
@@ -324,31 +335,28 @@ impl SqliteRemoteRepository {
 
     pub async fn upsert_join_request(
         &self,
-        project_id: &str,
-        member_id: &str,
-        request_token_id: &str,
-        name: &str,
-        normalized_name: &str,
-        recipient: &str,
+        request: UpsertJoinRequest<'_>,
     ) -> Result<(), sqlx::Error> {
         let now = time::OffsetDateTime::now_utc().to_string();
         sqlx::query(
-            "INSERT INTO join_requests (project_id, member_id, request_token_id, name, normalized_name, recipient, status, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+            "INSERT INTO join_requests (project_id, member_id, request_token_id, name, normalized_name, recipient, signing_public_key, status, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
              ON CONFLICT(project_id, member_id) DO UPDATE SET
              request_token_id = excluded.request_token_id,
              name = excluded.name,
              normalized_name = excluded.normalized_name,
              recipient = excluded.recipient,
+             signing_public_key = excluded.signing_public_key,
              updated_at = excluded.updated_at
              WHERE join_requests.request_token_id = excluded.request_token_id"
         )
-        .bind(project_id)
-        .bind(member_id)
-        .bind(request_token_id)
-        .bind(name)
-        .bind(normalized_name)
-        .bind(recipient)
+        .bind(request.project_id)
+        .bind(request.member_id)
+        .bind(request.request_token_id)
+        .bind(request.name)
+        .bind(request.normalized_name)
+        .bind(request.recipient)
+        .bind(request.signing_public_key)
         .bind(&now)
         .bind(&now)
         .execute(&self.pool)
@@ -998,15 +1006,24 @@ mod tests {
         let repo = test_repo().await;
         repo.create_project("kgp_test").await.unwrap();
 
-        repo.upsert_join_request("kgp_test", "kgm_bob", "kgt_req1", "Bob", "bob", "age1...")
-            .await
-            .unwrap();
+        repo.upsert_join_request(UpsertJoinRequest {
+            project_id: "kgp_test",
+            member_id: "kgm_bob",
+            request_token_id: "kgt_req1",
+            name: "Bob",
+            normalized_name: "bob",
+            recipient: "age1...",
+            signing_public_key: "signing-key",
+        })
+        .await
+        .unwrap();
 
         let pending = repo.list_join_requests("kgp_test").await.unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].0, "kgm_bob");
         assert_eq!(pending[0].1, "Bob");
         assert_eq!(pending[0].2, "age1...");
+        assert_eq!(pending[0].3.as_deref(), Some("signing-key"));
     }
 
     #[tokio::test]

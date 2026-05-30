@@ -50,6 +50,7 @@ pub struct MemberJoinRequest {
     pub member_id: String,
     pub name: String,
     pub recipient: String,
+    pub signing_public_key: String,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -313,6 +314,7 @@ impl RemoteClient {
                     "member_id": join_request.member_id,
                     "name": join_request.name,
                     "recipient": join_request.recipient,
+                    "signing_public_key": join_request.signing_public_key,
                 }
             }),
         };

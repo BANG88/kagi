@@ -704,8 +704,8 @@ async fn pull_handler(
                 .list_join_requests(&project_id)
                 .await
                 .map_err(|e| ServerError::Internal(e.to_string()))?;
-            let requests_json: Vec<serde_json::Value> = join_requests.into_iter().map(|(member_id, name, recipient, created_at)| {
-                json!({"member_id": member_id, "name": name, "recipient": recipient, "created_at": created_at})
+            let requests_json: Vec<serde_json::Value> = join_requests.into_iter().map(|(member_id, name, recipient, signing_public_key, created_at)| {
+                json!({"member_id": member_id, "name": name, "recipient": recipient, "signing_public_key": signing_public_key, "created_at": created_at})
             }).collect();
             response["join_requests"] = json!(requests_json);
         }
@@ -844,8 +844,8 @@ async fn status_handler(
             .list_join_requests(&project_id)
             .await
             .map_err(|e| ServerError::Internal(e.to_string()))?;
-        let requests_json: Vec<serde_json::Value> = join_requests.into_iter().map(|(member_id, name, recipient, created_at)| {
-            json!({"member_id": member_id, "name": name, "recipient": recipient, "created_at": created_at})
+        let requests_json: Vec<serde_json::Value> = join_requests.into_iter().map(|(member_id, name, recipient, signing_public_key, created_at)| {
+            json!({"member_id": member_id, "name": name, "recipient": recipient, "signing_public_key": signing_public_key, "created_at": created_at})
         }).collect();
         response["pending_join_count"] = json!(requests_json.len() as i64);
         response["join_requests"] = json!(requests_json);
@@ -889,18 +889,26 @@ async fn join_handler(
         .get("recipient")
         .and_then(|v| v.as_str())
         .ok_or(ServerError::BadRequest("missing recipient".into()))?;
+    parse_recipient(recipient)
+        .map_err(|e| ServerError::BadEnvelope(format!("invalid recipient: {}", e)))?;
+    let signing_public_key = join_req
+        .get("signing_public_key")
+        .and_then(|v| v.as_str())
+        .ok_or(ServerError::BadRequest("missing signing_public_key".into()))?;
+    validate_signing_public_key(signing_public_key)?;
     let normalized = normalize_member_name(name);
 
     state
         .repo
-        .upsert_join_request(
-            &project_id,
+        .upsert_join_request(crate::infrastructure::sqlite_remote::UpsertJoinRequest {
+            project_id: &project_id,
             member_id,
-            &token_id,
+            request_token_id: &token_id,
             name,
-            &normalized,
+            normalized_name: &normalized,
             recipient,
-        )
+            signing_public_key,
+        })
         .await
         .map_err(|e| {
             if e.as_database_error()
@@ -1365,6 +1373,25 @@ fn validate_remote_url(remote: &str) -> Result<(), ServerError> {
             "remote URL must use http or https".into(),
         )),
     }
+}
+
+fn validate_signing_public_key(signing_public_key: &str) -> Result<(), ServerError> {
+    let bytes = {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        STANDARD
+            .decode(signing_public_key)
+            .map_err(|e| ServerError::BadRequest(format!("invalid signing_public_key: {}", e)))?
+    };
+    if bytes.len() != 32 {
+        return Err(ServerError::BadRequest(
+            "signing_public_key must be 32 bytes".into(),
+        ));
+    }
+    let mut key_bytes = [0u8; 32];
+    key_bytes.copy_from_slice(&bytes);
+    ed25519_dalek::VerifyingKey::from_bytes(&key_bytes)
+        .map_err(|e| ServerError::BadRequest(format!("invalid signing_public_key: {}", e)))?;
+    Ok(())
 }
 
 async fn verify_pushed_manifest(
@@ -2407,13 +2434,20 @@ mod tests {
             .unwrap();
 
         let client_identity = x25519::Identity::generate();
+        let bob_identity = x25519::Identity::generate();
+        let signing_public_key = test_public_key_b64(&test_signing_key());
         let mut plaintext = plaintext_now("kgr_1", "/v1/projects/kgp_test/join", "POST");
         plaintext.token = Some(token.into());
-        plaintext.payload = json!({"join_request": {"member_id": "kgm_bob", "name": "Bob", "recipient": "age1..."}});
+        plaintext.payload = json!({"join_request": {
+            "member_id": "kgm_bob",
+            "name": "Bob",
+            "recipient": bob_identity.to_public().to_string(),
+            "signing_public_key": signing_public_key.clone(),
+        }});
         let envelope = make_envelope(&state, &plaintext, &client_identity);
 
         let response = join_handler(
-            State(state),
+            State(state.clone()),
             AxumPath("kgp_test".into()),
             dummy_addr(),
             Json(envelope),
@@ -2421,6 +2455,10 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+
+        let requests = state.repo.list_join_requests("kgp_test").await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].3.as_deref(), Some(signing_public_key.as_str()));
     }
 
     #[tokio::test]

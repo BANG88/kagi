@@ -465,6 +465,23 @@ enum GetSelection {
     Key(String, String),
 }
 
+#[cfg(any(feature = "tui", test))]
+fn should_open_get_tui(
+    plain: bool,
+    tty: bool,
+    service_flag: &Option<String>,
+    first: &Option<String>,
+    second: &Option<String>,
+    third: &Option<String>,
+) -> bool {
+    !plain
+        && tty
+        && service_flag.is_none()
+        && first.is_none()
+        && second.is_none()
+        && third.is_none()
+}
+
 fn is_env_scope(
     services: &[String],
     default_envs: &[String],
@@ -742,6 +759,16 @@ fn apply_server_member_approval(
                 member_id
             )
         })?;
+    if pending_member
+        .signing_public_key
+        .as_deref()
+        .is_none_or(|key| key.trim().is_empty())
+    {
+        return Err(anyhow::anyhow!(
+            "server join request for `{}` is missing signing_public_key. Ask the member to rerun `kagi member join` with the updated CLI.",
+            member_id
+        ));
+    }
     let recipient = age::x25519::Recipient::from_str(&pending_member.recipient)
         .map_err(|e| anyhow::anyhow!("invalid member recipient: {}", e))?;
     let encrypted = crate::infrastructure::remote_envelope::encrypt_bytes(
@@ -833,6 +860,10 @@ async fn member_join_server_mode(
         member_id: member.member_id.clone(),
         name: member.name.clone(),
         recipient: member.recipient.clone(),
+        signing_public_key: member
+            .signing_public_key
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("pending member missing signing_public_key"))?,
     };
     if let Err(e) = client
         .send_member_join_request(&project_id, &token, &join_request, &identity)
@@ -915,7 +946,10 @@ async fn fetch_server_join_requests(
         if let Some(member_id) = req.get("member_id").and_then(|v| v.as_str()) {
             let name = req.get("name").and_then(|v| v.as_str()).unwrap_or("");
             let recipient = req.get("recipient").and_then(|v| v.as_str()).unwrap_or("");
-            let signing_public_key: Option<String> = None; // server does not expose this in status response
+            let signing_public_key = req
+                .get("signing_public_key")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
             members.push(MemberMetadata {
                 member_id: member_id.to_string(),
                 name: name.to_string(),
@@ -984,7 +1018,7 @@ async fn member_approve_server_mode(
             member_id,
             &server_request.name,
             &server_request.recipient,
-            None,
+            server_request.signing_public_key.as_deref(),
         )?;
     }
 
@@ -1651,7 +1685,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         } => {
             let (store, inferred) = resolve_store()?;
             #[cfg(feature = "tui")]
-            if !plain && tty {
+            if should_open_get_tui(plain, tty, &service_name, &first, &second, &third) {
                 return crate::cli::tui::run_tui_get(store, show_values);
             }
             #[cfg(not(feature = "tui"))]
@@ -2768,7 +2802,6 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
 
                 let key_manager = KeyManager::new(base_path.clone());
                 let identity = key_manager.load_or_create_identity()?;
-                let member_id = key_manager.member_id()?;
                 let request_id = format!("kgr_{}", nanoid::nanoid!(12));
 
                 let token = match remote_store.load_token(project_id)? {
@@ -2780,6 +2813,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                                     "no claim secret found; run `kagi project join` first"
                                 )
                             })?;
+                        let member_id = key_manager.member_id()?;
                         let claim_plaintext = crate::domain::sync::envelope::RequestPlaintext {
                             version: 1,
                             request_id: request_id.clone(),
@@ -2888,6 +2922,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 apply_pulled_state(&base_path, &state)?;
 
                 // Only save token after authenticated pull succeeds
+                let token = key_manager.unwrap_member_token()?.unwrap_or(token);
                 remote_store.save_token(project_id, &token)?;
                 remote_store.delete_claim_secret(project_id)?;
 
@@ -3031,12 +3066,53 @@ fn local_data_dir() -> anyhow::Result<PathBuf> {
 }
 
 #[cfg(feature = "server")]
+fn remove_stale_pulled_secret_files(
+    base_path: &Path,
+    expected_files: &BTreeSet<String>,
+) -> anyhow::Result<()> {
+    fn visit_dir(
+        base_path: &Path,
+        dir: &Path,
+        expected_files: &BTreeSet<String>,
+    ) -> anyhow::Result<()> {
+        if !dir.exists() {
+            return Ok(());
+        }
+
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                visit_dir(base_path, &path, expected_files)?;
+                if fs::read_dir(&path)?.next().is_none() {
+                    fs::remove_dir(&path)?;
+                }
+            } else if path.extension().is_some_and(|ext| ext == "enc") {
+                let relative_path = path
+                    .strip_prefix(base_path)
+                    .map_err(|e| anyhow::anyhow!("failed to inspect local secret path: {}", e))?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if !expected_files.contains(&relative_path) {
+                    fs::remove_file(path)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    visit_dir(base_path, &base_path.join("secrets"), expected_files)
+}
+
+#[cfg(feature = "server")]
 fn apply_pulled_state(base_path: &Path, state: &serde_json::Value) -> anyhow::Result<()> {
     let project_state: crate::domain::sync::project_state::ProjectState =
         serde_json::from_value(state.clone())?;
+    let mut expected_files = BTreeSet::new();
     for file in &project_state.files {
         crate::domain::sync::project_state::validate_file_path(&file.path)
             .map_err(|err| anyhow::anyhow!("invalid remote file path {}: {}", file.path, err))?;
+        expected_files.insert(file.path.clone());
     }
 
     let kagi_json_empty = serde_json::from_str::<serde_json::Value>(&project_state.kagi_json)
@@ -3069,6 +3145,9 @@ fn apply_pulled_state(base_path: &Path, state: &serde_json::Value) -> anyhow::Re
         let file_path = base_path.join(&file.path);
         fs::create_dir_all(file_path.parent().unwrap())?;
         atomic_write(&file_path, &file.content)?;
+    }
+    if !is_empty_remote {
+        remove_stale_pulled_secret_files(base_path, &expected_files)?;
     }
     Ok(())
 }
@@ -3447,7 +3526,10 @@ async fn pull_with_token(token_str: &str, c: &Palette, allow_insecure: bool) -> 
 
     apply_pulled_state(&base_path, &state)?;
 
-    remote_store.save_token(&project_id, token_str)?;
+    let token = key_manager
+        .unwrap_member_token()?
+        .unwrap_or_else(|| token_str.to_string());
+    remote_store.save_token(&project_id, &token)?;
     remote_store.save_remote_metadata(&crate::domain::sync::remote_config::RemoteMetadata {
         version: 1,
         project_id: project_id.clone(),
@@ -4369,6 +4451,31 @@ mod tests {
     }
 
     #[test]
+    fn test_get_tui_only_opens_without_explicit_target() {
+        assert!(should_open_get_tui(false, true, &None, &None, &None, &None));
+        assert!(!should_open_get_tui(true, true, &None, &None, &None, &None));
+        assert!(!should_open_get_tui(
+            false, false, &None, &None, &None, &None
+        ));
+        assert!(!should_open_get_tui(
+            false,
+            true,
+            &Some("api".into()),
+            &None,
+            &None,
+            &None
+        ));
+        assert!(!should_open_get_tui(
+            false,
+            true,
+            &None,
+            &Some("api".into()),
+            &None,
+            &None
+        ));
+    }
+
+    #[test]
     #[cfg(feature = "server")]
     fn test_validate_admin_token_matches_server_fingerprint() {
         let token =
@@ -4584,6 +4691,42 @@ mod tests {
             err.to_string().contains("remote project is empty"),
             "expected error about empty remote, got: {}",
             err
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "server")]
+    fn test_apply_pulled_state_removes_local_secret_files_absent_from_remote() {
+        let dir = TempDir::new().unwrap();
+        let base = dir.path().join(".kagi");
+        fs::create_dir_all(base.join("secrets/api")).unwrap();
+        fs::write(base.join("secrets/api/development.enc"), "stale").unwrap();
+        fs::write(base.join("secrets/api/production.enc"), "old").unwrap();
+        fs::write(base.join("secrets/readme.txt"), "local note").unwrap();
+
+        let state = serde_json::json!({
+            "project_id": "kgp_test",
+            "revision": 2,
+            "kagi_json": "{\"project_id\":\"kgp_test\"}",
+            "access_json": "{\"members\":[]}",
+            "files": [
+                {
+                    "path": "secrets/api/production.enc",
+                    "content": "remote"
+                }
+            ]
+        });
+
+        apply_pulled_state(&base, &state).unwrap();
+
+        assert!(!base.join("secrets/api/development.enc").exists());
+        assert_eq!(
+            fs::read_to_string(base.join("secrets/api/production.enc")).unwrap(),
+            "remote"
+        );
+        assert_eq!(
+            fs::read_to_string(base.join("secrets/readme.txt")).unwrap(),
+            "local note"
         );
     }
 

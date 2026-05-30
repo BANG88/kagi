@@ -313,6 +313,30 @@ impl KeyManager {
         ))
     }
 
+    #[cfg(feature = "server")]
+    pub fn unwrap_member_token(&self) -> Result<Option<String>, DomainError> {
+        let identity = self.load_or_create_identity()?;
+        let state = self.load_access_state()?;
+        for member in state.members {
+            if member.status != "active" {
+                continue;
+            }
+            let Some(wrapped_token) = member.wrapped_token else {
+                continue;
+            };
+            let encrypted = general_purpose::STANDARD
+                .decode(wrapped_token)
+                .map_err(|e| DomainError::StoreCorrupted(e.to_string()))?;
+            let Ok(token_bytes) = decrypt_with_identity(&identity, &encrypted) else {
+                continue;
+            };
+            let token = String::from_utf8(token_bytes)
+                .map_err(|e| DomainError::StoreCorrupted(format!("invalid token: {}", e)))?;
+            return Ok(Some(token));
+        }
+        Ok(None)
+    }
+
     pub fn rotation_journal_path(&self) -> Result<PathBuf, DomainError> {
         Ok(self
             .local_data_dir()?

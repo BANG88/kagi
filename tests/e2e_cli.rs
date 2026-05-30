@@ -41,23 +41,16 @@ fn run_kagi_interactive(
     cmd.arg("-q");
     #[cfg(target_os = "linux")]
     {
-        cmd.arg("-c")
-            .arg(&script_cmd)
-            .arg("/dev/null");
+        cmd.arg("-c").arg(&script_cmd).arg("/dev/null");
     }
     #[cfg(target_os = "macos")]
     {
-        cmd.arg("/dev/null")
-            .arg("sh")
-            .arg("-c")
-            .arg(&script_cmd);
+        cmd.arg("/dev/null").arg("sh").arg("-c").arg(&script_cmd);
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         // Fallback for other Unix systems — try Linux-style first
-        cmd.arg("-c")
-            .arg(&script_cmd)
-            .arg("/dev/null");
+        cmd.arg("-c").arg(&script_cmd).arg("/dev/null");
     }
     cmd.env("KAGI_DISABLE_KEYRING", "1")
         .env("KAGI_HOME", kagi_home)
