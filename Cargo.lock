@@ -2649,7 +2649,7 @@ dependencies = [
 
 [[package]]
 name = "kagi-cli"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "age",
  "anyhow",
@@ -2686,7 +2686,7 @@ dependencies = [
 
 [[package]]
 name = "kagi-crypto"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "base64 0.22.1",
  "chacha20poly1305",
@@ -2695,7 +2695,7 @@ dependencies = [
 
 [[package]]
 name = "kagi-domain"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -2704,7 +2704,7 @@ dependencies = [
 
 [[package]]
 name = "kagi-server"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "age",
  "anyhow",
@@ -2735,7 +2735,7 @@ dependencies = [
 
 [[package]]
 name = "kagi-store"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "age",
  "base64 0.22.1",
@@ -2756,7 +2756,7 @@ dependencies = [
 
 [[package]]
 name = "kagi-sync"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "age",
  "base64 0.22.1",
@@ -2777,7 +2777,7 @@ dependencies = [
 
 [[package]]
 name = "kagi-vault"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "assert_cmd",
  "base64 0.22.1",

@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/BANG88/kagi"
@@ -44,16 +44,16 @@ ratatui = { version = "0.29" }
 crossterm = { version = "0.28" }
 
 # Internal crates (version required for crates.io resolution)
-kagi-domain = { path = "crates/kagi-domain", version = "0.1.2" }
-kagi-crypto = { path = "crates/kagi-crypto", version = "0.1.2" }
-kagi-store = { path = "crates/kagi-store", version = "0.1.2" }
-kagi-sync = { path = "crates/kagi-sync", version = "0.1.2" }
-kagi-server = { path = "crates/kagi-server", version = "0.1.2" }
-kagi-cli = { path = "crates/kagi-cli", version = "0.1.2", default-features = false }
+kagi-domain = { path = "crates/kagi-domain", version = "0.1.3" }
+kagi-crypto = { path = "crates/kagi-crypto", version = "0.1.3" }
+kagi-store = { path = "crates/kagi-store", version = "0.1.3" }
+kagi-sync = { path = "crates/kagi-sync", version = "0.1.3" }
+kagi-server = { path = "crates/kagi-server", version = "0.1.3" }
+kagi-cli = { path = "crates/kagi-cli", version = "0.1.3", default-features = false }
 
 [package]
 name = "kagi-vault"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 description = "Encrypted secrets and environment variable manager for teams — a secure, team-ready dotenv alternative with per-service isolation"
 license = "MIT"
