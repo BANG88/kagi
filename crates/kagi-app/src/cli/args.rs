@@ -70,8 +70,9 @@ pub enum Commands {
         #[arg(long = "show")]
         show_values: bool,
 
-        /// Force plain text output (disable TUI)
+        /// Use plain text output
         #[arg(long)]
+        #[cfg_attr(not(feature = "tui"), arg(hide = true))]
         plain: bool,
 
         /// Service or environment name
@@ -109,8 +110,9 @@ pub enum Commands {
         #[arg(long)]
         values: bool,
 
-        /// Force plain text output (disable TUI)
+        /// Use plain text output
         #[arg(long)]
+        #[cfg_attr(not(feature = "tui"), arg(hide = true))]
         plain: bool,
     },
 
@@ -131,8 +133,9 @@ pub enum Commands {
         #[arg(long)]
         fix: bool,
 
-        /// Force plain text output (disable TUI)
+        /// Use plain text output
         #[arg(long)]
+        #[cfg_attr(not(feature = "tui"), arg(hide = true))]
         plain: bool,
     },
 
@@ -146,8 +149,9 @@ pub enum Commands {
         #[arg(short, long)]
         out: Option<String>,
 
-        /// Force plain text output (disable TUI)
+        /// Use plain text output
         #[arg(long)]
+        #[cfg_attr(not(feature = "tui"), arg(hide = true))]
         plain: bool,
 
         /// Service or environment name
@@ -200,8 +204,9 @@ pub enum Commands {
         )]
         envs: Vec<String>,
 
-        /// Force plain text output (disable TUI)
+        /// Use plain text output
         #[arg(long)]
+        #[cfg_attr(not(feature = "tui"), arg(hide = true))]
         plain: bool,
     },
 
@@ -277,8 +282,9 @@ pub enum Commands {
 pub enum EnvCommands {
     /// List configured default environments
     List {
-        /// Force plain text output (disable TUI)
+        /// Use plain text output
         #[arg(long)]
+        #[cfg_attr(not(feature = "tui"), arg(hide = true))]
         plain: bool,
     },
 
@@ -302,8 +308,9 @@ pub enum EnvCommands {
         /// Environment name to delete
         env: String,
 
-        /// Force plain text output (disable TUI)
+        /// Use plain text output
         #[arg(long)]
+        #[cfg_attr(not(feature = "tui"), arg(hide = true))]
         plain: bool,
     },
 }
@@ -312,8 +319,9 @@ pub enum EnvCommands {
 pub enum MemberCommands {
     /// List active members and pending member requests
     List {
-        /// Force plain text output (disable TUI)
+        /// Use plain text output
         #[arg(long)]
+        #[cfg_attr(not(feature = "tui"), arg(hide = true))]
         plain: bool,
     },
 
@@ -326,13 +334,13 @@ pub enum MemberCommands {
 
     /// Approve a pending member request
     Approve {
-        /// Member id from `kagi member list`. Omit to open TUI selector.
+        /// Member id from `kagi member list`.
         member_id: Option<String>,
     },
 
     /// Remove a member's access wrapper
     Remove {
-        /// Member id from `kagi member list`. Omit to open TUI selector.
+        /// Member id from `kagi member list`.
         member_id: Option<String>,
     },
 }
@@ -376,8 +384,9 @@ pub enum RemoteCommands {
         #[arg(long)]
         remote: Option<String>,
 
-        /// Force plain text output (disable TUI)
+        /// Use plain text output
         #[arg(long)]
+        #[cfg_attr(not(feature = "tui"), arg(hide = true))]
         plain: bool,
     },
 
@@ -407,8 +416,9 @@ pub enum RemoteCommands {
         #[arg(long)]
         remote: Option<String>,
 
-        /// Force plain text output (disable TUI)
+        /// Use plain text output
         #[arg(long)]
+        #[cfg_attr(not(feature = "tui"), arg(hide = true))]
         plain: bool,
     },
 
@@ -436,8 +446,9 @@ pub enum RemoteCommands {
         #[arg(long, default_value = "50")]
         limit: i64,
 
-        /// Force plain text output (disable TUI)
+        /// Use plain text output
         #[arg(long)]
+        #[cfg_attr(not(feature = "tui"), arg(hide = true))]
         plain: bool,
     },
 }

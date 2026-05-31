@@ -429,6 +429,97 @@ fn test_root_command_prints_help_successfully() {
 }
 
 #[test]
+fn test_help_does_not_mention_tui_publicly() {
+    let help_commands: &[&[&str]] = &[
+        &["get", "--help"],
+        &["search", "--help"],
+        &["doctor", "--help"],
+        &["export", "--help"],
+        &["sync", "--help"],
+        &["env", "list", "--help"],
+        &["env", "remove", "--help"],
+        &["member", "list", "--help"],
+        &["member", "approve", "--help"],
+        &["member", "remove", "--help"],
+    ];
+    #[cfg(feature = "server")]
+    let server_help_commands: &[&[&str]] = &[
+        &["remote", "projects", "--help"][..],
+        &["remote", "tokens", "--help"][..],
+        &["remote", "audit", "--help"][..],
+    ];
+
+    for args in help_commands.iter().copied() {
+        let mut cmd = kagi_bin();
+        cmd.args(args);
+        let assert = cmd.assert().success();
+        let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+        assert!(
+            !stdout.to_ascii_lowercase().contains("tui"),
+            "`kagi {}` help exposed TUI wording:\n{stdout}",
+            args.join(" ")
+        );
+    }
+    #[cfg(feature = "server")]
+    for args in server_help_commands.iter().copied() {
+        let mut cmd = kagi_bin();
+        cmd.args(args);
+        let assert = cmd.assert().success();
+        let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+        assert!(
+            !stdout.to_ascii_lowercase().contains("tui"),
+            "`kagi {}` help exposed TUI wording:\n{stdout}",
+            args.join(" ")
+        );
+    }
+}
+
+#[test]
+#[cfg(not(feature = "tui"))]
+fn test_non_tui_help_hides_plain_option() {
+    let help_commands: &[&[&str]] = &[
+        &["get", "--help"],
+        &["search", "--help"],
+        &["doctor", "--help"],
+        &["export", "--help"],
+        &["sync", "--help"],
+        &["env", "list", "--help"],
+        &["env", "remove", "--help"],
+        &["member", "list", "--help"],
+    ];
+    #[cfg(feature = "server")]
+    let server_help_commands: &[&[&str]] = &[
+        &["remote", "projects", "--help"][..],
+        &["remote", "tokens", "--help"][..],
+        &["remote", "audit", "--help"][..],
+    ];
+
+    for args in help_commands.iter().copied() {
+        let mut cmd = kagi_bin();
+        cmd.args(args);
+        let assert = cmd.assert().success();
+        let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+        assert!(
+            !stdout.contains("--plain"),
+            "`kagi {}` help exposed --plain without tui feature:\n{stdout}",
+            args.join(" ")
+        );
+    }
+    #[cfg(feature = "server")]
+    for args in server_help_commands.iter().copied() {
+        let mut cmd = kagi_bin();
+        cmd.args(args);
+        let assert = cmd.assert().success();
+        let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+        assert!(
+            !stdout.contains("--plain"),
+            "`kagi {}` help exposed --plain without tui feature:\n{stdout}",
+            args.join(" ")
+        );
+    }
+}
+
+#[test]
 fn test_set_and_get() {
     let dir = TempDir::new().unwrap();
 
