@@ -19,7 +19,6 @@ A secure, team-ready CLI for managing encrypted secrets and environment variable
 - Nested service inference lets `kagi run bun dev` work inside `./api`.
 - `.kagi/` is designed to be committed; private keys stay on each device.
 - `get --show` and `export` require terminal confirmation before revealing values.
-- Interactive TUI for `get`, `search`, `export`, `member list`, `env list`, `sync`, `remote tokens`, `remote projects`, and `remote audit`.
 - `.env` migration wizard in `kagi init` automatically detects and imports existing `.env` files.
 - Shell completions for bash, zsh, fish, elvish, and powershell via `kagi completions`.
 
@@ -482,7 +481,7 @@ kagi is organized as a Cargo workspace with 6 crates:
 | **kagi-store** | Local storage (`FileStore`), key manager, env injector | kagi-domain, kagi-crypto |
 | **kagi-sync** | Sync protocol types + remote client (`age`-encrypted HTTP transport) | kagi-domain |
 | **kagi-server** | Axum HTTP server + SQLite remote backend | kagi-domain, kagi-sync |
-| **kagi-app** | CLI application: argument parsing, command dispatch, TUI | kagi-domain, kagi-crypto, kagi-store, kagi-sync |
+| **kagi-app** | CLI application: argument parsing and command dispatch | kagi-domain, kagi-crypto, kagi-store, kagi-sync |
 | **kagi-vault** | Meta-package: provides the `kagi` binary by re-exporting `kagi-app` | kagi-app |
 
 All crates share the same version via `version.workspace = true`. The design
