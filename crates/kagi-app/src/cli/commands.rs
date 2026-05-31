@@ -8,9 +8,9 @@ use crate::application::search_secrets::SearchSecretsService;
 use crate::application::set_secret::SetSecretService;
 use crate::application::sync_service::SyncService;
 use crate::application::unset_secret::UnsetSecretService;
-use crate::cli::args::{Cli, Commands, EnvCommands, MemberCommands};
 #[cfg(feature = "server")]
-use crate::cli::args::{ProjectCommands, RemoteCommands, TokenCommands};
+use crate::cli::args::RemoteCommands;
+use crate::cli::args::{Cli, Commands, EnvCommands, MemberCommands};
 use crate::cli::style::Palette;
 use anyhow::Context;
 #[cfg(feature = "server")]
@@ -624,7 +624,7 @@ fn confirm_secret_output(tty: bool, operation: &str, c: &Palette) -> anyhow::Res
 fn confirm_env_delete(tty: bool, env: &str, c: &Palette) -> anyhow::Result<()> {
     if !tty || !io::stdin().is_terminal() {
         return Err(anyhow::anyhow!(
-            "kagi env del deletes encrypted environment stores and requires an interactive terminal."
+            "kagi env remove deletes encrypted environment stores and requires an interactive terminal."
         ));
     }
 
@@ -775,7 +775,7 @@ fn print_member_approval_instruction(member_id: &str, c: &Palette) {
 #[cfg(feature = "server")]
 fn warn_join_request_cleanup_failed(member_id: &str, error: &dyn std::error::Error, c: &Palette) {
     eprintln!(
-        "{} {} failed to clean up pending join request {} after server rejection: {}",
+        "{} {} failed to clean up pending member request {} after server rejection: {}",
         c.prefix(),
         c.warning("warning:"),
         c.accent(member_id),
@@ -817,7 +817,7 @@ fn apply_server_member_approval(
         .filter(|member| member.status == "pending")
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "server issued a token for `{member_id}` but the local pending join request is missing. Recovery: run `kagi pull`; if the member is still pending, rerun `kagi member approve {member_id}`."
+                "server issued a token for `{member_id}` but the local pending member request is missing. Recovery: run `kagi remote pull`; if the member is still pending, rerun `kagi member approve {member_id}`."
             )
         })?;
     if pending_member
@@ -826,7 +826,7 @@ fn apply_server_member_approval(
         .is_none_or(|key| key.trim().is_empty())
     {
         return Err(anyhow::anyhow!(
-            "server join request for `{member_id}` is missing signing_public_key. Ask the member to rerun `kagi member join` with the updated CLI."
+            "server member request for `{member_id}` is missing signing_public_key. Ask the member to rerun `kagi member request` with the updated CLI."
         ));
     }
     let recipient = age::x25519::Recipient::from_str(&pending_member.recipient)
@@ -886,7 +886,7 @@ async fn member_join_server_mode(
             let claim_secret = remote_store
                 .load_claim_secret(&project_id)?
                 .ok_or_else(|| anyhow::anyhow!(
-                    "Server token required to join project. Try 'kagi pull' first to obtain a token."
+                    "Server token required to join project. Try 'kagi remote pull' first to obtain a token."
                 ))?;
             let client = kagi_sync::infrastructure::remote_client::RemoteClient::new_pinned(
                 remote_url.to_string(),
@@ -1073,7 +1073,7 @@ async fn member_approve_server_mode(
         let server_request = server_requests
             .into_iter()
             .find(|r| r.member_id == member_id)
-            .ok_or_else(|| anyhow::anyhow!("join request not found on server: {member_id}"))?;
+            .ok_or_else(|| anyhow::anyhow!("member request not found on server: {member_id}"))?;
         key_manager.create_pending_member_from_server(
             member_id,
             &server_request.name,
@@ -1953,7 +1953,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 }
                 _ => {
                     return Err(anyhow::anyhow!(
-                        "Usage: kagi unset [--service <service>] [env] <key>\n\nUnset only supports a single key. Use 'kagi env del' to remove an entire environment."
+                        "Usage: kagi unset [--service <service>] [env] <key>\n\nUnset only supports a single key. Use 'kagi env remove' to remove an entire environment."
                     ));
                 }
             }
@@ -2335,7 +2335,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                         c.accent(&new)
                     );
                 }
-                EnvCommands::Del { env, plain } => {
+                EnvCommands::Remove { env, plain } => {
                     #[cfg(feature = "tui")]
                     {
                         let mut tui_confirmed = false;
@@ -2404,7 +2404,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                             }
                             Err(e) => {
                                 eprintln!(
-                                    "{} warning: could not fetch server join requests: {}",
+                                    "{} warning: could not fetch server member requests: {}",
                                     c.prefix(),
                                     e
                                 );
@@ -2430,7 +2430,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                         }
                     }
 
-                    println!("{}", c.warning("Join Requests"));
+                    println!("{}", c.warning("Member Requests"));
                     if requests.is_empty() {
                         println!("  {}", c.muted("none"));
                     } else {
@@ -2444,7 +2444,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                         }
                     }
                 }
-                MemberCommands::Join { name } => {
+                MemberCommands::Request { name } => {
                     let member = key_manager.create_join_request(name)?;
                     let config_path = base_path.join(kagi_domain::config::KAGI_CONFIG_FILE);
                     let config: serde_json::Value =
@@ -2457,7 +2457,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                         println!(
                             "{} {} {}",
                             c.prefix(),
-                            c.success("created join request"),
+                            c.success("created member request"),
                             c.accent(&member.member_id)
                         );
                         print_member_approval_instruction(&member.member_id, &c);
@@ -2534,7 +2534,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                         );
                     }
                 }
-                MemberCommands::Del { member_id } => {
+                MemberCommands::Remove { member_id } => {
                     #[cfg(feature = "tui")]
                     let member_id = if member_id.is_none() && tty {
                         if let Some(id) = crate::cli::tui::run_tui_member_del(base_path.clone())? {
@@ -2548,7 +2548,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                     #[cfg(not(feature = "tui"))]
                     let member_id = member_id.unwrap_or_default();
                     if member_id.is_empty() {
-                        return Err(anyhow::anyhow!("Usage: kagi member del <member_id>"));
+                        return Err(anyhow::anyhow!("Usage: kagi member remove <member_id>"));
                     }
                     confirm_member_remove(tty, &member_id, &c)?;
                     let count = rotate_project_key(&base_path, Some(&member_id))?;
@@ -2602,668 +2602,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             kagi_server::server::serve(bind_addr, &db_path, &key_file_path, max_body_size).await?;
         }
         #[cfg(feature = "server")]
-        Commands::Remote { command } => match command {
-            RemoteCommands::Login { remote, token } => {
-                remote_login(&remote, &token, &c, allow_insecure).await?;
-            }
-            RemoteCommands::Audit {
-                remote,
-                project_id,
-                limit,
-                plain,
-            } => {
-                let remote_url = resolve_admin_remote(remote).await?;
-                #[cfg(feature = "tui")]
-                if !plain && tty {
-                    let events = load_audit_events(
-                        &remote_url,
-                        project_id.as_deref(),
-                        limit,
-                        allow_insecure,
-                    )
-                    .await?;
-                    return crate::cli::tui::run_tui_audit_log(events);
-                }
-                #[cfg(not(feature = "tui"))]
-                let _ = plain;
-                remote_audit(
-                    &remote_url,
-                    project_id.as_deref(),
-                    limit,
-                    &c,
-                    allow_insecure,
-                )
-                .await?;
-            }
-        },
-        #[cfg(feature = "server")]
-        Commands::Token { command } => match command {
-            TokenCommands::List { remote, plain } => {
-                let (base_path, _) = resolve_kagi_base()?;
-                let config_path = base_path.join(kagi_domain::config::KAGI_CONFIG_FILE);
-                let config: serde_json::Value =
-                    serde_json::from_str(&fs::read_to_string(&config_path)?)?;
-                let project_id = config["project_id"]
-                    .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("missing project_id"))?;
-                let remote_url =
-                    config["settings"]["sync"]["remote"]
-                        .as_str()
-                        .ok_or_else(|| {
-                            anyhow::anyhow!("missing remote URL. Run kagi init --remote first.")
-                        })?;
-                let remote_url = if let Some(url) = remote {
-                    url.clone()
-                } else {
-                    remote_url.to_string()
-                };
-                let local_data_dir = local_data_dir()?;
-                let remote_store =
-                    kagi_sync::infrastructure::remote_local::RemoteLocalStore::new(local_data_dir);
-                let token = remote_store
-                    .load_token(project_id)?
-                    .ok_or_else(|| anyhow::anyhow!("no project token found"))?;
-                let meta = remote_store
-                    .load_remote_metadata(project_id)?
-                    .ok_or_else(|| anyhow::anyhow!("no remote metadata found"))?;
-                let key_manager = KeyManager::new(base_path.clone());
-                let identity = key_manager.load_or_create_identity()?;
-                let client = kagi_sync::infrastructure::remote_client::RemoteClient::new_pinned(
-                    remote_url,
-                    &meta.server_fingerprint,
-                    allow_insecure,
-                )
-                .await?;
-                let data = client
-                    .send_list_tokens(project_id, &token, &identity)
-                    .await?;
-                let tokens = data
-                    .get("tokens")
-                    .and_then(|v| v.as_array())
-                    .ok_or_else(|| anyhow::anyhow!("invalid response: missing tokens"))?
-                    .clone();
-                #[cfg(feature = "tui")]
-                if !plain && tty {
-                    return crate::cli::tui::run_tui_token_list(tokens);
-                }
-                #[cfg(not(feature = "tui"))]
-                let _ = plain;
-                if tokens.is_empty() {
-                    println!("{} {}", c.prefix(), c.muted("no tokens found."));
-                } else {
-                    println!(
-                        "{} {}",
-                        c.prefix(),
-                        c.accent(&format!("{} token(s)", tokens.len()))
-                    );
-                    for t in &tokens {
-                        let id = t["token_id"].as_str().unwrap_or("?");
-                        let caps: Vec<String> = t["capabilities"]
-                            .as_array()
-                            .map(|a| {
-                                a.iter()
-                                    .filter_map(|v| {
-                                        v.as_str().map(std::string::ToString::to_string)
-                                    })
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-                        let status = t["status"].as_str().unwrap_or("?");
-                        let member = t["member_id"].as_str().unwrap_or("?");
-                        let created = t["created_at"].as_str().unwrap_or("?");
-                        println!(
-                            "  {} {} | {} | {} | {}",
-                            c.key(id),
-                            c.muted(&format!("[{status}]")),
-                            c.accent(member),
-                            c.info(&caps.join(", ")),
-                            c.muted(created)
-                        );
-                    }
-                }
-            }
-            TokenCommands::Revoke { remote, token_id } => {
-                let (base_path, _) = resolve_kagi_base()?;
-                let config_path = base_path.join(kagi_domain::config::KAGI_CONFIG_FILE);
-                let config: serde_json::Value =
-                    serde_json::from_str(&fs::read_to_string(&config_path)?)?;
-                let project_id = config["project_id"]
-                    .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("missing project_id"))?;
-                let remote_url =
-                    config["settings"]["sync"]["remote"]
-                        .as_str()
-                        .ok_or_else(|| {
-                            anyhow::anyhow!("missing remote URL. Run kagi init --remote first.")
-                        })?;
-                let remote_url = if let Some(url) = remote {
-                    url.clone()
-                } else {
-                    remote_url.to_string()
-                };
-                let local_data_dir = local_data_dir()?;
-                let remote_store =
-                    kagi_sync::infrastructure::remote_local::RemoteLocalStore::new(local_data_dir);
-                let token = remote_store
-                    .load_token(project_id)?
-                    .ok_or_else(|| anyhow::anyhow!("no project token found"))?;
-                let meta = remote_store
-                    .load_remote_metadata(project_id)?
-                    .ok_or_else(|| anyhow::anyhow!("no remote metadata found"))?;
-                let key_manager = KeyManager::new(base_path.clone());
-                let identity = key_manager.load_or_create_identity()?;
-                let client = kagi_sync::infrastructure::remote_client::RemoteClient::new_pinned(
-                    remote_url,
-                    &meta.server_fingerprint,
-                    allow_insecure,
-                )
-                .await?;
-                let data = client
-                    .send_revoke_tokens(
-                        project_id,
-                        &token,
-                        std::slice::from_ref(&token_id),
-                        &identity,
-                    )
-                    .await?;
-                let revoked = data
-                    .get("revoked_token_ids")
-                    .and_then(|v| v.as_array())
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
-                            .collect::<Vec<String>>()
-                    })
-                    .unwrap_or_default();
-                println!(
-                    "{} {}",
-                    c.prefix(),
-                    c.success(&format!("revoked {} token(s)", revoked.len()))
-                );
-                for id in revoked {
-                    println!("  {}", c.key(&id));
-                }
-            }
-        },
-        #[cfg(feature = "server")]
-        Commands::Project { command } => match command {
-            ProjectCommands::Join { remote } => {
-                project_join_remote(std::env::current_dir()?, &remote, &c, allow_insecure).await?;
-            }
-            ProjectCommands::List { remote, plain } => {
-                let remote_url = resolve_admin_remote(remote).await?;
-                let (requests, projects) = load_project_list(&remote_url, allow_insecure).await?;
-                #[cfg(feature = "tui")]
-                if !plain && tty {
-                    return crate::cli::tui::run_tui_project_list(requests, projects);
-                }
-                #[cfg(not(feature = "tui"))]
-                let _ = plain;
-                if requests.is_empty() && projects.is_empty() {
-                    println!(
-                        "{} {}",
-                        c.prefix(),
-                        c.muted("No projects or pending requests found.")
-                    );
-                } else {
-                    if !requests.is_empty() {
-                        println!("{} {}", c.prefix(), c.warning("Pending requests:"));
-                        for r in &requests {
-                            let id = r["project_id"].as_str().unwrap_or("unknown");
-                            let name = r["requester_name"].as_str().unwrap_or("");
-                            let created_at = r["created_at"].as_str().unwrap_or("");
-                            println!(
-                                "  {}  {}  {}",
-                                c.accent(id),
-                                c.muted(&format!("by {name}")),
-                                c.muted(created_at)
-                            );
-                        }
-                    }
-                    if !projects.is_empty() {
-                        println!("{} {}", c.prefix(), c.muted("Active projects:"));
-                        for p in &projects {
-                            let id = p["project_id"].as_str().unwrap_or("unknown");
-                            let revision = p["revision"].as_i64().unwrap_or(0);
-                            let created_at = p["created_at"].as_str().unwrap_or("");
-                            println!(
-                                "  {}  rev={}  created={}",
-                                c.accent(id),
-                                revision,
-                                c.muted(created_at)
-                            );
-                        }
-                    }
-                }
-            }
-            ProjectCommands::Approve { remote, project_id } => {
-                let remote_url = resolve_admin_remote(remote).await?;
-                project_approve_remote(&remote_url, &project_id, &c, allow_insecure).await?;
-            }
-            ProjectCommands::Del { remote, project_id } => {
-                let remote_url = resolve_admin_remote(remote).await?;
-                project_del_remote(&remote_url, &project_id, &c, allow_insecure).await?;
-            }
-        },
-        #[cfg(feature = "server")]
-        Commands::Push => {
-            let (base_path, _) = resolve_kagi_base()?;
-            let config_path = base_path.join(kagi_domain::config::KAGI_CONFIG_FILE);
-            let config: serde_json::Value =
-                serde_json::from_str(&fs::read_to_string(&config_path)?)?;
-            let project_id = config["project_id"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("missing project_id"))?;
-            let remote_url = config["settings"]["sync"]["remote"]
-                .as_str()
-                .ok_or_else(|| {
-                    anyhow::anyhow!("missing remote URL. Run kagi init --remote first.")
-                })?;
-
-            let local_data_dir = local_data_dir()?;
-            let remote_store =
-                kagi_sync::infrastructure::remote_local::RemoteLocalStore::new(local_data_dir);
-            let token = remote_store
-                .load_token(project_id)?
-                .ok_or_else(|| anyhow::anyhow!("no project token found"))?;
-            let meta = remote_store
-                .load_remote_metadata(project_id)?
-                .ok_or_else(|| anyhow::anyhow!("no remote metadata found"))?;
-
-            let base_revision = meta.local_revision.unwrap_or(0);
-
-            let key_manager = KeyManager::new(base_path.clone());
-            let identity = key_manager.load_or_create_identity()?;
-            let member_id = key_manager.member_id()?;
-            let signing_key = key_manager.ensure_signing_key(&member_id)?;
-            let signing_public_key = base64::engine::general_purpose::STANDARD
-                .encode(signing_key.verifying_key().to_bytes());
-
-            let store = resolve_store()?.0;
-            let kagi_json = fs::read_to_string(&config_path)?;
-            let access_json = fs::read_to_string(base_path.join("access.json"))
-                .unwrap_or_else(|_| "{}".to_string());
-
-            let mut files = Vec::new();
-            for scope in store.list_services()? {
-                let (file_name, content) = store.raw_service_content(&scope)?;
-                let content_hash = {
-                    use sha2::{Digest, Sha256};
-                    let mut hasher = Sha256::new();
-                    hasher.update(content.as_bytes());
-                    hex::encode(hasher.finalize())
-                };
-                files.push(kagi_sync::domain::project_state::ProjectFile {
-                    path: file_name,
-                    content,
-                    sha256: Some(content_hash),
-                });
-            }
-
-            let project_state = kagi_sync::domain::project_state::ProjectState {
-                project_id: project_id.to_string(),
-                revision: base_revision,
-                kagi_json,
-                access_json,
-                files,
-            };
-
-            let previous_manifest_hash = if base_revision > 0 {
-                Some(meta.last_manifest_hash.clone().ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "missing local manifest hash for revision {base_revision}; run kagi pull before pushing"
-                    )
-                })?)
-            } else {
-                None
-            };
-            let manifest = kagi_sync::domain::manifest::ProjectStateManifest {
-                version: 1,
-                project_id: project_id.to_string(),
-                revision: base_revision + 1,
-                previous_manifest_hash,
-                kagi_json_hash: kagi_sync::domain::manifest::hash_json(&project_state.kagi_json),
-                access_json_hash: kagi_sync::domain::manifest::hash_json(
-                    &project_state.access_json,
-                ),
-                file_hashes: project_state
-                    .files
-                    .iter()
-                    .map(|f| kagi_sync::domain::manifest::FileHash {
-                        path: f.path.clone(),
-                        sha256: f.sha256.clone().unwrap_or_default(),
-                    })
-                    .collect(),
-                timestamp: time::OffsetDateTime::now_utc()
-                    .format(&time::format_description::well_known::Rfc3339)
-                    .unwrap(),
-                signer_member_id: member_id.clone(),
-                signer_public_key: signing_public_key,
-            };
-            let manifest_json = serde_json::to_string(&manifest)?;
-            let manifest_hash = manifest.compute_hash();
-            let signature = signing_key.sign(manifest_hash.as_bytes());
-            let signature_b64 =
-                base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
-
-            let mut payload = serde_json::json!({
-                "base_revision": base_revision,
-                "state": project_state,
-                "manifest": manifest_json,
-                "manifest_signature": signature_b64,
-            });
-            if let Some(ref token_ids) = meta.pending_token_ids {
-                payload["activate_token_ids"] = serde_json::json!(token_ids);
-            }
-            if let Some(ref member_ids) = meta.pending_accepted_member_ids {
-                payload["accepted_join_member_ids"] = serde_json::json!(member_ids);
-            }
-
-            let request_id = format!(r"kgr_{}", nanoid::nanoid!(12));
-            let plaintext = kagi_sync::domain::envelope::RequestPlaintext {
-                version: 1,
-                request_id: request_id.clone(),
-                issued_at: time::OffsetDateTime::now_utc()
-                    .format(&time::format_description::well_known::Rfc3339)
-                    .unwrap(),
-                operation: "push".into(),
-                method: "POST".into(),
-                path: format!("/v1/projects/{project_id}/push"),
-                project_id: Some(project_id.to_string()),
-                token: Some(token),
-                claim_secret: None,
-                payload,
-            };
-
-            let client = kagi_sync::infrastructure::remote_client::RemoteClient::new_pinned(
-                remote_url.to_string(),
-                &meta.server_fingerprint,
-                allow_insecure,
-            )
-            .await?;
-            let data = client.send_request(&plaintext, &identity).await?;
-            let new_revision = data["revision"].as_i64().unwrap_or(base_revision + 1);
-
-            remote_store.save_remote_metadata(
-                &kagi_sync::domain::remote_config::RemoteMetadata {
-                    version: 1,
-                    project_id: project_id.to_string(),
-                    remote: remote_url.to_string(),
-                    server_key_id: meta.server_key_id.clone(),
-                    server_fingerprint: meta.server_fingerprint.clone(),
-                    local_revision: Some(new_revision),
-                    last_pulled_at: meta.last_pulled_at,
-                    last_pushed_at: Some(
-                        time::OffsetDateTime::now_utc()
-                            .format(&time::format_description::well_known::Rfc3339)
-                            .unwrap(),
-                    ),
-                    last_manifest_hash: Some(manifest_hash),
-                    pending_token_ids: None,
-                    pending_accepted_member_ids: None,
-                },
-            )?;
-
-            println!(
-                "{} {} revision {}",
-                c.prefix(),
-                c.success("pushed"),
-                c.accent(&new_revision.to_string())
-            );
-        }
-        #[cfg(feature = "server")]
-        Commands::Pull { token } => {
-            if let Some(token_str) = token {
-                pull_with_token(&token_str, &c, allow_insecure).await?;
-            } else {
-                let (base_path, _) = resolve_kagi_base()?;
-                let config_path = base_path.join(kagi_domain::config::KAGI_CONFIG_FILE);
-                let config: serde_json::Value =
-                    serde_json::from_str(&fs::read_to_string(&config_path)?)?;
-                let project_id = config["project_id"]
-                    .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("missing project_id"))?;
-                let remote_url = config["settings"]["sync"]["remote"]
-                    .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("missing remote URL"))?;
-
-                let local_access_json = fs::read_to_string(base_path.join("access.json"))
-                    .unwrap_or_else(|_| "{}".to_string());
-
-                let local_data_dir = local_data_dir()?;
-                let remote_store =
-                    kagi_sync::infrastructure::remote_local::RemoteLocalStore::new(local_data_dir);
-                let meta = remote_store
-                    .load_remote_metadata(project_id)?
-                    .ok_or_else(|| anyhow::anyhow!("no remote metadata found"))?;
-
-                let key_manager = KeyManager::new(base_path.clone());
-                let identity = key_manager.load_or_create_identity()?;
-                let request_id = format!(r"kgr_{}", nanoid::nanoid!(12));
-
-                let token = match remote_store.load_token(project_id)? {
-                    Some(t) => t,
-                    None => {
-                        let claim_secret =
-                            remote_store.load_claim_secret(project_id)?.ok_or_else(|| {
-                                anyhow::anyhow!(
-                                    "no claim secret found; run `kagi project join` first"
-                                )
-                            })?;
-                        let member_id = key_manager.member_id()?;
-                        let claim_plaintext = kagi_sync::domain::envelope::RequestPlaintext {
-                            version: 1,
-                            request_id: request_id.clone(),
-                            issued_at: time::OffsetDateTime::now_utc()
-                                .format(&time::format_description::well_known::Rfc3339)
-                                .unwrap(),
-                            operation: "pull".into(),
-                            method: "POST".into(),
-                            path: format!("/v1/projects/{project_id}/pull"),
-                            project_id: Some(project_id.to_string()),
-                            token: None,
-                            claim_secret: Some(claim_secret.clone()),
-                            payload: serde_json::json!({
-                                "member_id": member_id,
-                            }),
-                        };
-                        let client =
-                            kagi_sync::infrastructure::remote_client::RemoteClient::new_pinned(
-                                remote_url.to_string(),
-                                &meta.server_fingerprint,
-                                allow_insecure,
-                            )
-                            .await?;
-                        let data = client.send_request(&claim_plaintext, &identity).await?;
-                        if let Some(wrapped_b64) =
-                            data.get("wrapped_project_token").and_then(|v| v.as_str())
-                        {
-                            let wrapped = base64::engine::general_purpose::URL_SAFE_NO_PAD
-                                .decode(wrapped_b64)
-                                .map_err(|e| anyhow::anyhow!("invalid wrapped token: {e}"))?;
-                            let decrypted =
-                                kagi_sync::infrastructure::remote_envelope::decrypt_bytes(
-                                    &wrapped, &identity,
-                                )
-                                .map_err(|e| {
-                                    anyhow::anyhow!("failed to decrypt wrapped token: {e}")
-                                })?;
-                            String::from_utf8(decrypted)
-                                .map_err(|e| anyhow::anyhow!("invalid token: {e}"))?
-                        } else {
-                            return Err(anyhow::anyhow!(
-                                "no project token available; run `kagi project join` first or ask admin to approve"
-                            ));
-                        }
-                    }
-                };
-                let parsed_token = kagi_sync::domain::project_token::ProjectToken::parse(&token)
-                    .ok_or_else(|| anyhow::anyhow!("token from server is malformed"))?;
-
-                let known_revision = meta.local_revision.unwrap_or(0);
-                let plaintext = kagi_sync::domain::envelope::RequestPlaintext {
-                    version: 1,
-                    request_id: request_id.clone(),
-                    issued_at: time::OffsetDateTime::now_utc()
-                        .format(&time::format_description::well_known::Rfc3339)
-                        .unwrap(),
-                    operation: "pull".into(),
-                    method: "POST".into(),
-                    path: format!("/v1/projects/{project_id}/pull"),
-                    project_id: Some(project_id.to_string()),
-                    token: Some(token.clone()),
-                    claim_secret: None,
-                    payload: serde_json::json!({ "known_revision": known_revision }),
-                };
-                let client = kagi_sync::infrastructure::remote_client::RemoteClient::new_pinned(
-                    remote_url.to_string(),
-                    &meta.server_fingerprint,
-                    allow_insecure,
-                )
-                .await?;
-                let data = client.send_request(&plaintext, &identity).await?;
-                let state = data["state"].clone();
-
-                let _manifest_hash = verify_pulled_manifest(
-                    &data,
-                    &state,
-                    project_id,
-                    known_revision,
-                    meta.last_manifest_hash.as_deref(),
-                    &local_access_json,
-                    parsed_token.payload.bootstrap_signer_public_key.as_deref(),
-                )?;
-
-                let remote_revision = data["revision"].as_i64().unwrap_or(0);
-                let pulled_access_json = state
-                    .get("access_json")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("{}");
-
-                let has_pending = meta
-                    .pending_token_ids
-                    .as_ref()
-                    .is_some_and(|v| !v.is_empty())
-                    || meta
-                        .pending_accepted_member_ids
-                        .as_ref()
-                        .is_some_and(|v| !v.is_empty());
-                let would_change_state =
-                    remote_revision != known_revision || pulled_access_json != local_access_json;
-
-                if has_pending && would_change_state {
-                    return Err(anyhow::anyhow!(
-                        "Cannot pull while member approval metadata is pending. Run `kagi push` to publish the approval, or resolve the pending member approval before pulling."
-                    ));
-                }
-
-                apply_pulled_state(&base_path, &state)?;
-
-                // Only save token after authenticated pull succeeds
-                let token = key_manager.unwrap_member_token()?.unwrap_or(token);
-                remote_store.save_token(project_id, &token)?;
-                remote_store.delete_claim_secret(project_id)?;
-
-                remote_store.save_remote_metadata(
-                    &kagi_sync::domain::remote_config::RemoteMetadata {
-                        version: 1,
-                        project_id: project_id.to_string(),
-                        remote: remote_url.to_string(),
-                        server_key_id: meta.server_key_id.clone(),
-                        server_fingerprint: meta.server_fingerprint.clone(),
-                        local_revision: Some(remote_revision),
-                        last_pulled_at: Some(
-                            time::OffsetDateTime::now_utc()
-                                .format(&time::format_description::well_known::Rfc3339)
-                                .unwrap(),
-                        ),
-                        last_pushed_at: meta.last_pushed_at,
-                        last_manifest_hash: data
-                            .get("manifest_hash")
-                            .and_then(|value| value.as_str())
-                            .map(str::to_string)
-                            .or(meta.last_manifest_hash),
-                        pending_token_ids: meta.pending_token_ids,
-                        pending_accepted_member_ids: meta.pending_accepted_member_ids,
-                    },
-                )?;
-
-                println!(
-                    "{} {} revision {}",
-                    c.prefix(),
-                    c.success("pulled"),
-                    c.accent(&remote_revision.to_string())
-                );
-            }
-        }
-        #[cfg(feature = "server")]
-        Commands::Status => {
-            let (base_path, _) = resolve_kagi_base()?;
-            let config_path = base_path.join(kagi_domain::config::KAGI_CONFIG_FILE);
-            let config: serde_json::Value =
-                serde_json::from_str(&fs::read_to_string(&config_path)?)?;
-            let project_id = config["project_id"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("missing project_id"))?;
-            let remote_url = config["settings"]["sync"]["remote"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("missing remote URL"))?;
-
-            let local_data_dir = local_data_dir()?;
-            let remote_store =
-                kagi_sync::infrastructure::remote_local::RemoteLocalStore::new(local_data_dir);
-            let token = remote_store
-                .load_token(project_id)?
-                .ok_or_else(|| anyhow::anyhow!("no project token found"))?;
-            let meta = remote_store
-                .load_remote_metadata(project_id)?
-                .ok_or_else(|| anyhow::anyhow!("no remote metadata found"))?;
-
-            let local_revision = meta.local_revision.unwrap_or(0);
-
-            let key_manager = KeyManager::new(base_path);
-            let identity = key_manager.load_or_create_identity()?;
-            let request_id = format!(r"kgr_{}", nanoid::nanoid!(12));
-            let plaintext = kagi_sync::domain::envelope::RequestPlaintext {
-                version: 1,
-                request_id: request_id.clone(),
-                issued_at: time::OffsetDateTime::now_utc()
-                    .format(&time::format_description::well_known::Rfc3339)
-                    .unwrap(),
-                operation: "status".into(),
-                method: "POST".into(),
-                path: format!("/v1/projects/{project_id}/status"),
-                project_id: Some(project_id.to_string()),
-                token: Some(token),
-                claim_secret: None,
-                payload: serde_json::json!({ "local_revision": local_revision }),
-            };
-
-            let client = kagi_sync::infrastructure::remote_client::RemoteClient::new_pinned(
-                remote_url.to_string(),
-                &meta.server_fingerprint,
-                allow_insecure,
-            )
-            .await?;
-            let data = client.send_request(&plaintext, &identity).await?;
-            let remote_revision = data["remote_revision"].as_i64().unwrap_or(0);
-            let state_str = data["state"].as_str().unwrap_or("unknown");
-            let pending_joins = data["pending_join_count"].as_i64().unwrap_or(0);
-
-            println!(
-                "{} {} local={} remote={}",
-                c.prefix(),
-                c.info(state_str),
-                c.accent(&local_revision.to_string()),
-                c.accent(&remote_revision.to_string())
-            );
-            if pending_joins > 0 {
-                println!(
-                    "{} {} pending join request(s)",
-                    c.prefix(),
-                    c.warning(&pending_joins.to_string())
-                );
-            }
+        Commands::Remote { command } => {
+            handle_remote_command(command, tty, allow_insecure, &c).await?;
         }
         Commands::Completions { shell } => {
             let shell = shell.parse::<clap_complete::Shell>().map_err(|_| {
@@ -3275,6 +2615,674 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let name = cmd.get_name().to_string();
             clap_complete::generate(shell, &mut cmd, name, &mut io::stdout());
         }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "server")]
+async fn handle_remote_command(
+    command: RemoteCommands,
+    tty: bool,
+    allow_insecure: bool,
+    c: &Palette,
+) -> anyhow::Result<()> {
+    match command {
+        RemoteCommands::Login { remote, token } => {
+            remote_login(&remote, &token, c, allow_insecure).await?;
+        }
+        RemoteCommands::Register { remote } => {
+            project_join_remote(std::env::current_dir()?, &remote, c, allow_insecure).await?;
+        }
+        RemoteCommands::Push => {
+            remote_push(c, allow_insecure).await?;
+        }
+        RemoteCommands::Pull { token } => {
+            remote_pull(token, c, allow_insecure).await?;
+        }
+        RemoteCommands::Status => {
+            remote_status(c, allow_insecure).await?;
+        }
+        RemoteCommands::Projects { remote, plain } => {
+            let remote_url = resolve_admin_remote(remote).await?;
+            let (requests, projects) = load_project_list(&remote_url, allow_insecure).await?;
+            #[cfg(feature = "tui")]
+            if !plain && tty {
+                return crate::cli::tui::run_tui_project_list(requests, projects);
+            }
+            #[cfg(not(feature = "tui"))]
+            let _ = plain;
+            print_remote_projects(requests, projects, c);
+        }
+        RemoteCommands::Approve { remote, project_id } => {
+            let remote_url = resolve_admin_remote(remote).await?;
+            project_approve_remote(&remote_url, &project_id, c, allow_insecure).await?;
+        }
+        RemoteCommands::Remove { remote, project_id } => {
+            let remote_url = resolve_admin_remote(remote).await?;
+            project_del_remote(&remote_url, &project_id, c, allow_insecure).await?;
+        }
+        RemoteCommands::Tokens { remote, plain } => {
+            remote_tokens(remote, plain, tty, c, allow_insecure).await?;
+        }
+        RemoteCommands::RevokeToken { remote, token_id } => {
+            remote_revoke_token(remote, token_id, c, allow_insecure).await?;
+        }
+        RemoteCommands::Audit {
+            remote,
+            project_id,
+            limit,
+            plain,
+        } => {
+            let remote_url = resolve_admin_remote(remote).await?;
+            #[cfg(feature = "tui")]
+            if !plain && tty {
+                let events =
+                    load_audit_events(&remote_url, project_id.as_deref(), limit, allow_insecure)
+                        .await?;
+                return crate::cli::tui::run_tui_audit_log(events);
+            }
+            #[cfg(not(feature = "tui"))]
+            let _ = plain;
+            remote_audit(&remote_url, project_id.as_deref(), limit, c, allow_insecure).await?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "server")]
+fn print_remote_projects(
+    requests: Vec<serde_json::Value>,
+    projects: Vec<serde_json::Value>,
+    c: &Palette,
+) {
+    if requests.is_empty() && projects.is_empty() {
+        println!(
+            "{} {}",
+            c.prefix(),
+            c.muted("No projects or pending requests found.")
+        );
+        return;
+    }
+
+    if !requests.is_empty() {
+        println!("{} {}", c.prefix(), c.warning("Pending requests:"));
+        for r in &requests {
+            let id = r["project_id"].as_str().unwrap_or("unknown");
+            let name = r["requester_name"].as_str().unwrap_or("");
+            let created_at = r["created_at"].as_str().unwrap_or("");
+            println!(
+                "  {}  {}  {}",
+                c.accent(id),
+                c.muted(&format!("by {name}")),
+                c.muted(created_at)
+            );
+        }
+    }
+
+    if !projects.is_empty() {
+        println!("{} {}", c.prefix(), c.muted("Active projects:"));
+        for p in &projects {
+            let id = p["project_id"].as_str().unwrap_or("unknown");
+            let revision = p["revision"].as_i64().unwrap_or(0);
+            let created_at = p["created_at"].as_str().unwrap_or("");
+            println!(
+                "  {}  rev={}  created={}",
+                c.accent(id),
+                revision,
+                c.muted(created_at)
+            );
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+async fn remote_tokens(
+    remote: Option<String>,
+    plain: bool,
+    tty: bool,
+    c: &Palette,
+    allow_insecure: bool,
+) -> anyhow::Result<()> {
+    let (base_path, _) = resolve_kagi_base()?;
+    let config_path = base_path.join(kagi_domain::config::KAGI_CONFIG_FILE);
+    let config: serde_json::Value = serde_json::from_str(&fs::read_to_string(&config_path)?)?;
+    let project_id = config["project_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing project_id"))?;
+    let remote_url = config["settings"]["sync"]["remote"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing remote URL. Run kagi remote register first."))?;
+    let remote_url = remote.unwrap_or_else(|| remote_url.to_string());
+
+    let local_data_dir = local_data_dir()?;
+    let remote_store =
+        kagi_sync::infrastructure::remote_local::RemoteLocalStore::new(local_data_dir);
+    let token = remote_store
+        .load_token(project_id)?
+        .ok_or_else(|| anyhow::anyhow!("no project token found"))?;
+    let meta = remote_store
+        .load_remote_metadata(project_id)?
+        .ok_or_else(|| anyhow::anyhow!("no remote metadata found"))?;
+    let key_manager = KeyManager::new(base_path.clone());
+    let identity = key_manager.load_or_create_identity()?;
+    let client = kagi_sync::infrastructure::remote_client::RemoteClient::new_pinned(
+        remote_url,
+        &meta.server_fingerprint,
+        allow_insecure,
+    )
+    .await?;
+    let data = client
+        .send_list_tokens(project_id, &token, &identity)
+        .await?;
+    let tokens = data
+        .get("tokens")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| anyhow::anyhow!("invalid response: missing tokens"))?
+        .clone();
+    #[cfg(feature = "tui")]
+    if !plain && tty {
+        return crate::cli::tui::run_tui_token_list(tokens);
+    }
+    #[cfg(not(feature = "tui"))]
+    let _ = (plain, tty);
+
+    if tokens.is_empty() {
+        println!("{} {}", c.prefix(), c.muted("no tokens found."));
+    } else {
+        println!(
+            "{} {}",
+            c.prefix(),
+            c.accent(&format!("{} token(s)", tokens.len()))
+        );
+        for t in &tokens {
+            let id = t["token_id"].as_str().unwrap_or("?");
+            let caps: Vec<String> = t["capabilities"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let status = t["status"].as_str().unwrap_or("?");
+            let member = t["member_id"].as_str().unwrap_or("?");
+            let created = t["created_at"].as_str().unwrap_or("?");
+            println!(
+                "  {} {} | {} | {} | {}",
+                c.key(id),
+                c.muted(&format!("[{status}]")),
+                c.accent(member),
+                c.info(&caps.join(", ")),
+                c.muted(created)
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "server")]
+async fn remote_revoke_token(
+    remote: Option<String>,
+    token_id: String,
+    c: &Palette,
+    allow_insecure: bool,
+) -> anyhow::Result<()> {
+    let (base_path, _) = resolve_kagi_base()?;
+    let config_path = base_path.join(kagi_domain::config::KAGI_CONFIG_FILE);
+    let config: serde_json::Value = serde_json::from_str(&fs::read_to_string(&config_path)?)?;
+    let project_id = config["project_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing project_id"))?;
+    let remote_url = config["settings"]["sync"]["remote"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing remote URL. Run kagi remote register first."))?;
+    let remote_url = remote.unwrap_or_else(|| remote_url.to_string());
+
+    let local_data_dir = local_data_dir()?;
+    let remote_store =
+        kagi_sync::infrastructure::remote_local::RemoteLocalStore::new(local_data_dir);
+    let token = remote_store
+        .load_token(project_id)?
+        .ok_or_else(|| anyhow::anyhow!("no project token found"))?;
+    let meta = remote_store
+        .load_remote_metadata(project_id)?
+        .ok_or_else(|| anyhow::anyhow!("no remote metadata found"))?;
+    let key_manager = KeyManager::new(base_path.clone());
+    let identity = key_manager.load_or_create_identity()?;
+    let client = kagi_sync::infrastructure::remote_client::RemoteClient::new_pinned(
+        remote_url,
+        &meta.server_fingerprint,
+        allow_insecure,
+    )
+    .await?;
+    let data = client
+        .send_revoke_tokens(
+            project_id,
+            &token,
+            std::slice::from_ref(&token_id),
+            &identity,
+        )
+        .await?;
+    let revoked = data
+        .get("revoked_token_ids")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
+                .collect::<Vec<String>>()
+        })
+        .unwrap_or_default();
+    println!(
+        "{} {}",
+        c.prefix(),
+        c.success(&format!("revoked {} token(s)", revoked.len()))
+    );
+    for id in revoked {
+        println!("  {}", c.key(&id));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "server")]
+async fn remote_push(c: &Palette, allow_insecure: bool) -> anyhow::Result<()> {
+    let (base_path, _) = resolve_kagi_base()?;
+    let config_path = base_path.join(kagi_domain::config::KAGI_CONFIG_FILE);
+    let config: serde_json::Value = serde_json::from_str(&fs::read_to_string(&config_path)?)?;
+    let project_id = config["project_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing project_id"))?;
+    let remote_url = config["settings"]["sync"]["remote"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing remote URL. Run kagi remote register first."))?;
+
+    let local_data_dir = local_data_dir()?;
+    let remote_store =
+        kagi_sync::infrastructure::remote_local::RemoteLocalStore::new(local_data_dir);
+    let token = remote_store
+        .load_token(project_id)?
+        .ok_or_else(|| anyhow::anyhow!("no project token found"))?;
+    let meta = remote_store
+        .load_remote_metadata(project_id)?
+        .ok_or_else(|| anyhow::anyhow!("no remote metadata found"))?;
+
+    let base_revision = meta.local_revision.unwrap_or(0);
+
+    let key_manager = KeyManager::new(base_path.clone());
+    let identity = key_manager.load_or_create_identity()?;
+    let member_id = key_manager.member_id()?;
+    let signing_key = key_manager.ensure_signing_key(&member_id)?;
+    let signing_public_key =
+        base64::engine::general_purpose::STANDARD.encode(signing_key.verifying_key().to_bytes());
+
+    let store = resolve_store()?.0;
+    let kagi_json = fs::read_to_string(&config_path)?;
+    let access_json =
+        fs::read_to_string(base_path.join("access.json")).unwrap_or_else(|_| "{}".to_string());
+
+    let mut files = Vec::new();
+    for scope in store.list_services()? {
+        let (file_name, content) = store.raw_service_content(&scope)?;
+        let content_hash = {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(content.as_bytes());
+            hex::encode(hasher.finalize())
+        };
+        files.push(kagi_sync::domain::project_state::ProjectFile {
+            path: file_name,
+            content,
+            sha256: Some(content_hash),
+        });
+    }
+
+    let project_state = kagi_sync::domain::project_state::ProjectState {
+        project_id: project_id.to_string(),
+        revision: base_revision,
+        kagi_json,
+        access_json,
+        files,
+    };
+
+    let previous_manifest_hash = if base_revision > 0 {
+        Some(meta.last_manifest_hash.clone().ok_or_else(|| {
+            anyhow::anyhow!(
+                "missing local manifest hash for revision {base_revision}; run kagi remote pull before pushing"
+            )
+        })?)
+    } else {
+        None
+    };
+    let manifest = kagi_sync::domain::manifest::ProjectStateManifest {
+        version: 1,
+        project_id: project_id.to_string(),
+        revision: base_revision + 1,
+        previous_manifest_hash,
+        kagi_json_hash: kagi_sync::domain::manifest::hash_json(&project_state.kagi_json),
+        access_json_hash: kagi_sync::domain::manifest::hash_json(&project_state.access_json),
+        file_hashes: project_state
+            .files
+            .iter()
+            .map(|f| kagi_sync::domain::manifest::FileHash {
+                path: f.path.clone(),
+                sha256: f.sha256.clone().unwrap_or_default(),
+            })
+            .collect(),
+        timestamp: time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap(),
+        signer_member_id: member_id.clone(),
+        signer_public_key: signing_public_key,
+    };
+    let manifest_json = serde_json::to_string(&manifest)?;
+    let manifest_hash = manifest.compute_hash();
+    let signature = signing_key.sign(manifest_hash.as_bytes());
+    let signature_b64 = base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
+
+    let mut payload = serde_json::json!({
+        "base_revision": base_revision,
+        "state": project_state,
+        "manifest": manifest_json,
+        "manifest_signature": signature_b64,
+    });
+    if let Some(ref token_ids) = meta.pending_token_ids {
+        payload["activate_token_ids"] = serde_json::json!(token_ids);
+    }
+    if let Some(ref member_ids) = meta.pending_accepted_member_ids {
+        payload["accepted_join_member_ids"] = serde_json::json!(member_ids);
+    }
+
+    let request_id = format!(r"kgr_{}", nanoid::nanoid!(12));
+    let plaintext = kagi_sync::domain::envelope::RequestPlaintext {
+        version: 1,
+        request_id: request_id.clone(),
+        issued_at: time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap(),
+        operation: "push".into(),
+        method: "POST".into(),
+        path: format!("/v1/projects/{project_id}/push"),
+        project_id: Some(project_id.to_string()),
+        token: Some(token),
+        claim_secret: None,
+        payload,
+    };
+
+    let client = kagi_sync::infrastructure::remote_client::RemoteClient::new_pinned(
+        remote_url.to_string(),
+        &meta.server_fingerprint,
+        allow_insecure,
+    )
+    .await?;
+    let data = client.send_request(&plaintext, &identity).await?;
+    let new_revision = data["revision"].as_i64().unwrap_or(base_revision + 1);
+
+    remote_store.save_remote_metadata(&kagi_sync::domain::remote_config::RemoteMetadata {
+        version: 1,
+        project_id: project_id.to_string(),
+        remote: remote_url.to_string(),
+        server_key_id: meta.server_key_id.clone(),
+        server_fingerprint: meta.server_fingerprint.clone(),
+        local_revision: Some(new_revision),
+        last_pulled_at: meta.last_pulled_at,
+        last_pushed_at: Some(
+            time::OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap(),
+        ),
+        last_manifest_hash: Some(manifest_hash),
+        pending_token_ids: None,
+        pending_accepted_member_ids: None,
+    })?;
+
+    println!(
+        "{} {} revision {}",
+        c.prefix(),
+        c.success("pushed"),
+        c.accent(&new_revision.to_string())
+    );
+    Ok(())
+}
+
+#[cfg(feature = "server")]
+async fn remote_pull(
+    token: Option<String>,
+    c: &Palette,
+    allow_insecure: bool,
+) -> anyhow::Result<()> {
+    if let Some(token_str) = token {
+        return pull_with_token(&token_str, c, allow_insecure).await;
+    }
+
+    let (base_path, _) = resolve_kagi_base()?;
+    let config_path = base_path.join(kagi_domain::config::KAGI_CONFIG_FILE);
+    let config: serde_json::Value = serde_json::from_str(&fs::read_to_string(&config_path)?)?;
+    let project_id = config["project_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing project_id"))?;
+    let remote_url = config["settings"]["sync"]["remote"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing remote URL"))?;
+
+    let local_access_json =
+        fs::read_to_string(base_path.join("access.json")).unwrap_or_else(|_| "{}".to_string());
+
+    let local_data_dir = local_data_dir()?;
+    let remote_store =
+        kagi_sync::infrastructure::remote_local::RemoteLocalStore::new(local_data_dir);
+    let meta = remote_store
+        .load_remote_metadata(project_id)?
+        .ok_or_else(|| anyhow::anyhow!("no remote metadata found"))?;
+
+    let key_manager = KeyManager::new(base_path.clone());
+    let identity = key_manager.load_or_create_identity()?;
+    let request_id = format!(r"kgr_{}", nanoid::nanoid!(12));
+
+    let token = match remote_store.load_token(project_id)? {
+        Some(t) => t,
+        None => {
+            let claim_secret = remote_store.load_claim_secret(project_id)?.ok_or_else(|| {
+                anyhow::anyhow!("no claim secret found; run `kagi remote register` first")
+            })?;
+            let member_id = key_manager.member_id()?;
+            let claim_plaintext = kagi_sync::domain::envelope::RequestPlaintext {
+                version: 1,
+                request_id: request_id.clone(),
+                issued_at: time::OffsetDateTime::now_utc()
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .unwrap(),
+                operation: "pull".into(),
+                method: "POST".into(),
+                path: format!("/v1/projects/{project_id}/pull"),
+                project_id: Some(project_id.to_string()),
+                token: None,
+                claim_secret: Some(claim_secret.clone()),
+                payload: serde_json::json!({ "member_id": member_id }),
+            };
+            let client = kagi_sync::infrastructure::remote_client::RemoteClient::new_pinned(
+                remote_url.to_string(),
+                &meta.server_fingerprint,
+                allow_insecure,
+            )
+            .await?;
+            let data = client.send_request(&claim_plaintext, &identity).await?;
+            if let Some(wrapped_b64) = data.get("wrapped_project_token").and_then(|v| v.as_str()) {
+                let wrapped = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(wrapped_b64)
+                    .map_err(|e| anyhow::anyhow!("invalid wrapped token: {e}"))?;
+                let decrypted =
+                    kagi_sync::infrastructure::remote_envelope::decrypt_bytes(&wrapped, &identity)
+                        .map_err(|e| anyhow::anyhow!("failed to decrypt wrapped token: {e}"))?;
+                String::from_utf8(decrypted).map_err(|e| anyhow::anyhow!("invalid token: {e}"))?
+            } else {
+                return Err(anyhow::anyhow!(
+                    "no project token available; run `kagi remote register` first or ask admin to approve"
+                ));
+            }
+        }
+    };
+    let parsed_token = kagi_sync::domain::project_token::ProjectToken::parse(&token)
+        .ok_or_else(|| anyhow::anyhow!("token from server is malformed"))?;
+
+    let known_revision = meta.local_revision.unwrap_or(0);
+    let plaintext = kagi_sync::domain::envelope::RequestPlaintext {
+        version: 1,
+        request_id: request_id.clone(),
+        issued_at: time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap(),
+        operation: "pull".into(),
+        method: "POST".into(),
+        path: format!("/v1/projects/{project_id}/pull"),
+        project_id: Some(project_id.to_string()),
+        token: Some(token.clone()),
+        claim_secret: None,
+        payload: serde_json::json!({ "known_revision": known_revision }),
+    };
+    let client = kagi_sync::infrastructure::remote_client::RemoteClient::new_pinned(
+        remote_url.to_string(),
+        &meta.server_fingerprint,
+        allow_insecure,
+    )
+    .await?;
+    let data = client.send_request(&plaintext, &identity).await?;
+    let state = data["state"].clone();
+
+    let _manifest_hash = verify_pulled_manifest(
+        &data,
+        &state,
+        project_id,
+        known_revision,
+        meta.last_manifest_hash.as_deref(),
+        &local_access_json,
+        parsed_token.payload.bootstrap_signer_public_key.as_deref(),
+    )?;
+
+    let remote_revision = data["revision"].as_i64().unwrap_or(0);
+    let pulled_access_json = state
+        .get("access_json")
+        .and_then(|v| v.as_str())
+        .unwrap_or("{}");
+
+    let has_pending = meta
+        .pending_token_ids
+        .as_ref()
+        .is_some_and(|v| !v.is_empty())
+        || meta
+            .pending_accepted_member_ids
+            .as_ref()
+            .is_some_and(|v| !v.is_empty());
+    let would_change_state =
+        remote_revision != known_revision || pulled_access_json != local_access_json;
+
+    if has_pending && would_change_state {
+        return Err(anyhow::anyhow!(
+            "Cannot pull while member approval metadata is pending. Run `kagi remote push` to publish the approval, or resolve the pending member approval before pulling."
+        ));
+    }
+
+    apply_pulled_state(&base_path, &state)?;
+
+    let token = key_manager.unwrap_member_token()?.unwrap_or(token);
+    remote_store.save_token(project_id, &token)?;
+    remote_store.delete_claim_secret(project_id)?;
+
+    remote_store.save_remote_metadata(&kagi_sync::domain::remote_config::RemoteMetadata {
+        version: 1,
+        project_id: project_id.to_string(),
+        remote: remote_url.to_string(),
+        server_key_id: meta.server_key_id.clone(),
+        server_fingerprint: meta.server_fingerprint.clone(),
+        local_revision: Some(remote_revision),
+        last_pulled_at: Some(
+            time::OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap(),
+        ),
+        last_pushed_at: meta.last_pushed_at,
+        last_manifest_hash: data
+            .get("manifest_hash")
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+            .or(meta.last_manifest_hash),
+        pending_token_ids: meta.pending_token_ids,
+        pending_accepted_member_ids: meta.pending_accepted_member_ids,
+    })?;
+
+    println!(
+        "{} {} revision {}",
+        c.prefix(),
+        c.success("pulled"),
+        c.accent(&remote_revision.to_string())
+    );
+    Ok(())
+}
+
+#[cfg(feature = "server")]
+async fn remote_status(c: &Palette, allow_insecure: bool) -> anyhow::Result<()> {
+    let (base_path, _) = resolve_kagi_base()?;
+    let config_path = base_path.join(kagi_domain::config::KAGI_CONFIG_FILE);
+    let config: serde_json::Value = serde_json::from_str(&fs::read_to_string(&config_path)?)?;
+    let project_id = config["project_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing project_id"))?;
+    let remote_url = config["settings"]["sync"]["remote"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing remote URL"))?;
+
+    let local_data_dir = local_data_dir()?;
+    let remote_store =
+        kagi_sync::infrastructure::remote_local::RemoteLocalStore::new(local_data_dir);
+    let token = remote_store
+        .load_token(project_id)?
+        .ok_or_else(|| anyhow::anyhow!("no project token found"))?;
+    let meta = remote_store
+        .load_remote_metadata(project_id)?
+        .ok_or_else(|| anyhow::anyhow!("no remote metadata found"))?;
+
+    let local_revision = meta.local_revision.unwrap_or(0);
+
+    let key_manager = KeyManager::new(base_path);
+    let identity = key_manager.load_or_create_identity()?;
+    let request_id = format!(r"kgr_{}", nanoid::nanoid!(12));
+    let plaintext = kagi_sync::domain::envelope::RequestPlaintext {
+        version: 1,
+        request_id: request_id.clone(),
+        issued_at: time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap(),
+        operation: "status".into(),
+        method: "POST".into(),
+        path: format!("/v1/projects/{project_id}/status"),
+        project_id: Some(project_id.to_string()),
+        token: Some(token),
+        claim_secret: None,
+        payload: serde_json::json!({ "local_revision": local_revision }),
+    };
+
+    let client = kagi_sync::infrastructure::remote_client::RemoteClient::new_pinned(
+        remote_url.to_string(),
+        &meta.server_fingerprint,
+        allow_insecure,
+    )
+    .await?;
+    let data = client.send_request(&plaintext, &identity).await?;
+    let remote_revision = data["remote_revision"].as_i64().unwrap_or(0);
+    let state_str = data["state"].as_str().unwrap_or("unknown");
+    let pending_joins = data["pending_join_count"].as_i64().unwrap_or(0);
+
+    println!(
+        "{} {} local={} remote={}",
+        c.prefix(),
+        c.info(state_str),
+        c.accent(&local_revision.to_string()),
+        c.accent(&remote_revision.to_string())
+    );
+    if pending_joins > 0 {
+        println!(
+            "{} {} pending member request(s)",
+            c.prefix(),
+            c.warning(&pending_joins.to_string())
+        );
     }
     Ok(())
 }
@@ -3771,7 +3779,7 @@ async fn pull_with_token(token_str: &str, c: &Palette, allow_insecure: bool) -> 
 
     if has_pending && would_change_state {
         return Err(anyhow::anyhow!(
-            "Cannot pull while member approval metadata is pending. Run `kagi push` to publish the approval, or resolve the pending member approval before pulling."
+            "Cannot pull while member approval metadata is pending. Run `kagi remote push` to publish the approval, or resolve the pending member approval before pulling."
         ));
     }
 

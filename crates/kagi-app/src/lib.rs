@@ -35,7 +35,7 @@ pub async fn run() {
         ("import", "import values from a .env file"),
         ("sync", "sync keys from .env.example"),
         ("env", "manage default environments"),
-        ("member", "list, approve, or remove members"),
+        ("member", "request, list, approve, or remove members"),
     ];
     #[cfg(feature = "server")]
     let cmd_lines: Vec<(&str, &str)> = vec![
@@ -50,13 +50,9 @@ pub async fn run() {
         ("import", "import values from a .env file"),
         ("sync", "sync keys from .env.example"),
         ("env", "manage default environments"),
-        ("member", "list, approve, or remove members"),
+        ("member", "request, list, approve, or remove members"),
         ("serve", "start the remote sync server"),
-        ("push", "upload project state to remote server"),
-        ("pull", "download project state from remote server"),
-        ("status", "compare local and remote revisions"),
-        ("project", "manage remote projects"),
-        ("remote", "manage remote server credentials"),
+        ("remote", "login, register, sync, and administer remotes"),
     ];
     let max_cmd = cmd_lines.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
     let cmd_list = cmd_lines

@@ -435,46 +435,46 @@ fn test_e2e_server_full_remote_workflow() {
     cmd.args(["remote", "login", "--remote", &base_url, "--token", &token]);
     cmd.assert().success();
 
-    // 2. project join (register project on server)
+    // 2. remote register (register project on server)
     let mut cmd = kagi_bin(&home_path);
     cmd.current_dir(project_path);
-    cmd.args(["project", "join", "--remote", &base_url]);
+    cmd.args(["remote", "register", "--remote", &base_url]);
     cmd.assert().success();
 
-    // 3. project approve (admin approves the project)
+    // 3. remote approve (admin approves the project)
     let mut cmd = kagi_bin(&home_path);
     cmd.current_dir(project_path);
-    cmd.args(["project", "approve", "--remote", &base_url, &project_id]);
+    cmd.args(["remote", "approve", "--remote", &base_url, &project_id]);
     cmd.assert().success();
 
     // 4. pull to exchange claim_secret for project token
     let mut cmd = kagi_bin(&home_path);
     cmd.current_dir(project_path);
-    cmd.args(["pull"]);
+    cmd.args(["remote", "pull"]);
     cmd.assert().success();
 
     // 5. push project state to server
     let mut cmd = kagi_bin(&home_path);
     cmd.current_dir(project_path);
-    cmd.args(["push"]);
+    cmd.args(["remote", "push"]);
     cmd.assert().success();
 
     // 6. pull project state from server
     let mut cmd = kagi_bin(&home_path);
     cmd.current_dir(project_path);
-    cmd.args(["pull"]);
+    cmd.args(["remote", "pull"]);
     cmd.assert().success();
 
     // 7. status compare
     let mut cmd = kagi_bin(&home_path);
     cmd.current_dir(project_path);
-    cmd.args(["status"]);
+    cmd.args(["remote", "status"]);
     cmd.assert().success();
 
-    // 8. token list (should show project tokens)
+    // 8. remote tokens (should show project tokens)
     let mut cmd = kagi_bin(&home_path);
     cmd.current_dir(project_path);
-    cmd.args(["token", "list"]);
+    cmd.args(["remote", "tokens"]);
     cmd.assert().success();
 
     // 9. remote audit (should show push/pull events)
@@ -573,18 +573,18 @@ fn test_e2e_local_advanced() {
     cmd.args(["env", "rename", "test", "testing"]);
     cmd.assert().success();
 
-    // 8. env del blocks non-interactive
+    // 8. env remove blocks non-interactive
     let mut cmd = kagi_bin(&home_path);
     cmd.current_dir(project_path);
-    cmd.args(["env", "del", "testing"]);
+    cmd.args(["env", "remove", "testing"]);
     cmd.assert()
         .failure()
         .stderr(predicate::str::contains("requires an interactive terminal"));
 
-    // 9. member join (creates a pending request)
+    // 9. member request (creates a pending request)
     let mut cmd = kagi_bin(&home_path);
     cmd.current_dir(project_path);
-    cmd.args(["member", "join", "--name", "Alice"]);
+    cmd.args(["member", "request", "--name", "Alice"]);
     cmd.assert().success();
 
     // 10. member list shows pending request
@@ -621,10 +621,10 @@ fn test_e2e_local_advanced() {
         .success()
         .stdout(predicate::str::contains("active"));
 
-    // 13. member del blocks non-interactive
+    // 13. member remove blocks non-interactive
     let mut cmd = kagi_bin(&home_path);
     cmd.current_dir(project_path);
-    cmd.args(["member", "del", &pending_member_id]);
+    cmd.args(["member", "remove", &pending_member_id]);
     cmd.assert()
         .failure()
         .stderr(predicate::str::contains("requires an interactive terminal"));
@@ -813,57 +813,63 @@ fn test_e2e_server_advanced() {
     cmd.args(["remote", "login", "--remote", &base_url, "--token", &token]);
     cmd.assert().success();
 
-    // 2. project join
+    // 2. remote register
     let mut cmd = kagi_bin(&home_path);
     cmd.current_dir(project_path);
-    cmd.args(["project", "join", "--remote", &base_url]);
+    cmd.args(["remote", "register", "--remote", &base_url]);
     cmd.assert().success();
 
-    // 3. project approve
+    // 3. remote approve
     let mut cmd = kagi_bin(&home_path);
     cmd.current_dir(project_path);
-    cmd.args(["project", "approve", "--remote", &base_url, &project_id]);
+    cmd.args(["remote", "approve", "--remote", &base_url, &project_id]);
     cmd.assert().success();
 
     // 4. pull to get token
     let mut cmd = kagi_bin(&home_path);
     cmd.current_dir(project_path);
-    cmd.args(["pull"]);
+    cmd.args(["remote", "pull"]);
     cmd.assert().success();
 
     // 5. push
     let mut cmd = kagi_bin(&home_path);
     cmd.current_dir(project_path);
-    cmd.args(["push"]);
+    cmd.args(["remote", "push"]);
     cmd.assert().success();
 
-    // 6. project list (admin)
+    // 6. remote projects (admin)
     let mut cmd = kagi_bin(&home_path);
     cmd.current_dir(project_path);
-    cmd.args(["project", "list", "--remote", &base_url]);
+    cmd.args(["remote", "projects", "--remote", &base_url]);
     cmd.assert()
         .success()
         .stdout(predicate::str::contains(&project_id));
 
-    // 7. token list (shows at least one token)
+    // 7. remote tokens (shows at least one token)
     let mut cmd = kagi_bin(&home_path);
     cmd.current_dir(project_path);
-    cmd.args(["token", "list", "--remote", &base_url]);
+    cmd.args(["remote", "tokens", "--remote", &base_url]);
     cmd.assert().success();
 
-    // 8. token revoke (server echoes back requested token_ids)
+    // 8. remote revoke-token (server echoes back requested token_ids)
     let mut cmd = kagi_bin(&home_path);
     cmd.current_dir(project_path);
-    cmd.args(["token", "revoke", "--remote", &base_url, "some_token_id"]);
+    cmd.args([
+        "remote",
+        "revoke-token",
+        "--remote",
+        &base_url,
+        "some_token_id",
+    ]);
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("revoked"))
         .stdout(predicate::str::contains("some_token_id"));
 
-    // 9. project del (admin)
+    // 9. remote remove (admin)
     let mut cmd = kagi_bin(&home_path);
     cmd.current_dir(project_path);
-    cmd.args(["project", "del", "--remote", &base_url, &project_id]);
+    cmd.args(["remote", "remove", "--remote", &base_url, &project_id]);
     cmd.assert().success();
 
     // cleanup
@@ -923,7 +929,7 @@ fn test_e2e_interactive_unset() {
 
 #[cfg(unix)]
 #[test]
-fn test_e2e_interactive_env_del() {
+fn test_e2e_interactive_env_remove() {
     let home = setup_kagi_home();
     let home_path = home.path().to_str().unwrap().to_string();
     let project_dir = TempDir::new().unwrap();
@@ -947,10 +953,10 @@ fn test_e2e_interactive_env_del() {
     let (status, output) = run_kagi_interactive(
         &home_path,
         project_path,
-        &["env", "del", "test", "--plain"],
+        &["env", "remove", "test", "--plain"],
         &["test"],
     );
-    assert!(status.success(), "env del failed: {output}");
+    assert!(status.success(), "env remove failed: {output}");
     assert!(output.contains("deleted environment"));
 
     // Verify test env is gone
@@ -995,7 +1001,7 @@ fn test_e2e_interactive_import_cancel_does_not_write() {
 
 #[cfg(unix)]
 #[test]
-fn test_e2e_interactive_member_del() {
+fn test_e2e_interactive_member_remove() {
     let home = setup_kagi_home();
     let home_path = home.path().to_str().unwrap().to_string();
     let project_dir = TempDir::new().unwrap();
@@ -1006,10 +1012,10 @@ fn test_e2e_interactive_member_del() {
     cmd.args(["init", "--envs", "dev"]);
     cmd.assert().success();
 
-    // Create a join request
+    // Create a member request
     let mut cmd = kagi_bin(&home_path);
     cmd.current_dir(project_path);
-    cmd.args(["member", "join", "--name", "Alice"]);
+    cmd.args(["member", "request", "--name", "Alice"]);
     cmd.assert().success();
 
     let access_json: serde_json::Value =
@@ -1023,7 +1029,7 @@ fn test_e2e_interactive_member_del() {
         .unwrap();
     let pending_member_id = pending_member["member_id"].as_str().unwrap().to_string();
 
-    // Approve the join request
+    // Approve the member request
     let mut cmd = kagi_bin(&home_path);
     cmd.current_dir(project_path);
     cmd.args(["member", "approve", &pending_member_id]);
@@ -1033,10 +1039,10 @@ fn test_e2e_interactive_member_del() {
     let (status, output) = run_kagi_interactive(
         &home_path,
         project_path,
-        &["member", "del", &pending_member_id],
+        &["member", "remove", &pending_member_id],
         &[&pending_member_id],
     );
-    assert!(status.success(), "member del failed: {output}");
+    assert!(status.success(), "member remove failed: {output}");
     assert!(output.contains("removed member"));
 
     // Verify the member is marked as removed

@@ -284,7 +284,7 @@ impl RemoteClient {
                 .map_err(|e| DomainError::RemoteProtocolError(format!("invalid token: {e}")))
         } else {
             Err(DomainError::ProjectTokenUnavailable(
-                "no project token available; ask an active member/admin to approve this member, then run `kagi pull`"
+                "no project token available; ask an active member/admin to approve this member, then run `kagi remote pull`"
                     .into(),
             ))
         }

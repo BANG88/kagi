@@ -218,20 +218,6 @@ pub enum Commands {
     },
 
     #[cfg(feature = "server")]
-    /// Manage project tokens (list, revoke)
-    Token {
-        #[command(subcommand)]
-        command: TokenCommands,
-    },
-
-    #[cfg(feature = "server")]
-    /// Manage remote projects (join, list, approve, delete)
-    Project {
-        #[command(subcommand)]
-        command: ProjectCommands,
-    },
-
-    #[cfg(feature = "server")]
     /// Start the Kagi remote sync server
     Serve {
         /// Database file path
@@ -262,17 +248,6 @@ pub enum Commands {
         command: RemoteCommands,
     },
 
-    #[cfg(feature = "server")]
-    /// Upload local encrypted project state to remote server
-    Push,
-
-    #[cfg(feature = "server")]
-    /// Download encrypted project state from remote server
-    Pull {
-        /// Optional project token for pulling without local project
-        token: Option<String>,
-    },
-
     /// Generate shell completions for kagi
     Completions {
         /// Shell to generate completions for (bash, zsh, fish, elvish, powershell)
@@ -296,10 +271,6 @@ pub enum Commands {
         #[arg(long)]
         force: bool,
     },
-
-    #[cfg(feature = "server")]
-    /// Compare local and remote revisions
-    Status,
 }
 
 #[derive(Subcommand)]
@@ -327,7 +298,7 @@ pub enum EnvCommands {
     },
 
     /// Delete an environment from every service
-    Del {
+    Remove {
         /// Environment name to delete
         env: String,
 
@@ -339,7 +310,7 @@ pub enum EnvCommands {
 
 #[derive(Subcommand)]
 pub enum MemberCommands {
-    /// List active members and pending join requests
+    /// List active members and pending member requests
     List {
         /// Force plain text output (disable TUI)
         #[arg(long)]
@@ -347,20 +318,20 @@ pub enum MemberCommands {
     },
 
     /// Request to join this project from a new device
-    Join {
+    Request {
         /// Display name for the member requesting access
         #[arg(short, long)]
         name: Option<String>,
     },
 
-    /// Approve a pending join request
+    /// Approve a pending member request
     Approve {
         /// Member id from `kagi member list`. Omit to open TUI selector.
         member_id: Option<String>,
     },
 
     /// Remove a member's access wrapper
-    Del {
+    Remove {
         /// Member id from `kagi member list`. Omit to open TUI selector.
         member_id: Option<String>,
     },
@@ -378,6 +349,77 @@ pub enum RemoteCommands {
         /// Admin token from server first startup
         #[arg(long)]
         token: String,
+    },
+
+    /// Register this local project with a remote server
+    Register {
+        /// Remote server URL
+        #[arg(long)]
+        remote: String,
+    },
+
+    /// Upload local encrypted project state to the remote server
+    Push,
+
+    /// Download encrypted project state from the remote server
+    Pull {
+        /// Optional project token for pulling without local project
+        token: Option<String>,
+    },
+
+    /// Compare local and remote revisions
+    Status,
+
+    /// List remote projects and pending registration requests (admin only)
+    Projects {
+        /// Remote server URL (optional if saved via `kagi remote login`)
+        #[arg(long)]
+        remote: Option<String>,
+
+        /// Force plain text output (disable TUI)
+        #[arg(long)]
+        plain: bool,
+    },
+
+    /// Approve a pending project registration request (admin only)
+    Approve {
+        /// Remote server URL (optional if saved via `kagi remote login`)
+        #[arg(long)]
+        remote: Option<String>,
+
+        /// Project ID to approve
+        project_id: String,
+    },
+
+    /// Delete a project from the remote server (admin or project admin)
+    Remove {
+        /// Remote server URL (optional if saved via `kagi remote login`)
+        #[arg(long)]
+        remote: Option<String>,
+
+        /// Project ID to delete
+        project_id: String,
+    },
+
+    /// List project tokens on the remote server
+    Tokens {
+        /// Remote server URL (optional if saved via `kagi remote login`)
+        #[arg(long)]
+        remote: Option<String>,
+
+        /// Force plain text output (disable TUI)
+        #[arg(long)]
+        plain: bool,
+    },
+
+    /// Revoke a project token
+    RevokeToken {
+        /// Remote server URL (optional if saved via `kagi remote login`)
+        #[arg(long)]
+        remote: Option<String>,
+
+        /// Token ID to revoke
+        token_id: String,
     },
 
     /// Query server audit logs (admin only)
@@ -400,73 +442,6 @@ pub enum RemoteCommands {
     },
 }
 
-#[cfg(feature = "server")]
-#[derive(Subcommand)]
-pub enum TokenCommands {
-    /// List project tokens on the remote server
-    List {
-        /// Remote server URL (optional if saved via `kagi remote login`)
-        #[arg(long)]
-        remote: Option<String>,
-
-        /// Force plain text output (disable TUI)
-        #[arg(long)]
-        plain: bool,
-    },
-
-    /// Revoke a project token
-    Revoke {
-        /// Remote server URL (optional if saved via `kagi remote login`)
-        #[arg(long)]
-        remote: Option<String>,
-
-        /// Token ID to revoke
-        token_id: String,
-    },
-}
-
-#[cfg(feature = "server")]
-#[derive(Subcommand)]
-pub enum ProjectCommands {
-    /// Request to register this local project on a remote server
-    Join {
-        /// Remote server URL
-        #[arg(long)]
-        remote: String,
-    },
-
-    /// List projects on the remote server (admin only)
-    List {
-        /// Remote server URL (optional if saved via `kagi remote login`)
-        #[arg(long)]
-        remote: Option<String>,
-
-        /// Force plain text output (disable TUI)
-        #[arg(long)]
-        plain: bool,
-    },
-
-    /// Approve a pending project registration request (admin only)
-    Approve {
-        /// Remote server URL (optional if saved via `kagi remote login`)
-        #[arg(long)]
-        remote: Option<String>,
-
-        /// Project ID to approve
-        project_id: String,
-    },
-
-    /// Delete a project from the remote server (admin or project admin)
-    Del {
-        /// Remote server URL (optional if saved via `kagi remote login`)
-        #[arg(long)]
-        remote: Option<String>,
-
-        /// Project ID to delete
-        project_id: String,
-    },
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -478,11 +453,38 @@ mod tests {
         let cmd = Cli::command();
         let names: Vec<_> = cmd.get_subcommands().map(|c| c.get_name()).collect();
         assert!(names.contains(&"serve"), "serve should be present");
-        assert!(names.contains(&"push"), "push should be present");
-        assert!(names.contains(&"pull"), "pull should be present");
-        assert!(names.contains(&"status"), "status should be present");
-        assert!(names.contains(&"project"), "project should be present");
         assert!(names.contains(&"remote"), "remote should be present");
+
+        for removed in ["push", "pull", "status", "project", "token"] {
+            assert!(
+                !names.contains(&removed),
+                "{removed} should not be present as a top-level command"
+            );
+        }
+
+        let remote = cmd
+            .get_subcommands()
+            .find(|c| c.get_name() == "remote")
+            .expect("remote command should be present");
+        let remote_names: Vec<_> = remote.get_subcommands().map(|c| c.get_name()).collect();
+        for expected in [
+            "login",
+            "register",
+            "push",
+            "pull",
+            "status",
+            "projects",
+            "approve",
+            "remove",
+            "tokens",
+            "revoke-token",
+            "audit",
+        ] {
+            assert!(
+                remote_names.contains(&expected),
+                "remote {expected} should be present"
+            );
+        }
     }
 
     #[test]
@@ -514,6 +516,30 @@ mod tests {
             !names.contains(&"remote"),
             "remote should NOT be present when server feature is disabled"
         );
+    }
+
+    #[test]
+    fn test_git_backed_command_names_stay_available() {
+        let cmd = Cli::command();
+
+        let env = cmd
+            .get_subcommands()
+            .find(|c| c.get_name() == "env")
+            .expect("env command should be present");
+        let env_names: Vec<_> = env.get_subcommands().map(|c| c.get_name()).collect();
+        assert!(env_names.contains(&"remove"));
+        assert!(!env_names.contains(&"del"));
+
+        let member = cmd
+            .get_subcommands()
+            .find(|c| c.get_name() == "member")
+            .expect("member command should be present");
+        let member_names: Vec<_> = member.get_subcommands().map(|c| c.get_name()).collect();
+        assert!(member_names.contains(&"request"));
+        assert!(member_names.contains(&"approve"));
+        assert!(member_names.contains(&"remove"));
+        assert!(!member_names.contains(&"join"));
+        assert!(!member_names.contains(&"del"));
     }
 
     #[test]

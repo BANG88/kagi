@@ -604,7 +604,7 @@ async fn push_handler(
         if matches!(e, sqlx::Error::RowNotFound) {
             ServerError::Conflict {
                 code: "conflict".into(),
-                message: "remote revision changed; run kagi pull first".into(),
+                message: "remote revision changed; run kagi remote pull first".into(),
                 details: Some(json!({"remote_revision": base_revision + 1, "base_revision": base_revision})),
             }
         } else {
@@ -917,7 +917,7 @@ async fn join_handler(
             {
                 ServerError::Conflict {
                     code: "conflict".into(),
-                    message: "a pending join request with this name already exists".into(),
+                    message: "a pending member request with this name already exists".into(),
                     details: None,
                 }
             } else {

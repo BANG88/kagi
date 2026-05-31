@@ -36,7 +36,7 @@ pub fn run_tui_member_approve(base_path: PathBuf) -> anyhow::Result<Option<Strin
         .collect();
 
     if members.is_empty() {
-        println!("kagi: no pending join requests.");
+        println!("kagi: no pending member requests.");
         return Ok(None);
     }
 

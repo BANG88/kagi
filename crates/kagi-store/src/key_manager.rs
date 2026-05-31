@@ -263,7 +263,7 @@ impl KeyManager {
             .iter_mut()
             .find(|member| member.member_id == member_id && member.status == "pending")
             .ok_or_else(|| {
-                DomainError::StoreCorrupted(format!("join request not found: {member_id}"))
+                DomainError::StoreCorrupted(format!("member request not found: {member_id}"))
             })?;
         let recipient = x25519::Recipient::from_str(&member.recipient)
             .map_err(|e| DomainError::StoreCorrupted(format!("invalid member recipient: {e}")))?;

@@ -409,11 +409,23 @@ fn test_init_updates_gitignore_for_shareable_kagi_directory() {
 #[test]
 fn test_root_command_prints_help_successfully() {
     let mut cmd = kagi_bin();
-    cmd.assert()
+    let assert = cmd
+        .assert()
         .success()
         .stdout(predicate::str::contains("|___/   K"))
         .stdout(predicate::str::contains("Core Flow"))
         .stdout(predicate::str::contains("Usage"));
+    #[cfg(feature = "server")]
+    let assert = assert.stdout(predicate::str::contains(
+        "remote login, register, sync, and administer remotes",
+    ));
+    #[cfg(not(feature = "server"))]
+    let assert = assert.stdout(predicate::str::contains("remote login").not());
+    assert
+        .stdout(predicate::str::contains("  push").not())
+        .stdout(predicate::str::contains("  pull").not())
+        .stdout(predicate::str::contains("  status").not())
+        .stdout(predicate::str::contains("  project").not());
 }
 
 #[test]
@@ -613,7 +625,7 @@ fn test_get_lists_masked_service_envs_and_keys() {
 }
 
 #[test]
-fn test_join_and_member_approve_flow() {
+fn test_member_request_and_approve_flow() {
     let dir = TempDir::new().unwrap();
 
     let mut cmd = kagi_bin();
@@ -623,10 +635,10 @@ fn test_join_and_member_approve_flow() {
 
     let mut cmd = kagi_bin();
     cmd.current_dir(&dir);
-    cmd.args(["member", "join", "--name", "alice"]);
+    cmd.args(["member", "request", "--name", "alice"]);
     cmd.assert()
         .success()
-        .stdout(predicate::str::contains("created join request"))
+        .stdout(predicate::str::contains("created member request"))
         .stdout(predicate::str::contains("kagi member approve"));
 
     let access_path = dir.path().join(".kagi/access.json");
@@ -648,7 +660,7 @@ fn test_join_and_member_approve_flow() {
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("Members"))
-        .stdout(predicate::str::contains("Join Requests"))
+        .stdout(predicate::str::contains("Member Requests"))
         .stdout(predicate::str::contains("alice"));
 
     let mut cmd = kagi_bin();
@@ -671,7 +683,7 @@ fn test_join_and_member_approve_flow() {
 }
 
 #[test]
-fn test_multiple_join_requests_can_be_pending_together() {
+fn test_multiple_member_requests_can_be_pending_together() {
     let dir = TempDir::new().unwrap();
 
     let mut cmd = kagi_bin();
@@ -681,12 +693,12 @@ fn test_multiple_join_requests_can_be_pending_together() {
 
     let mut cmd = kagi_bin();
     cmd.current_dir(&dir);
-    cmd.args(["member", "join", "--name", "alice"]);
+    cmd.args(["member", "request", "--name", "alice"]);
     cmd.assert().success();
 
     let mut cmd = kagi_bin();
     cmd.current_dir(&dir);
-    cmd.args(["member", "join", "--name", "bob"]);
+    cmd.args(["member", "request", "--name", "bob"]);
     cmd.assert().success();
 
     let access: Value = serde_json::from_str(
@@ -715,7 +727,7 @@ fn test_member_remove_requires_interactive_confirmation() {
 
     let mut cmd = kagi_bin();
     cmd.current_dir(&dir);
-    cmd.args(["member", "del", "kgm_fake"]);
+    cmd.args(["member", "remove", "kgm_fake"]);
     cmd.assert()
         .failure()
         .stderr(predicate::str::contains("requires an interactive terminal"));
@@ -1476,7 +1488,7 @@ fn test_env_list_shows_configured_envs() {
 }
 
 #[test]
-fn test_env_del_requires_interactive_confirmation() {
+fn test_env_remove_requires_interactive_confirmation() {
     let dir = TempDir::new().unwrap();
 
     let mut cmd = kagi_bin();
@@ -1486,7 +1498,7 @@ fn test_env_del_requires_interactive_confirmation() {
 
     let mut cmd = kagi_bin();
     cmd.current_dir(&dir);
-    cmd.args(["env", "del", "staging"]);
+    cmd.args(["env", "remove", "staging"]);
     cmd.assert()
         .failure()
         .stderr(predicate::str::contains("requires an interactive terminal"));
@@ -1685,7 +1697,7 @@ fn test_server_member_join_approve_flow() {
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
-    cmd.args(["project", "join", "--remote", &server_url]);
+    cmd.args(["remote", "register", "--remote", &server_url]);
     cmd.assert().success();
 
     let kagi_json_path = project_dir.path().join(".kagi/kagi.json");
@@ -1696,17 +1708,17 @@ fn test_server_member_join_approve_flow() {
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
     cmd.env("KAGI_ADMIN_TOKEN", &admin_token);
-    cmd.args(["project", "approve", "--remote", &server_url, &project_id]);
+    cmd.args(["remote", "approve", "--remote", &server_url, &project_id]);
     cmd.assert().success();
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
-    cmd.arg("pull");
+    cmd.args(["remote", "pull"]);
     cmd.assert().success();
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
-    cmd.args(["member", "join", "--name", "alice"]);
+    cmd.args(["member", "request", "--name", "alice"]);
     cmd.assert().success();
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
@@ -1735,7 +1747,7 @@ fn test_server_member_join_approve_flow() {
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
-    cmd.arg("push");
+    cmd.args(["remote", "push"]);
     cmd.assert().success();
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
@@ -1777,7 +1789,7 @@ fn test_server_push_pull_status() {
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
-    cmd.args(["project", "join", "--remote", &server_url]);
+    cmd.args(["remote", "register", "--remote", &server_url]);
     cmd.assert().success();
 
     let config: Value = serde_json::from_str(
@@ -1789,12 +1801,12 @@ fn test_server_push_pull_status() {
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
     cmd.env("KAGI_ADMIN_TOKEN", &admin_token);
-    cmd.args(["project", "approve", "--remote", &server_url, &project_id]);
+    cmd.args(["remote", "approve", "--remote", &server_url, &project_id]);
     cmd.assert().success();
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
-    cmd.arg("pull");
+    cmd.args(["remote", "pull"]);
     cmd.assert().success();
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
@@ -1804,21 +1816,21 @@ fn test_server_push_pull_status() {
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
-    cmd.arg("push");
+    cmd.args(["remote", "push"]);
     let assert = cmd.assert().success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(stdout.contains("kagi: pushed revision"));
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
-    cmd.arg("pull");
+    cmd.args(["remote", "pull"]);
     let assert = cmd.assert().success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(stdout.contains("kagi: pulled revision"));
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
-    cmd.arg("status");
+    cmd.args(["remote", "status"]);
     let assert = cmd.assert().success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(
@@ -1833,12 +1845,12 @@ fn test_server_push_pull_status() {
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
-    cmd.arg("push");
+    cmd.args(["remote", "push"]);
     cmd.assert().success();
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
-    cmd.arg("status");
+    cmd.args(["remote", "status"]);
     let assert = cmd.assert().success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(
@@ -1880,7 +1892,7 @@ fn test_server_cross_checkout_join_request_visible() {
 
     let mut cmd = kagi_bin_with_home(owner_home.path());
     cmd.current_dir(&owner_dir);
-    cmd.args(["project", "join", "--remote", &server_url]);
+    cmd.args(["remote", "register", "--remote", &server_url]);
     cmd.assert().success();
 
     let kagi_json_path = owner_dir.path().join(".kagi/kagi.json");
@@ -1891,17 +1903,17 @@ fn test_server_cross_checkout_join_request_visible() {
     let mut cmd = kagi_bin_with_home(owner_home.path());
     cmd.current_dir(&owner_dir);
     cmd.env("KAGI_ADMIN_TOKEN", &admin_token);
-    cmd.args(["project", "approve", "--remote", &server_url, &project_id]);
+    cmd.args(["remote", "approve", "--remote", &server_url, &project_id]);
     cmd.assert().success();
 
     let mut cmd = kagi_bin_with_home(owner_home.path());
     cmd.current_dir(&owner_dir);
-    cmd.arg("pull");
+    cmd.args(["remote", "pull"]);
     cmd.assert().success();
 
     let mut cmd = kagi_bin_with_home(owner_home.path());
     cmd.current_dir(&owner_dir);
-    cmd.arg("push");
+    cmd.args(["remote", "push"]);
     cmd.assert().success();
 
     copy_dir_all(
@@ -1917,7 +1929,7 @@ fn test_server_cross_checkout_join_request_visible() {
 
     let mut cmd = kagi_bin_with_home(joiner_home.path());
     cmd.current_dir(&joiner_dir);
-    cmd.args(["member", "join", "--name", "alice"]);
+    cmd.args(["member", "request", "--name", "alice"]);
     cmd.assert().success();
 
     let joiner_access_path = joiner_dir.path().join(".kagi/access.json");
@@ -1965,7 +1977,7 @@ fn test_server_cross_checkout_join_request_visible() {
             .unwrap()
             .iter()
             .all(|m| m["member_id"] != member_id),
-        "member list should not persist the server join request locally: {owner_access_after_list}"
+        "member list should not persist the server member request locally: {owner_access_after_list}"
     );
 
     let mut cmd = kagi_bin_with_home(owner_home.path());
@@ -1994,7 +2006,7 @@ fn test_server_cross_checkout_join_request_visible() {
 
     let mut cmd = kagi_bin_with_home(owner_home.path());
     cmd.current_dir(&owner_dir);
-    cmd.arg("push");
+    cmd.args(["remote", "push"]);
     cmd.assert().success();
 
     let mut cmd = kagi_bin_with_home(owner_home.path());
@@ -2036,7 +2048,7 @@ fn test_server_cross_checkout_join_request_visible() {
 
     let mut cmd = kagi_bin_with_home(joiner_home.path());
     cmd.current_dir(&joiner_dir);
-    cmd.arg("pull");
+    cmd.args(["remote", "pull"]);
     cmd.assert().success();
 
     let mut cmd = kagi_bin_with_home(joiner_home.path());
@@ -2046,7 +2058,7 @@ fn test_server_cross_checkout_join_request_visible() {
 
     let mut cmd = kagi_bin_with_home(joiner_home.path());
     cmd.current_dir(&joiner_dir);
-    cmd.arg("push");
+    cmd.args(["remote", "push"]);
     cmd.assert().success();
 }
 
@@ -2066,7 +2078,7 @@ fn test_server_pull_blocks_with_pending_approval() {
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
-    cmd.args(["project", "join", "--remote", &server_url]);
+    cmd.args(["remote", "register", "--remote", &server_url]);
     cmd.assert().success();
 
     let kagi_json_path = project_dir.path().join(".kagi/kagi.json");
@@ -2077,17 +2089,17 @@ fn test_server_pull_blocks_with_pending_approval() {
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
     cmd.env("KAGI_ADMIN_TOKEN", &admin_token);
-    cmd.args(["project", "approve", "--remote", &server_url, &project_id]);
+    cmd.args(["remote", "approve", "--remote", &server_url, &project_id]);
     cmd.assert().success();
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
-    cmd.arg("pull");
+    cmd.args(["remote", "pull"]);
     cmd.assert().success();
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
-    cmd.args(["member", "join", "--name", "bob"]);
+    cmd.args(["member", "request", "--name", "bob"]);
     cmd.assert().success();
 
     let access_path = project_dir.path().join(".kagi/access.json");
@@ -2119,13 +2131,13 @@ fn test_server_pull_blocks_with_pending_approval() {
 
     let mut cmd = kagi_bin_with_home(kagi_home2.path());
     cmd.current_dir(&project_dir2);
-    cmd.arg("push");
+    cmd.args(["remote", "push"]);
     cmd.assert().success();
 
     // In the original, pull should fail because remote is ahead and local has pending approval
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
-    cmd.arg("pull");
+    cmd.args(["remote", "pull"]);
     let assert = cmd.assert().failure();
     let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
     assert!(
