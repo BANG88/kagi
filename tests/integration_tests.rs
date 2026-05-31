@@ -1,6 +1,7 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 use serde_json::Value;
+use std::fs;
 #[cfg(feature = "server")]
 use std::io::{Read, Write};
 use std::path::Path;
@@ -44,7 +45,7 @@ struct ServerGuard {
 impl Drop for ServerGuard {
     fn drop(&mut self) {
         if let Err(e) = self.child.kill() {
-            eprintln!("Warning: failed to kill server process: {}", e);
+            eprintln!("Warning: failed to kill server process: {e}");
         }
         let _ = self.child.wait();
     }
@@ -148,7 +149,7 @@ fn spawn_server() -> (ServerGuard, String, u16) {
     let mut ready = false;
     for _ in 0..50 {
         std::thread::sleep(std::time::Duration::from_millis(100));
-        if let Ok(mut stream) = std::net::TcpStream::connect(format!("127.0.0.1:{}", port))
+        if let Ok(mut stream) = std::net::TcpStream::connect(format!("127.0.0.1:{port}"))
             && stream
                 .write_all(b"GET /v1/server-key HTTP/1.1\r\nHost: localhost\r\n\r\n")
                 .is_ok()
@@ -163,10 +164,7 @@ fn spawn_server() -> (ServerGuard, String, u16) {
 
     if !ready {
         let _ = child.kill();
-        panic!(
-            "server did not become HTTP-ready on port {} within 5 seconds",
-            port
-        );
+        panic!("server did not become HTTP-ready on port {port} within 5 seconds");
     }
 
     (
@@ -469,13 +467,11 @@ fn test_set_does_not_print_secret_value() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(
         stdout.contains("api/development.API_KEY"),
-        "expected key in set output: {}",
-        stdout
+        "expected key in set output: {stdout}"
     );
     assert!(
         !stdout.contains("super_secret"),
-        "set output leaked secret: {}",
-        stdout
+        "set output leaked secret: {stdout}"
     );
 }
 
@@ -556,38 +552,31 @@ fn test_get_lists_masked_service_envs_and_keys() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(
         stdout.contains("api"),
-        "expected api in get output: {}",
-        stdout
+        "expected api in get output: {stdout}"
     );
     assert!(
         stdout.contains("  development"),
-        "expected development env under api: {}",
-        stdout
+        "expected development env under api: {stdout}"
     );
     assert!(
         stdout.contains("Key"),
-        "expected table header in get output: {}",
-        stdout
+        "expected table header in get output: {stdout}"
     );
     assert!(
         stdout.contains("Value"),
-        "expected table header in get output: {}",
-        stdout
+        "expected table header in get output: {stdout}"
     );
     assert!(
         stdout.contains("KEY"),
-        "expected KEY in get output: {}",
-        stdout
+        "expected KEY in get output: {stdout}"
     );
     assert!(
         stdout.contains("********"),
-        "expected masked value in get output: {}",
-        stdout
+        "expected masked value in get output: {stdout}"
     );
     assert!(
         !stdout.contains("val"),
-        "get should not reveal values by default: {}",
-        stdout
+        "get should not reveal values by default: {stdout}"
     );
 
     let mut cmd = kagi_bin();
@@ -597,33 +586,24 @@ fn test_get_lists_masked_service_envs_and_keys() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(
         stdout.contains("api\n  development"),
-        "expected service/env layout in get api: {}",
-        stdout
+        "expected service/env layout in get api: {stdout}"
     );
     assert!(
         stdout.contains("Key"),
-        "expected table header in get api: {}",
-        stdout
+        "expected table header in get api: {stdout}"
     );
     assert!(
         stdout.contains("Value"),
-        "expected table header in get api: {}",
-        stdout
+        "expected table header in get api: {stdout}"
     );
-    assert!(
-        stdout.contains("KEY"),
-        "expected KEY in get api: {}",
-        stdout
-    );
+    assert!(stdout.contains("KEY"), "expected KEY in get api: {stdout}");
     assert!(
         stdout.contains("********"),
-        "expected masked value in get api: {}",
-        stdout
+        "expected masked value in get api: {stdout}"
     );
     assert!(
         !stdout.contains("val"),
-        "get should not reveal values by default: {}",
-        stdout
+        "get should not reveal values by default: {stdout}"
     );
 
     let mut cmd = kagi_bin();
@@ -838,7 +818,7 @@ fn test_doctor_fix_requires_interactive() {
     let kagi_home = std::env::temp_dir().join("kagi-integration-tests");
     let journal_dir = kagi_home.join("projects");
     std::fs::create_dir_all(&journal_dir).unwrap();
-    let journal_path = journal_dir.join(format!("{}.rotation.json", project_id));
+    let journal_path = journal_dir.join(format!("{project_id}.rotation.json"));
     std::fs::write(
         &journal_path,
         serde_json::to_string_pretty(&journal).unwrap(),
@@ -1092,6 +1072,42 @@ fn test_import_force_overwrites() {
 
     assert_run_env(dir.path(), &["api"], "API_KEY", "new_value");
     assert_run_env(dir.path(), &["api"], "EXTRA_KEY", "extra");
+}
+
+#[test]
+fn test_import_conflict_without_force_does_not_overwrite_non_interactive() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    std::fs::write(dir.path().join("first.env"), "API_KEY=old_value\n").unwrap();
+    std::fs::write(
+        dir.path().join("second.env"),
+        "API_KEY=new_value\nEXTRA_KEY=extra\n",
+    )
+    .unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["import", "api", "--file", "first.env"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["import", "api", "--file", "second.env"]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("aborted."));
+
+    assert_run_env(dir.path(), &["api"], "API_KEY", "old_value");
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(dir.path());
+    cmd.args(["run", "api", "sh", "-c", "test -z \"${EXTRA_KEY+x}\""]);
+    cmd.assert().success();
 }
 
 #[test]
@@ -1421,19 +1437,16 @@ fn test_get_service_groups_environment_scopes() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(
         stdout.contains("api\n  development"),
-        "expected api/development layout: {}",
-        stdout
+        "expected api/development layout: {stdout}"
     );
     assert!(
         stdout.contains("  production"),
-        "expected api/production layout: {}",
-        stdout
+        "expected api/production layout: {stdout}"
     );
-    assert!(stdout.contains("KEY"), "expected key: {}", stdout);
+    assert!(stdout.contains("KEY"), "expected key: {stdout}");
     assert!(
         !stdout.contains("production-value"),
-        "get should mask values by default: {}",
-        stdout
+        "get should mask values by default: {stdout}"
     );
 }
 
@@ -1453,14 +1466,12 @@ fn test_env_list_shows_configured_envs() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(
         stdout.contains("development"),
-        "expected development: {}",
-        stdout
+        "expected development: {stdout}"
     );
-    assert!(stdout.contains("staging"), "expected staging: {}", stdout);
+    assert!(stdout.contains("staging"), "expected staging: {stdout}");
     assert!(
         stdout.contains("production"),
-        "expected production: {}",
-        stdout
+        "expected production: {stdout}"
     );
 }
 
@@ -1662,7 +1673,7 @@ fn test_import_captures_description_from_comment() {
 #[cfg(feature = "server")]
 fn test_server_member_join_approve_flow() {
     let (_server, admin_token, port) = spawn_server();
-    let server_url = format!("http://127.0.0.1:{}", port);
+    let server_url = format!("http://127.0.0.1:{port}");
 
     let project_dir = TempDir::new().unwrap();
     let kagi_home = TempDir::new().unwrap();
@@ -1754,7 +1765,7 @@ fn test_server_member_join_approve_flow() {
 #[cfg(feature = "server")]
 fn test_server_push_pull_status() {
     let (_server, admin_token, port) = spawn_server();
-    let server_url = format!("http://127.0.0.1:{}", port);
+    let server_url = format!("http://127.0.0.1:{port}");
 
     let project_dir = TempDir::new().unwrap();
     let kagi_home = TempDir::new().unwrap();
@@ -1812,8 +1823,7 @@ fn test_server_push_pull_status() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(
         stdout.contains("equal"),
-        "expected status to show equal: {}",
-        stdout
+        "expected status to show equal: {stdout}"
     );
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
@@ -1833,8 +1843,7 @@ fn test_server_push_pull_status() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(
         stdout.contains("equal"),
-        "expected status to show equal after re-push: {}",
-        stdout
+        "expected status to show equal after re-push: {stdout}"
     );
 }
 
@@ -1857,7 +1866,7 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
 #[cfg(feature = "server")]
 fn test_server_cross_checkout_join_request_visible() {
     let (_server, admin_token, port) = spawn_server();
-    let server_url = format!("http://127.0.0.1:{}", port);
+    let server_url = format!("http://127.0.0.1:{port}");
 
     let owner_dir = TempDir::new().unwrap();
     let owner_home = TempDir::new().unwrap();
@@ -1901,8 +1910,8 @@ fn test_server_cross_checkout_join_request_visible() {
     )
     .unwrap();
     copy_dir_all(
-        &owner_home.path().join(format!("projects/{}", project_id)),
-        &joiner_home.path().join(format!("projects/{}", project_id)),
+        &owner_home.path().join(format!("projects/{project_id}")),
+        &joiner_home.path().join(format!("projects/{project_id}")),
     )
     .unwrap();
 
@@ -1941,13 +1950,11 @@ fn test_server_cross_checkout_join_request_visible() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(
         stdout.contains("alice"),
-        "expected alice in member list: {}",
-        stdout
+        "expected alice in member list: {stdout}"
     );
     assert!(
         stdout.contains("pending"),
-        "expected pending status: {}",
-        stdout
+        "expected pending status: {stdout}"
     );
 
     let owner_access_after_list: Value =
@@ -1958,8 +1965,7 @@ fn test_server_cross_checkout_join_request_visible() {
             .unwrap()
             .iter()
             .all(|m| m["member_id"] != member_id),
-        "member list should not persist the server join request locally: {}",
-        owner_access_after_list
+        "member list should not persist the server join request locally: {owner_access_after_list}"
     );
 
     let mut cmd = kagi_bin_with_home(owner_home.path());
@@ -1969,8 +1975,7 @@ fn test_server_cross_checkout_join_request_visible() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(
         stdout.contains("Token will be activated"),
-        "expected server-mode approval output: {}",
-        stdout
+        "expected server-mode approval output: {stdout}"
     );
 
     let access_after_approve: Value =
@@ -1984,9 +1989,7 @@ fn test_server_cross_checkout_join_request_visible() {
     let approved_signing_public_key = member_after_approve["signing_public_key"].as_str();
     assert!(
         approved_signing_public_key.is_some_and(|key| key.len() > 20),
-        "expected signing_public_key immediately after approve, got member: {}, access: {}",
-        member_after_approve,
-        access_after_approve
+        "expected signing_public_key immediately after approve, got member: {member_after_approve}, access: {access_after_approve}"
     );
 
     let mut cmd = kagi_bin_with_home(owner_home.path());
@@ -2001,13 +2004,11 @@ fn test_server_cross_checkout_join_request_visible() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(
         stdout.contains("alice"),
-        "expected alice after push: {}",
-        stdout
+        "expected alice after push: {stdout}"
     );
     assert!(
         stdout.contains("active"),
-        "expected active status after push: {}",
-        stdout
+        "expected active status after push: {stdout}"
     );
 
     let access: Value =
@@ -2030,8 +2031,7 @@ fn test_server_cross_checkout_join_request_visible() {
     let signing_public_key = member["signing_public_key"].as_str();
     assert!(
         signing_public_key.is_some_and(|key| key.len() > 20),
-        "expected signing_public_key to be present, got member: {}",
-        member
+        "expected signing_public_key to be present, got member: {member}"
     );
 
     let mut cmd = kagi_bin_with_home(joiner_home.path());
@@ -2054,7 +2054,7 @@ fn test_server_cross_checkout_join_request_visible() {
 #[cfg(feature = "server")]
 fn test_server_pull_blocks_with_pending_approval() {
     let (_server, admin_token, port) = spawn_server();
-    let server_url = format!("http://127.0.0.1:{}", port);
+    let server_url = format!("http://127.0.0.1:{port}");
 
     let project_dir = TempDir::new().unwrap();
     let kagi_home = TempDir::new().unwrap();
@@ -2130,8 +2130,7 @@ fn test_server_pull_blocks_with_pending_approval() {
     let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
     assert!(
         stderr.contains("Cannot pull while member approval metadata is pending"),
-        "expected pull guard error, got: {}",
-        stderr
+        "expected pull guard error, got: {stderr}"
     );
 
     // Verify the pending approval metadata is still present after the failed pull
@@ -2150,5 +2149,103 @@ fn test_server_pull_blocks_with_pending_approval() {
     assert!(
         has_pending,
         "expected pending approval metadata to survive the failed pull"
+    );
+}
+
+#[test]
+fn test_completions_generates_shell_script() {
+    let mut cmd = kagi_bin();
+    cmd.args(["completions", "bash"]);
+    cmd.assert()
+        .success()
+        .stdout(predicates::str::contains("_kagi"));
+}
+
+#[test]
+fn test_completions_rejects_unknown_shell() {
+    let mut cmd = kagi_bin();
+    cmd.args(["completions", "unknown_shell"]);
+    cmd.assert()
+        .failure()
+        .stderr(predicates::str::contains("unsupported shell"));
+}
+
+#[test]
+fn test_init_detects_env_files_in_non_interactive() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join(".env"), "ROOT_KEY=root\n").unwrap();
+    fs::create_dir(dir.path().join("api")).unwrap();
+    fs::write(dir.path().join("api/.env"), "API_KEY=api\n").unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(dir.path());
+    cmd.args(["init", "--envs", "development,test"]);
+    let assert = cmd.assert().success();
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+    assert!(
+        stderr.contains("found 2 .env file(s)"),
+        "expected note about found .env files in non-interactive mode, got: {stderr}"
+    );
+}
+
+#[test]
+fn test_init_no_migrate_skips_env_files() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join(".env"), "ROOT_KEY=root\n").unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(dir.path());
+    cmd.args(["init", "--no-migrate"]);
+    let assert = cmd.assert().success();
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+    assert!(
+        !stderr.contains(".env file(s)"),
+        "expected no migration note with --no-migrate"
+    );
+}
+
+#[test]
+fn test_env_list_plain_outputs_text() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["init", "--envs", "development,staging"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["env", "list", "--plain"]);
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("development"),
+        "expected development: {stdout}"
+    );
+    assert!(stdout.contains("staging"), "expected staging: {stdout}");
+}
+
+#[test]
+fn test_search_plain_outputs_text() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["set", "api", "HOST", "localhost"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["search", "--plain", "HOST"]);
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("api/development.HOST"),
+        "expected match: {stdout}"
     );
 }

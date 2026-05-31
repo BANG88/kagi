@@ -110,7 +110,7 @@ fn decrypt_age(encrypted: &[u8], identity: &x25519::Identity) -> Result<Vec<u8>,
 
 pub fn parse_recipient(s: &str) -> Result<x25519::Recipient, DomainError> {
     x25519::Recipient::from_str(s)
-        .map_err(|e| DomainError::StoreCorrupted(format!("invalid recipient: {}", e)))
+        .map_err(|e| DomainError::RemoteProtocolError(format!("invalid recipient: {e}")))
 }
 
 #[cfg(test)]

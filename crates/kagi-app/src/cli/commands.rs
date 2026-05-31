@@ -1,5 +1,6 @@
 use crate::application::export_env::ExportEnvService;
 use crate::application::get_secret::GetSecretService;
+use crate::application::import_env_file::ImportReport;
 use crate::application::init_service::InitService;
 use crate::application::list_services::ListServicesService;
 use crate::application::run_command::RunCommandService;
@@ -14,6 +15,7 @@ use crate::cli::style::Palette;
 use anyhow::Context;
 #[cfg(feature = "server")]
 use base64::Engine as _;
+use clap::CommandFactory;
 #[cfg(feature = "server")]
 use ed25519_dalek::Signer;
 use kagi_crypto::xchacha_crypto::XChaChaEncryptor;
@@ -89,7 +91,7 @@ fn draw_key_table_with_indent(
     let max_desc = if has_desc {
         items
             .iter()
-            .filter_map(|(_, _, d)| d.as_ref().map(|s| s.len()))
+            .filter_map(|(_, _, d)| d.as_ref().map(std::string::String::len))
             .max()
             .unwrap_or(0)
             .max(4)
@@ -220,7 +222,7 @@ fn list_service_scopes(
     list_service: &ListServicesService<FileStore>,
     service: &str,
 ) -> anyhow::Result<Vec<String>> {
-    let prefix = format!("{}/", service);
+    let prefix = format!("{service}/");
     let mut scopes: Vec<String> = list_service
         .execute(None)?
         .into_iter()
@@ -252,7 +254,7 @@ fn draw_service_envs(
             println!(
                 "    {} {}",
                 c.prefix(),
-                c.muted(&format!("no secrets in {}", env))
+                c.muted(&format!("no secrets in {env}"))
             );
         } else {
             draw_key_table_with_indent(&items, show_values, c, "    ");
@@ -294,7 +296,7 @@ fn draw_all_service_envs(
             println!(
                 "    {} {}",
                 c.prefix(),
-                c.muted(&format!("no secrets in {}", env))
+                c.muted(&format!("no secrets in {env}"))
             );
         } else {
             draw_key_table_with_indent(&items, show_values, c, "    ");
@@ -305,7 +307,7 @@ fn draw_all_service_envs(
 }
 
 fn service_scopes_from_store(store: &FileStore, service: &str) -> anyhow::Result<Vec<String>> {
-    let prefix = format!("{}/", service);
+    let prefix = format!("{service}/");
     let mut scopes: Vec<String> = store
         .list_services()?
         .into_iter()
@@ -318,9 +320,9 @@ fn service_scopes_from_store(store: &FileStore, service: &str) -> anyhow::Result
 fn env_file_name(scope: &str) -> anyhow::Result<String> {
     let env = scope.split_once('/').map_or(scope, |(_, env)| env);
     if env.is_empty() || env.contains('/') || env.contains('\\') {
-        Err(anyhow::anyhow!("invalid environment name: {}", env))
+        Err(anyhow::anyhow!("invalid environment name: {env}"))
     } else {
-        Ok(format!(".env.{}", env))
+        Ok(format!(".env.{env}"))
     }
 }
 
@@ -351,7 +353,7 @@ fn has_encrypted_store(path: &Path) -> anyhow::Result<bool> {
 
 fn scope_name(service: Option<&str>, env: &str) -> String {
     match service {
-        Some(service) => format!("{}/{}", service, env),
+        Some(service) => format!("{service}/{env}"),
         None => env.to_string(),
     }
 }
@@ -372,7 +374,7 @@ fn ensure_default_envs_for_scope(store: &FileStore, scope: &str) -> anyhow::Resu
     if let Some(service) = service_from_scope(scope) {
         store
             .ensure_service_envs(service)
-            .map_err(|e| anyhow::anyhow!("Failed to initialize default envs: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to initialize default envs: {e}"))?;
     }
     Ok(())
 }
@@ -532,9 +534,7 @@ fn parse_get_selection(
                 Ok(GetSelection::Key(scope_name(Some(&service), &env), key))
             } else {
                 Err(anyhow::anyhow!(
-                    "Unknown environment '{}'. Use `kagi get {}` to list available environments.",
-                    env,
-                    service
+                    "Unknown environment '{env}'. Use `kagi get {service}` to list available environments."
                 ))
             }
         }
@@ -602,8 +602,7 @@ fn parse_export_selection(
 fn confirm_secret_output(tty: bool, operation: &str, c: &Palette) -> anyhow::Result<()> {
     if !tty || !io::stdin().is_terminal() {
         return Err(anyhow::anyhow!(
-            "{} prints decrypted secrets and requires an interactive terminal. Use `kagi run` for scripts that need secrets injected into a child process.",
-            operation
+            "{operation} prints decrypted secrets and requires an interactive terminal. Use `kagi run` for scripts that need secrets injected into a child process."
         ));
     }
 
@@ -611,7 +610,7 @@ fn confirm_secret_output(tty: bool, operation: &str, c: &Palette) -> anyhow::Res
         "{} {} {} [y/N]: ",
         c.prefix(),
         c.warning("warning:"),
-        c.info(&format!("{} will print decrypted secrets.", operation))
+        c.info(&format!("{operation} will print decrypted secrets."))
     );
     let mut input = String::new();
     std::io::stdin().read_line(&mut input)?;
@@ -634,8 +633,7 @@ fn confirm_env_delete(tty: bool, env: &str, c: &Palette) -> anyhow::Result<()> {
         c.prefix(),
         c.warning("warning:"),
         c.info(&format!(
-            "this will delete '{}' from every service. Type '{}' to confirm.",
-            env, env
+            "this will delete '{env}' from every service. Type '{env}' to confirm."
         ))
     );
     eprint!("{} {} ", c.prefix(), c.prompt("confirm:"));
@@ -659,10 +657,7 @@ fn confirm_unset(tty: bool, scope: &str, key: &str, c: &Palette) -> anyhow::Resu
         "{} {} {} [y/N]: ",
         c.prefix(),
         c.warning("warning:"),
-        c.info(&format!(
-            "this will delete '{}.{}' permanently.",
-            scope, key
-        ))
+        c.info(&format!("this will delete '{scope}.{key}' permanently."))
     );
     let mut input = String::new();
     std::io::stdin().read_line(&mut input)?;
@@ -670,6 +665,75 @@ fn confirm_unset(tty: bool, scope: &str, key: &str, c: &Palette) -> anyhow::Resu
         Ok(())
     } else {
         Err(anyhow::anyhow!("aborted"))
+    }
+}
+
+fn confirm_import_preview(
+    service_name: &str,
+    file: &str,
+    imported: &[String],
+    overwritten: &[String],
+    c: &Palette,
+) -> anyhow::Result<bool> {
+    eprintln!(
+        "{} {} {} keys from {} into {}",
+        c.prefix(),
+        c.info("preview:"),
+        c.accent(&imported.len().to_string()),
+        c.accent(file),
+        c.accent(service_name)
+    );
+    if !overwritten.is_empty() {
+        eprintln!(
+            "{} {} {} keys will overwrite existing values",
+            c.prefix(),
+            c.warning("warning:"),
+            c.warning(&overwritten.len().to_string())
+        );
+    }
+    for key in imported {
+        let status = if overwritten.contains(key) {
+            c.warning("overwrite")
+        } else {
+            c.success("new")
+        };
+        eprintln!("  {}.{} {}", c.accent(service_name), c.key(key), status);
+    }
+    eprint!("{} {} [y/N]: ", c.prefix(), c.prompt("import?"));
+    std::io::stderr().flush()?;
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    Ok(input.trim().eq_ignore_ascii_case("y"))
+}
+
+fn print_import_report(report: &ImportReport, service_name: &str, file: &str, c: &Palette) {
+    println!(
+        "{} {} {} keys from {}",
+        c.prefix(),
+        c.success("Imported"),
+        c.success(&report.imported.len().to_string()),
+        c.accent(file)
+    );
+    if !report.overwritten.is_empty() {
+        println!(
+            "{} {} {} keys overwritten",
+            c.prefix(),
+            c.warning("warning:"),
+            c.warning(&report.overwritten.len().to_string())
+        );
+    }
+    for key in &report.imported {
+        let overwritten_marker = if report.overwritten.contains(key) {
+            c.warning(" (overwritten)")
+        } else {
+            String::new()
+        };
+        println!(
+            "  {}.{}{}",
+            c.accent(service_name),
+            c.key(key),
+            overwritten_marker
+        );
     }
 }
 
@@ -685,8 +749,7 @@ fn confirm_member_remove(tty: bool, member_id: &str, c: &Palette) -> anyhow::Res
         c.prefix(),
         c.warning("warning:"),
         c.info(&format!(
-            "this will remove member '{}' and rotate the project key. Type '{}' to confirm.",
-            member_id, member_id
+            "this will remove member '{member_id}' and rotate the project key. Type '{member_id}' to confirm."
         ))
     );
     eprint!("{} {} ", c.prefix(), c.prompt("confirm:"));
@@ -754,9 +817,7 @@ fn apply_server_member_approval(
         .filter(|member| member.status == "pending")
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "server issued a token for `{}` but the local pending join request is missing. Recovery: run `kagi pull`; if the member is still pending, rerun `kagi member approve {}`.",
-                member_id,
-                member_id
+                "server issued a token for `{member_id}` but the local pending join request is missing. Recovery: run `kagi pull`; if the member is still pending, rerun `kagi member approve {member_id}`."
             )
         })?;
     if pending_member
@@ -765,32 +826,29 @@ fn apply_server_member_approval(
         .is_none_or(|key| key.trim().is_empty())
     {
         return Err(anyhow::anyhow!(
-            "server join request for `{}` is missing signing_public_key. Ask the member to rerun `kagi member join` with the updated CLI.",
-            member_id
+            "server join request for `{member_id}` is missing signing_public_key. Ask the member to rerun `kagi member join` with the updated CLI."
         ));
     }
     let recipient = age::x25519::Recipient::from_str(&pending_member.recipient)
-        .map_err(|e| anyhow::anyhow!("invalid member recipient: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("invalid member recipient: {e}"))?;
     let encrypted = kagi_sync::infrastructure::remote_envelope::encrypt_bytes(
         response.project_token.as_bytes(),
         &recipient,
     )
-    .map_err(|e| anyhow::anyhow!("failed to encrypt token: {}", e))?;
+    .map_err(|e| anyhow::anyhow!("failed to encrypt token: {e}"))?;
     let wrapped_token = base64::engine::general_purpose::STANDARD.encode(&encrypted);
 
     let remote_meta = add_pending_remote_approval(meta, member_id, &response.token_id);
     remote_store.save_remote_metadata(&remote_meta).with_context(|| {
         format!(
-            "server issued a token for `{}` but kagi could not save pending remote approval metadata. Recovery: fix local kagi data directory permissions, then rerun `kagi member approve {}`.",
-            member_id, member_id
+            "server issued a token for `{member_id}` but kagi could not save pending remote approval metadata. Recovery: fix local kagi data directory permissions, then rerun `kagi member approve {member_id}`."
         )
     })?;
     let member = key_manager
         .approve_join_request_with_wrapped_token(member_id, &wrapped_token)
         .with_context(|| {
             format!(
-                "server issued a token for `{}` and pending remote approval metadata was saved, but kagi could not persist local access state. Recovery: fix .kagi/access.json or filesystem permissions, then rerun `kagi member approve {}`.",
-                member_id, member_id
+                "server issued a token for `{member_id}` and pending remote approval metadata was saved, but kagi could not persist local access state. Recovery: fix .kagi/access.json or filesystem permissions, then rerun `kagi member approve {member_id}`."
             )
         })?;
 
@@ -914,7 +972,7 @@ async fn fetch_server_join_requests(
         .ok_or_else(|| anyhow::anyhow!("no remote metadata found"))?;
 
     let identity = key_manager.load_or_create_identity()?;
-    let request_id = format!("kgr_{}", nanoid::nanoid!(12));
+    let request_id = format!(r"kgr_{}", nanoid::nanoid!(12));
     let plaintext = kagi_sync::domain::envelope::RequestPlaintext {
         version: 1,
         request_id: request_id.clone(),
@@ -923,7 +981,7 @@ async fn fetch_server_join_requests(
             .unwrap(),
         operation: "status".into(),
         method: "POST".into(),
-        path: format!("/v1/projects/{}/status", project_id),
+        path: format!("/v1/projects/{project_id}/status"),
         project_id: Some(project_id.to_string()),
         token: Some(token),
         claim_secret: None,
@@ -1015,7 +1073,7 @@ async fn member_approve_server_mode(
         let server_request = server_requests
             .into_iter()
             .find(|r| r.member_id == member_id)
-            .ok_or_else(|| anyhow::anyhow!("join request not found on server: {}", member_id))?;
+            .ok_or_else(|| anyhow::anyhow!("join request not found on server: {member_id}"))?;
         key_manager.create_pending_member_from_server(
             member_id,
             &server_request.name,
@@ -1074,7 +1132,7 @@ pub fn collect_doctor_checks(base_path: &Path) -> anyhow::Result<(Vec<DoctorChec
                     checks.push(DoctorCheck {
                         name: "kagi.json format",
                         ok: false,
-                        detail: format!("unsupported version '{}'", version),
+                        detail: format!("unsupported version '{version}'"),
                     });
                     errors += 1;
                 }
@@ -1083,7 +1141,7 @@ pub fn collect_doctor_checks(base_path: &Path) -> anyhow::Result<(Vec<DoctorChec
                 checks.push(DoctorCheck {
                     name: "kagi.json format",
                     ok: false,
-                    detail: format!("invalid JSON: {}", e),
+                    detail: format!("invalid JSON: {e}"),
                 });
                 errors += 1;
             }
@@ -1111,7 +1169,7 @@ pub fn collect_doctor_checks(base_path: &Path) -> anyhow::Result<(Vec<DoctorChec
                 checks.push(DoctorCheck {
                     name: "access.json format",
                     ok: false,
-                    detail: format!("invalid JSON: {}", e),
+                    detail: format!("invalid JSON: {e}"),
                 });
                 errors += 1;
             }
@@ -1147,7 +1205,7 @@ pub fn collect_doctor_checks(base_path: &Path) -> anyhow::Result<(Vec<DoctorChec
             checks.push(DoctorCheck {
                 name: "project key",
                 ok: false,
-                detail: format!("cannot load: {}", e),
+                detail: format!("cannot load: {e}"),
             });
             errors += 1;
         }
@@ -1169,7 +1227,7 @@ pub fn collect_doctor_checks(base_path: &Path) -> anyhow::Result<(Vec<DoctorChec
                                 checks.push(DoctorCheck {
                                     name: "service decrypt",
                                     ok: false,
-                                    detail: format!("{}: {}", service, e),
+                                    detail: format!("{service}: {e}"),
                                 });
                             }
                         }
@@ -1179,7 +1237,7 @@ pub fn collect_doctor_checks(base_path: &Path) -> anyhow::Result<(Vec<DoctorChec
                     checks.push(DoctorCheck {
                         name: "service decrypt",
                         ok: true,
-                        detail: format!("{} services decrypted", decrypt_ok),
+                        detail: format!("{decrypt_ok} services decrypted"),
                     });
                 } else {
                     errors += 1;
@@ -1196,7 +1254,7 @@ pub fn collect_doctor_checks(base_path: &Path) -> anyhow::Result<(Vec<DoctorChec
                 checks.push(DoctorCheck {
                     name: "service list",
                     ok: false,
-                    detail: format!("cannot list: {}", e),
+                    detail: format!("cannot list: {e}"),
                 });
                 errors += 1;
             }
@@ -1250,9 +1308,9 @@ fn run_doctor(base_path: &Path, fix: bool, tty: bool, c: &Palette) -> anyhow::Re
     }
 
     let summary = if errors > 0 {
-        format!("{} error(s), {} warning(s)", errors, warnings)
+        format!("{errors} error(s), {warnings} warning(s)")
     } else if warnings > 0 {
-        format!("{} warning(s)", warnings)
+        format!("{warnings} warning(s)")
     } else {
         "all checks passed".to_string()
     };
@@ -1294,9 +1352,9 @@ fn run_doctor(base_path: &Path, fix: bool, tty: bool, c: &Palette) -> anyhow::Re
             // Recompute status after fix
             let (_checks_after, warnings_after, errors_after) = collect_doctor_checks(base_path)?;
             let summary = if errors_after > 0 {
-                format!("{} error(s), {} warning(s)", errors_after, warnings_after)
+                format!("{errors_after} error(s), {warnings_after} warning(s)")
             } else if warnings_after > 0 {
-                format!("{} warning(s)", warnings_after)
+                format!("{warnings_after} warning(s)")
             } else {
                 "all checks passed".to_string()
             };
@@ -1463,10 +1521,7 @@ fn write_rotation_journal(path: &Path, journal: &RotationJournal) -> anyhow::Res
 fn apply_rotation_journal(base_path: &Path, journal: &RotationJournal) -> anyhow::Result<()> {
     for (file, content) in &journal.files {
         if !is_valid_rotation_file(file) {
-            return Err(anyhow::anyhow!(
-                "invalid path in rotation journal: {}",
-                file
-            ));
+            return Err(anyhow::anyhow!("invalid path in rotation journal: {file}"));
         }
         atomic_write(&base_path.join(file), content)?;
     }
@@ -1530,13 +1585,13 @@ fn rotate_project_key(base_path: &Path, remove_member_id: Option<&str>) -> anyho
     let old_store = store_from_project_key(base_path.to_path_buf(), &old_key)?;
     let scopes = old_store
         .list_services()
-        .map_err(|e| anyhow::anyhow!("Failed to list encrypted stores: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to list encrypted stores: {e}"))?;
     let mut services = Vec::new();
     for scope in scopes {
         services.push(
             old_store
                 .load(&scope)
-                .map_err(|e| anyhow::anyhow!("Failed to decrypt {}: {}", scope, e))?,
+                .map_err(|e| anyhow::anyhow!("Failed to decrypt {scope}: {e}"))?,
         );
     }
 
@@ -1578,6 +1633,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             envs,
             nested,
             force,
+            no_migrate,
         } => {
             let cwd = std::env::current_dir()?;
             let local = cwd.join(".kagi");
@@ -1625,6 +1681,88 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                     "Commit .kagi/; local keys stay on this device. Do not commit real .env files."
                 )
             );
+
+            if !no_migrate {
+                let candidates = crate::application::env_migration::scan_env_files(&cwd);
+                if !candidates.is_empty() {
+                    if tty && io::stdin().is_terminal() {
+                        eprintln!(
+                            "{} {} {}",
+                            c.prefix(),
+                            c.warning("note:"),
+                            c.info(&format!(
+                                "found {} .env file(s). Run migration? [y/N]",
+                                candidates.len()
+                            ))
+                        );
+                        for candidate in &candidates {
+                            let label = match &candidate.service_name {
+                                Some(s) => {
+                                    format!("{} -> service '{}'", candidate.path.display(), s)
+                                }
+                                None => format!("{} -> root scope", candidate.path.display()),
+                            };
+                            eprintln!("  {}", c.muted(&label));
+                        }
+                        eprint!("{} {} ", c.prefix(), c.prompt("migrate?"));
+                        let mut input = String::new();
+                        std::io::stdin().read_line(&mut input)?;
+                        if input.trim().eq_ignore_ascii_case("y") {
+                            let project_key = load_project_key(&local)?;
+                            let store = store_from_project_key(local.clone(), &project_key)?;
+                            let import_service =
+                                crate::application::import_env_file::ImportEnvFileService::new(
+                                    store,
+                                );
+                            for candidate in &candidates {
+                                let scope = match &candidate.service_name {
+                                    Some(s) => {
+                                        format!("{}/{}", s, kagi_domain::config::DEFAULT_ENV_NAME)
+                                    }
+                                    None => kagi_domain::config::DEFAULT_ENV_NAME.to_string(),
+                                };
+                                match import_service.execute(
+                                    &scope,
+                                    candidate.path.to_str().unwrap(),
+                                    true,
+                                ) {
+                                    Ok(report) => {
+                                        println!(
+                                            "{} {} {} {}",
+                                            c.prefix(),
+                                            c.success("migrated"),
+                                            c.accent(&report.imported.len().to_string()),
+                                            c.muted(&format!(
+                                                "keys from {}",
+                                                candidate.path.display()
+                                            ))
+                                        );
+                                    }
+                                    Err(e) => {
+                                        eprintln!(
+                                            "{} {} failed to migrate {}: {}",
+                                            c.prefix(),
+                                            c.warning("warning:"),
+                                            candidate.path.display(),
+                                            e
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        eprintln!(
+                            "{} {} {}",
+                            c.prefix(),
+                            c.warning("note:"),
+                            c.info(&format!(
+                                "found {} .env file(s). Run `kagi init` in an interactive terminal to migrate, or use `kagi import`.",
+                                candidates.len()
+                            ))
+                        );
+                    }
+                }
+            }
         }
         Commands::Doctor { fix, plain } => {
             let (base_path, _inferred) = resolve_kagi_base()?;
@@ -1647,7 +1785,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let (store, inferred) = resolve_store()?;
             let default_envs = store
                 .default_envs()
-                .map_err(|e| anyhow::anyhow!("Failed to read default envs: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Failed to read default envs: {e}"))?;
             let default_env = store
                 .default_env()
                 .unwrap_or_else(|_| DEFAULT_ENV_NAME.to_string());
@@ -1694,13 +1832,13 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let _ = plain;
             let default_envs = store
                 .default_envs()
-                .map_err(|e| anyhow::anyhow!("Failed to read default envs: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Failed to read default envs: {e}"))?;
             let default_env = store
                 .default_env()
                 .unwrap_or_else(|_| DEFAULT_ENV_NAME.to_string());
             let services = store
                 .list_services()
-                .map_err(|e| anyhow::anyhow!("Failed to list services: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Failed to list services: {e}"))?;
             let selection = parse_get_selection(
                 &services,
                 TargetContext {
@@ -1739,7 +1877,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                         println!(
                             "{} {}",
                             c.prefix(),
-                            c.muted(&format!("no secrets in {}", scope))
+                            c.muted(&format!("no secrets in {scope}"))
                         );
                     } else {
                         draw_key_table(&items, show_values, &c);
@@ -1756,7 +1894,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                     if let Some(desc) = secret_desc {
                         println!("{} {} = {}", c.muted(&desc), c.key(&key), c.success(&value));
                     } else {
-                        println!("{}", value);
+                        println!("{value}");
                     }
                 }
             }
@@ -1770,13 +1908,13 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let (store, inferred) = resolve_store()?;
             let default_envs = store
                 .default_envs()
-                .map_err(|e| anyhow::anyhow!("Failed to read default envs: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Failed to read default envs: {e}"))?;
             let default_env = store
                 .default_env()
                 .unwrap_or_else(|_| DEFAULT_ENV_NAME.to_string());
             let services = store
                 .list_services()
-                .map_err(|e| anyhow::anyhow!("Failed to list services: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Failed to list services: {e}"))?;
             let selection = parse_get_selection(
                 &services,
                 TargetContext {
@@ -1820,8 +1958,18 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 }
             }
         }
-        Commands::Search { query, values } => {
+        Commands::Search {
+            query,
+            values,
+            plain,
+        } => {
             let (store, _inferred) = resolve_store()?;
+            #[cfg(feature = "tui")]
+            if !plain && tty {
+                return crate::cli::tui::run_tui_search(store, query, values);
+            }
+            #[cfg(not(feature = "tui"))]
+            let _ = plain;
             let search_service = SearchSecretsService::new(store);
             let results = if values {
                 confirm_secret_output(tty, "search", &c)?;
@@ -1855,10 +2003,10 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let (store, inferred) = resolve_store()?;
             let services = store
                 .list_services()
-                .map_err(|e| anyhow::anyhow!("Failed to list services: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Failed to list services: {e}"))?;
             let default_envs = store
                 .default_envs()
-                .map_err(|e| anyhow::anyhow!("Failed to read default envs: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Failed to read default envs: {e}"))?;
             let default_env = store
                 .default_env()
                 .unwrap_or_else(|_| DEFAULT_ENV_NAME.to_string());
@@ -1965,7 +2113,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let (store, inferred) = resolve_store()?;
             let default_envs = store
                 .default_envs()
-                .map_err(|e| anyhow::anyhow!("Failed to read default envs: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Failed to read default envs: {e}"))?;
             let selection =
                 parse_export_selection(&default_envs, inferred, service_name, first, second)?;
             #[cfg(feature = "tui")]
@@ -1984,8 +2132,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 ScopeSelection::Service(service) => {
                     if out.is_none() {
                         return Err(anyhow::anyhow!(
-                            "Exporting all environments for a service requires --out <dir>. Use `kagi export {} <env>` for stdout.",
-                            service
+                            "Exporting all environments for a service requires --out <dir>. Use `kagi export {service} <env>` for stdout."
                         ));
                     }
                     service_scopes_from_store(&store, service)?
@@ -2003,7 +2150,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                         c.accent(&path.display().to_string())
                     );
                 } else {
-                    println!("{}", output);
+                    println!("{output}");
                 }
             }
         }
@@ -2023,7 +2170,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let (store, inferred) = resolve_store()?;
             let default_envs = store
                 .default_envs()
-                .map_err(|e| anyhow::anyhow!("Failed to read default envs: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Failed to read default envs: {e}"))?;
             let default_env = store
                 .default_env()
                 .unwrap_or_else(|_| DEFAULT_ENV_NAME.to_string());
@@ -2038,10 +2185,38 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             ensure_default_envs_for_scope(&store, &service_name)?;
             let import_service =
                 crate::application::import_env_file::ImportEnvFileService::new(store);
+            let preview = import_service.preview(&service_name, &file)?;
+            let interactive_import = tty && io::stdin().is_terminal() && !force;
+            #[cfg(feature = "tui")]
+            if interactive_import {
+                if crate::cli::tui::run_tui_import(
+                    preview.imported.clone(),
+                    preview.overwritten.clone(),
+                    service_name.clone(),
+                    file.clone(),
+                )? {
+                    let report = import_service.execute(&service_name, &file, true)?;
+                    print_import_report(&report, &service_name, &file, &c);
+                } else {
+                    println!("{} {}", c.prefix(), c.error("aborted."));
+                }
+                return Ok(());
+            }
 
-            let preview = import_service.execute(&service_name, &file, false)?;
+            if interactive_import
+                && !confirm_import_preview(
+                    &service_name,
+                    &file,
+                    &preview.imported,
+                    &preview.overwritten,
+                    &c,
+                )?
+            {
+                println!("{} {}", c.prefix(), c.error("aborted."));
+                return Ok(());
+            }
 
-            if !preview.overwritten.is_empty() && !force {
+            if !force && !interactive_import && !preview.overwritten.is_empty() {
                 eprintln!(
                     "{} {} the following keys already exist in {} and will be overwritten:",
                     c.prefix(),
@@ -2051,61 +2226,26 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 for key in &preview.overwritten {
                     eprintln!("  {} {}", c.error("-"), c.error(key));
                 }
-                eprint!("{} {} [y/N]: ", c.prefix(), c.prompt("continue?"));
-                let mut input = String::new();
-                std::io::stdin().read_line(&mut input)?;
-                if !input.trim().eq_ignore_ascii_case("y") {
-                    println!("{} {}", c.prefix(), c.error("aborted."));
-                    return Ok(());
-                }
+                println!("{} {}", c.prefix(), c.error("aborted."));
+                return Ok(());
             }
 
-            let report = if preview.overwritten.is_empty() {
-                preview
-            } else {
-                import_service.execute(&service_name, &file, true)?
-            };
-
-            println!(
-                "{} {} {} keys from {}",
-                c.prefix(),
-                c.success("Imported"),
-                c.success(&report.imported.len().to_string()),
-                c.accent(&file)
-            );
-            if !report.overwritten.is_empty() {
-                println!(
-                    "{} {} {} keys overwritten",
-                    c.prefix(),
-                    c.warning("warning:"),
-                    c.warning(&report.overwritten.len().to_string())
-                );
-            }
-            for key in report.imported {
-                let overwritten_marker = if report.overwritten.contains(&key) {
-                    c.warning(" (overwritten)")
-                } else {
-                    String::new()
-                };
-                println!(
-                    "  {}.{}{}",
-                    c.accent(&service_name),
-                    c.key(&key),
-                    overwritten_marker
-                );
-            }
+            let report =
+                import_service.execute(&service_name, &file, force || interactive_import)?;
+            print_import_report(&report, &service_name, &file, &c);
         }
         Commands::Sync {
             service: service_name,
             example,
             sources,
             envs,
+            plain,
         } => {
             let (store, inferred) = resolve_store()?;
             if let Some(service) = service_name.as_ref().or(inferred.as_ref()) {
                 store
                     .ensure_service_envs(service)
-                    .map_err(|e| anyhow::anyhow!("Failed to initialize default envs: {}", e))?;
+                    .map_err(|e| anyhow::anyhow!("Failed to initialize default envs: {e}"))?;
             }
             let sync_service = SyncService::new(store);
             let scoped_envs: Vec<String> = match service_name.or(inferred) {
@@ -2116,6 +2256,13 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 None => envs,
             };
             let report = sync_service.execute(&example, &sources, &scoped_envs)?;
+
+            #[cfg(feature = "tui")]
+            if !plain && tty {
+                return crate::cli::tui::run_tui_sync(report.env_reports.into_iter().collect());
+            }
+            #[cfg(not(feature = "tui"))]
+            let _ = plain;
 
             for (env_name, env_report) in &report.env_reports {
                 println!(
@@ -2156,8 +2303,15 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Env { command } => {
             let (store, _) = resolve_store()?;
             match command {
-                EnvCommands::List => {
-                    for env in store.default_envs()? {
+                EnvCommands::List { plain } => {
+                    let envs = store.default_envs()?;
+                    #[cfg(feature = "tui")]
+                    if !plain && tty {
+                        return crate::cli::tui::run_tui_env_list(envs);
+                    }
+                    #[cfg(not(feature = "tui"))]
+                    let _ = plain;
+                    for env in envs {
                         println!("{}", c.accent(&env));
                     }
                 }
@@ -2337,6 +2491,23 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                         .and_then(|s| s.get("mode"))
                         .and_then(|v| v.as_str())
                         == Some("server");
+                    #[cfg(feature = "tui")]
+                    let member_id = if member_id.is_none() && tty {
+                        if let Some(id) =
+                            crate::cli::tui::run_tui_member_approve(base_path.clone())?
+                        {
+                            id
+                        } else {
+                            return Ok(());
+                        }
+                    } else {
+                        member_id.unwrap_or_default()
+                    };
+                    #[cfg(not(feature = "tui"))]
+                    let member_id = member_id.unwrap_or_default();
+                    if member_id.is_empty() {
+                        return Err(anyhow::anyhow!("Usage: kagi member approve <member_id>"));
+                    }
                     if is_server_mode {
                         #[cfg(feature = "server")]
                         {
@@ -2364,6 +2535,21 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                     }
                 }
                 MemberCommands::Del { member_id } => {
+                    #[cfg(feature = "tui")]
+                    let member_id = if member_id.is_none() && tty {
+                        if let Some(id) = crate::cli::tui::run_tui_member_del(base_path.clone())? {
+                            id
+                        } else {
+                            return Ok(());
+                        }
+                    } else {
+                        member_id.unwrap_or_default()
+                    };
+                    #[cfg(not(feature = "tui"))]
+                    let member_id = member_id.unwrap_or_default();
+                    if member_id.is_empty() {
+                        return Err(anyhow::anyhow!("Usage: kagi member del <member_id>"));
+                    }
                     confirm_member_remove(tty, &member_id, &c)?;
                     let count = rotate_project_key(&base_path, Some(&member_id))?;
                     println!(
@@ -2371,7 +2557,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                         c.prefix(),
                         c.success("removed member and rotated project key"),
                         c.accent(&member_id),
-                        c.muted(&format!("({} stores rewritten)", count))
+                        c.muted(&format!("({count} stores rewritten)"))
                     );
                 }
             }
@@ -2396,7 +2582,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             };
             let bind_addr: std::net::SocketAddr = bind
                 .parse()
-                .map_err(|e| anyhow::anyhow!("invalid bind address: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("invalid bind address: {e}"))?;
             let max_body_size = parse_max_body(&max_body);
 
             let env_override = std::env::var("KAGI_ALLOW_INSECURE_HTTP")
@@ -2407,8 +2593,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             if (bind_addr.ip().is_unspecified() || !bind_addr.ip().is_loopback()) && !allow_insecure
             {
                 return Err(anyhow::anyhow!(
-                    "Binding to non-localhost address {} requires HTTPS. Use a reverse proxy with TLS, or pass --allow-insecure-http for local testing only.",
-                    bind_addr
+                    "Binding to non-localhost address {bind_addr} requires HTTPS. Use a reverse proxy with TLS, or pass --allow-insecure-http for local testing only."
                 ));
             }
 
@@ -2453,7 +2638,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         },
         #[cfg(feature = "server")]
         Commands::Token { command } => match command {
-            TokenCommands::List { remote } => {
+            TokenCommands::List { remote, plain } => {
                 let (base_path, _) = resolve_kagi_base()?;
                 let config_path = base_path.join(kagi_domain::config::KAGI_CONFIG_FILE);
                 let config: serde_json::Value =
@@ -2495,7 +2680,14 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 let tokens = data
                     .get("tokens")
                     .and_then(|v| v.as_array())
-                    .ok_or_else(|| anyhow::anyhow!("invalid response: missing tokens"))?;
+                    .ok_or_else(|| anyhow::anyhow!("invalid response: missing tokens"))?
+                    .clone();
+                #[cfg(feature = "tui")]
+                if !plain && tty {
+                    return crate::cli::tui::run_tui_token_list(tokens);
+                }
+                #[cfg(not(feature = "tui"))]
+                let _ = plain;
                 if tokens.is_empty() {
                     println!("{} {}", c.prefix(), c.muted("no tokens found."));
                 } else {
@@ -2504,13 +2696,15 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                         c.prefix(),
                         c.accent(&format!("{} token(s)", tokens.len()))
                     );
-                    for t in tokens {
+                    for t in &tokens {
                         let id = t["token_id"].as_str().unwrap_or("?");
                         let caps: Vec<String> = t["capabilities"]
                             .as_array()
                             .map(|a| {
                                 a.iter()
-                                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                    .filter_map(|v| {
+                                        v.as_str().map(std::string::ToString::to_string)
+                                    })
                                     .collect()
                             })
                             .unwrap_or_default();
@@ -2520,7 +2714,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                         println!(
                             "  {} {} | {} | {} | {}",
                             c.key(id),
-                            c.muted(&format!("[{}]", status)),
+                            c.muted(&format!("[{status}]")),
                             c.accent(member),
                             c.info(&caps.join(", ")),
                             c.muted(created)
@@ -2577,7 +2771,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                     .and_then(|v| v.as_array())
                     .map(|a| {
                         a.iter()
-                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
                             .collect::<Vec<String>>()
                     })
                     .unwrap_or_default();
@@ -2596,9 +2790,51 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             ProjectCommands::Join { remote } => {
                 project_join_remote(std::env::current_dir()?, &remote, &c, allow_insecure).await?;
             }
-            ProjectCommands::List { remote } => {
+            ProjectCommands::List { remote, plain } => {
                 let remote_url = resolve_admin_remote(remote).await?;
-                project_list_remote(&remote_url, &c, allow_insecure).await?;
+                let (requests, projects) = load_project_list(&remote_url, allow_insecure).await?;
+                #[cfg(feature = "tui")]
+                if !plain && tty {
+                    return crate::cli::tui::run_tui_project_list(requests, projects);
+                }
+                #[cfg(not(feature = "tui"))]
+                let _ = plain;
+                if requests.is_empty() && projects.is_empty() {
+                    println!(
+                        "{} {}",
+                        c.prefix(),
+                        c.muted("No projects or pending requests found.")
+                    );
+                } else {
+                    if !requests.is_empty() {
+                        println!("{} {}", c.prefix(), c.warning("Pending requests:"));
+                        for r in &requests {
+                            let id = r["project_id"].as_str().unwrap_or("unknown");
+                            let name = r["requester_name"].as_str().unwrap_or("");
+                            let created_at = r["created_at"].as_str().unwrap_or("");
+                            println!(
+                                "  {}  {}  {}",
+                                c.accent(id),
+                                c.muted(&format!("by {name}")),
+                                c.muted(created_at)
+                            );
+                        }
+                    }
+                    if !projects.is_empty() {
+                        println!("{} {}", c.prefix(), c.muted("Active projects:"));
+                        for p in &projects {
+                            let id = p["project_id"].as_str().unwrap_or("unknown");
+                            let revision = p["revision"].as_i64().unwrap_or(0);
+                            let created_at = p["created_at"].as_str().unwrap_or("");
+                            println!(
+                                "  {}  rev={}  created={}",
+                                c.accent(id),
+                                revision,
+                                c.muted(created_at)
+                            );
+                        }
+                    }
+                }
             }
             ProjectCommands::Approve { remote, project_id } => {
                 let remote_url = resolve_admin_remote(remote).await?;
@@ -2675,8 +2911,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let previous_manifest_hash = if base_revision > 0 {
                 Some(meta.last_manifest_hash.clone().ok_or_else(|| {
                     anyhow::anyhow!(
-                        "missing local manifest hash for revision {}; run kagi pull before pushing",
-                        base_revision
+                        "missing local manifest hash for revision {base_revision}; run kagi pull before pushing"
                     )
                 })?)
             } else {
@@ -2724,7 +2959,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 payload["accepted_join_member_ids"] = serde_json::json!(member_ids);
             }
 
-            let request_id = format!("kgr_{}", nanoid::nanoid!(12));
+            let request_id = format!(r"kgr_{}", nanoid::nanoid!(12));
             let plaintext = kagi_sync::domain::envelope::RequestPlaintext {
                 version: 1,
                 request_id: request_id.clone(),
@@ -2733,7 +2968,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                     .unwrap(),
                 operation: "push".into(),
                 method: "POST".into(),
-                path: format!("/v1/projects/{}/push", project_id),
+                path: format!("/v1/projects/{project_id}/push"),
                 project_id: Some(project_id.to_string()),
                 token: Some(token),
                 claim_secret: None,
@@ -2804,7 +3039,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
 
                 let key_manager = KeyManager::new(base_path.clone());
                 let identity = key_manager.load_or_create_identity()?;
-                let request_id = format!("kgr_{}", nanoid::nanoid!(12));
+                let request_id = format!(r"kgr_{}", nanoid::nanoid!(12));
 
                 let token = match remote_store.load_token(project_id)? {
                     Some(t) => t,
@@ -2824,7 +3059,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                                 .unwrap(),
                             operation: "pull".into(),
                             method: "POST".into(),
-                            path: format!("/v1/projects/{}/pull", project_id),
+                            path: format!("/v1/projects/{project_id}/pull"),
                             project_id: Some(project_id.to_string()),
                             token: None,
                             claim_secret: Some(claim_secret.clone()),
@@ -2845,16 +3080,16 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                         {
                             let wrapped = base64::engine::general_purpose::URL_SAFE_NO_PAD
                                 .decode(wrapped_b64)
-                                .map_err(|e| anyhow::anyhow!("invalid wrapped token: {}", e))?;
+                                .map_err(|e| anyhow::anyhow!("invalid wrapped token: {e}"))?;
                             let decrypted =
                                 kagi_sync::infrastructure::remote_envelope::decrypt_bytes(
                                     &wrapped, &identity,
                                 )
                                 .map_err(|e| {
-                                    anyhow::anyhow!("failed to decrypt wrapped token: {}", e)
+                                    anyhow::anyhow!("failed to decrypt wrapped token: {e}")
                                 })?;
                             String::from_utf8(decrypted)
-                                .map_err(|e| anyhow::anyhow!("invalid token: {}", e))?
+                                .map_err(|e| anyhow::anyhow!("invalid token: {e}"))?
                         } else {
                             return Err(anyhow::anyhow!(
                                 "no project token available; run `kagi project join` first or ask admin to approve"
@@ -2874,7 +3109,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                         .unwrap(),
                     operation: "pull".into(),
                     method: "POST".into(),
-                    path: format!("/v1/projects/{}/pull", project_id),
+                    path: format!("/v1/projects/{project_id}/pull"),
                     project_id: Some(project_id.to_string()),
                     token: Some(token.clone()),
                     claim_secret: None,
@@ -2988,7 +3223,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
 
             let key_manager = KeyManager::new(base_path);
             let identity = key_manager.load_or_create_identity()?;
-            let request_id = format!("kgr_{}", nanoid::nanoid!(12));
+            let request_id = format!(r"kgr_{}", nanoid::nanoid!(12));
             let plaintext = kagi_sync::domain::envelope::RequestPlaintext {
                 version: 1,
                 request_id: request_id.clone(),
@@ -2997,7 +3232,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                     .unwrap(),
                 operation: "status".into(),
                 method: "POST".into(),
-                path: format!("/v1/projects/{}/status", project_id),
+                path: format!("/v1/projects/{project_id}/status"),
                 project_id: Some(project_id.to_string()),
                 token: Some(token),
                 claim_secret: None,
@@ -3029,6 +3264,16 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                     c.warning(&pending_joins.to_string())
                 );
             }
+        }
+        Commands::Completions { shell } => {
+            let shell = shell.parse::<clap_complete::Shell>().map_err(|_| {
+                anyhow::anyhow!(
+                    "unsupported shell '{shell}'. Supported: bash, zsh, fish, elvish, powershell"
+                )
+            })?;
+            let mut cmd = Cli::command();
+            let name = cmd.get_name().to_string();
+            clap_complete::generate(shell, &mut cmd, name, &mut io::stdout());
         }
     }
     Ok(())
@@ -3093,7 +3338,7 @@ fn remove_stale_pulled_secret_files(
             } else if path.extension().is_some_and(|ext| ext == "enc") {
                 let relative_path = path
                     .strip_prefix(base_path)
-                    .map_err(|e| anyhow::anyhow!("failed to inspect local secret path: {}", e))?
+                    .map_err(|e| anyhow::anyhow!("failed to inspect local secret path: {e}"))?
                     .to_string_lossy()
                     .replace('\\', "/");
                 if !expected_files.contains(&relative_path) {
@@ -3119,10 +3364,18 @@ fn apply_pulled_state(base_path: &Path, state: &serde_json::Value) -> anyhow::Re
     }
 
     let kagi_json_empty = serde_json::from_str::<serde_json::Value>(&project_state.kagi_json)
-        .map(|v| v.as_object().map(|o| o.is_empty()).unwrap_or(false))
+        .map(|v| {
+            v.as_object()
+                .map(serde_json::Map::is_empty)
+                .unwrap_or(false)
+        })
         .unwrap_or(false);
     let access_json_empty = serde_json::from_str::<serde_json::Value>(&project_state.access_json)
-        .map(|v| v.as_object().map(|o| o.is_empty()).unwrap_or(false))
+        .map(|v| {
+            v.as_object()
+                .map(serde_json::Map::is_empty)
+                .unwrap_or(false)
+        })
         .unwrap_or(false);
     let is_empty_remote = project_state.revision == 0
         && kagi_json_empty
@@ -3159,20 +3412,20 @@ fn apply_pulled_state(base_path: &Path, state: &serde_json::Value) -> anyhow::Re
 fn is_empty_json_object(input: Option<&str>) -> bool {
     input
         .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
-        .and_then(|value| value.as_object().map(|object| object.is_empty()))
+        .and_then(|value| value.as_object().map(serde_json::Map::is_empty))
         .unwrap_or(false)
 }
 
 #[cfg(feature = "server")]
 fn is_empty_genesis_state(state: &serde_json::Value, project_id: &str) -> bool {
     state.get("project_id").and_then(|v| v.as_str()) == Some(project_id)
-        && state.get("revision").and_then(|v| v.as_i64()) == Some(0)
+        && state.get("revision").and_then(serde_json::Value::as_i64) == Some(0)
         && is_empty_json_object(state.get("kagi_json").and_then(|v| v.as_str()))
         && is_empty_json_object(state.get("access_json").and_then(|v| v.as_str()))
         && state
             .get("files")
             .and_then(|v| v.as_array())
-            .map(|files| files.is_empty())
+            .map(std::vec::Vec::is_empty)
             .unwrap_or(false)
 }
 
@@ -3188,7 +3441,7 @@ fn verify_pulled_manifest(
 ) -> anyhow::Result<String> {
     let remote_revision = data
         .get("revision")
-        .and_then(|v| v.as_i64())
+        .and_then(serde_json::Value::as_i64)
         .ok_or_else(|| anyhow::anyhow!("server response missing revision"))?;
     let manifest_str = match data.get("manifest").and_then(|v| v.as_str()) {
         Some(manifest_str) => manifest_str,
@@ -3209,7 +3462,7 @@ fn verify_pulled_manifest(
     };
     let manifest: kagi_sync::domain::manifest::ProjectStateManifest =
         serde_json::from_str(manifest_str)
-            .map_err(|e| anyhow::anyhow!("invalid manifest from server: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("invalid manifest from server: {e}"))?;
 
     let expected_hash = manifest.compute_hash();
     let server_hash = data
@@ -3218,9 +3471,7 @@ fn verify_pulled_manifest(
         .ok_or_else(|| anyhow::anyhow!("server response missing manifest_hash"))?;
     if expected_hash != server_hash {
         return Err(anyhow::anyhow!(
-            "manifest hash mismatch: computed {} vs server {}",
-            expected_hash,
-            server_hash
+            "manifest hash mismatch: computed {expected_hash} vs server {server_hash}"
         ));
     }
     if manifest.project_id != project_id {
@@ -3263,10 +3514,7 @@ fn verify_pulled_manifest(
     }
     if manifest.revision > known_revision && known_revision > 0 {
         let last_hash = last_manifest_hash.ok_or_else(|| {
-            anyhow::anyhow!(
-                "manifest chain missing local hash for revision {}",
-                known_revision
-            )
+            anyhow::anyhow!("manifest chain missing local hash for revision {known_revision}")
         })?;
         if manifest.previous_manifest_hash.as_deref() != Some(last_hash) {
             return Err(anyhow::anyhow!(
@@ -3310,7 +3558,7 @@ fn verify_pulled_manifest(
         let content = file_value
             .get("content")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("state file {} missing content", path))?;
+            .ok_or_else(|| anyhow::anyhow!("state file {path} missing content"))?;
         let expected_file_hash = {
             use sha2::{Digest, Sha256};
             let mut hasher = Sha256::new();
@@ -3322,8 +3570,7 @@ fn verify_pulled_manifest(
             .is_some()
         {
             return Err(anyhow::anyhow!(
-                "state contains duplicate file path: {}",
-                path
+                "state contains duplicate file path: {path}"
             ));
         }
     }
@@ -3374,7 +3621,7 @@ fn verify_pulled_manifest(
         .ok_or_else(|| anyhow::anyhow!("manifest present but manifest_signature missing"))?;
     let signature_bytes = base64::engine::general_purpose::STANDARD
         .decode(signature_b64)
-        .map_err(|e| anyhow::anyhow!("invalid manifest signature: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("invalid manifest signature: {e}"))?;
     if signature_bytes.len() != 64 {
         return Err(anyhow::anyhow!(
             "manifest signature must be 64 bytes, got {}",
@@ -3382,10 +3629,10 @@ fn verify_pulled_manifest(
         ));
     }
     let signature = ed25519_dalek::Signature::from_slice(&signature_bytes)
-        .map_err(|e| anyhow::anyhow!("invalid signature: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("invalid signature: {e}"))?;
     let public_key_bytes = base64::engine::general_purpose::STANDARD
         .decode(&manifest.signer_public_key)
-        .map_err(|e| anyhow::anyhow!("invalid signer public key: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("invalid signer public key: {e}"))?;
     if public_key_bytes.len() != 32 {
         return Err(anyhow::anyhow!(
             "signer public key must be 32 bytes, got {}",
@@ -3395,7 +3642,7 @@ fn verify_pulled_manifest(
     let mut pk_arr = [0u8; 32];
     pk_arr.copy_from_slice(&public_key_bytes);
     let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&pk_arr)
-        .map_err(|e| anyhow::anyhow!("invalid verifying key: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("invalid verifying key: {e}"))?;
 
     // Check that signer_public_key matches the known member's key in access.json
     let access: serde_json::Value =
@@ -3435,7 +3682,7 @@ fn verify_pulled_manifest(
     use ed25519_dalek::Verifier;
     verifying_key
         .verify(expected_hash.as_bytes(), &signature)
-        .map_err(|e| anyhow::anyhow!("manifest signature verification failed: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("manifest signature verification failed: {e}"))?;
 
     Ok(expected_hash)
 }
@@ -3474,7 +3721,7 @@ async fn pull_with_token(token_str: &str, c: &Palette, allow_insecure: bool) -> 
         .as_ref()
         .and_then(|m| m.pending_accepted_member_ids.clone());
 
-    let request_id = format!("kgr_{}", nanoid::nanoid!(12));
+    let request_id = format!(r"kgr_{}", nanoid::nanoid!(12));
     let plaintext = kagi_sync::domain::envelope::RequestPlaintext {
         version: 1,
         request_id: request_id.clone(),
@@ -3483,7 +3730,7 @@ async fn pull_with_token(token_str: &str, c: &Palette, allow_insecure: bool) -> 
             .unwrap(),
         operation: "pull".into(),
         method: "POST".into(),
-        path: format!("/v1/projects/{}/pull", project_id),
+        path: format!("/v1/projects/{project_id}/pull"),
         project_id: Some(project_id.clone()),
         token: Some(token_str.to_string()),
         claim_secret: None,
@@ -3578,15 +3825,11 @@ fn resolve_admin_token(fingerprint: &str) -> anyhow::Result<String> {
             return Ok(token);
         }
         return Err(anyhow::anyhow!(
-            "admin token not found for server {}. Run `kagi remote login --remote <url> --token <token>` or set KAGI_ADMIN_TOKEN.",
-            fingerprint
+            "admin token not found for server {fingerprint}. Run `kagi remote login --remote <url> --token <token>` or set KAGI_ADMIN_TOKEN."
         ));
     }
     let entry = kagi_store::key_manager::keyring_admin_entry(fingerprint).map_err(|e| {
-        anyhow::anyhow!(
-            "keyring unavailable: {}. admin token requires OS keychain.",
-            e
-        )
+        anyhow::anyhow!("keyring unavailable: {e}. admin token requires OS keychain.")
     })?;
     match entry.get_password() {
         Ok(token) => {
@@ -3594,8 +3837,7 @@ fn resolve_admin_token(fingerprint: &str) -> anyhow::Result<String> {
             Ok(token)
         }
         Err(_) => Err(anyhow::anyhow!(
-            "admin token not found for server {}. Run `kagi remote login --remote <url> --token <token>` or set KAGI_ADMIN_TOKEN.",
-            fingerprint
+            "admin token not found for server {fingerprint}. Run `kagi remote login --remote <url> --token <token>` or set KAGI_ADMIN_TOKEN."
         )),
     }
 }
@@ -3636,7 +3878,7 @@ async fn remote_login(
         allow_insecure,
     )
     .await
-    .map_err(|e| anyhow::anyhow!("failed to connect to remote: {}", e))?;
+    .map_err(|e| anyhow::anyhow!("failed to connect to remote: {e}"))?;
     let fingerprint = remote_client.fingerprint();
     validate_admin_token_for_fingerprint(token, fingerprint)?;
 
@@ -3646,21 +3888,18 @@ async fn remote_login(
     if admin_keyring_disabled() {
         remote_store
             .save_admin_token(fingerprint, token)
-            .map_err(|e| anyhow::anyhow!("failed to save admin token: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("failed to save admin token: {e}"))?;
     } else {
         let entry = kagi_store::key_manager::keyring_admin_entry(fingerprint).map_err(|e| {
-            anyhow::anyhow!(
-                "keyring unavailable: {}. admin token requires OS keychain.",
-                e
-            )
+            anyhow::anyhow!("keyring unavailable: {e}. admin token requires OS keychain.")
         })?;
         entry
             .set_password(token)
-            .map_err(|e| anyhow::anyhow!("failed to save admin token to keyring: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("failed to save admin token to keyring: {e}"))?;
     }
     remote_store
         .save_admin_remote(fingerprint, remote_url)
-        .map_err(|e| anyhow::anyhow!("failed to save admin remote config: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("failed to save admin remote config: {e}"))?;
 
     println!(
         "{} admin token saved for server {} ({})",
@@ -3704,7 +3943,7 @@ async fn remote_audit(
                 c.muted(ts),
                 c.accent(event_type),
                 c.info(pid),
-                c.muted(&format!("({})", actor)),
+                c.muted(&format!("({actor})")),
                 c.muted(meta)
             );
         }
@@ -3783,7 +4022,9 @@ async fn project_join_remote(
 
     let config_path = local.join(kagi_domain::config::KAGI_CONFIG_FILE);
     let mut config: serde_json::Value = serde_json::from_str(&fs::read_to_string(&config_path)?)?;
-    let existing_project_id = config["project_id"].as_str().map(|s| s.to_string());
+    let existing_project_id = config["project_id"]
+        .as_str()
+        .map(std::string::ToString::to_string);
 
     let key_manager = KeyManager::new(local.clone());
     let identity = key_manager.load_or_create_identity()?;
@@ -3797,7 +4038,7 @@ async fn project_join_remote(
     )
     .await?;
 
-    let claim_secret = format!("kgs_{}", nanoid::nanoid!(24));
+    let claim_secret = format!(r"kgs_{}", nanoid::nanoid!(24));
     let claim_secret_hash = {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
@@ -3805,7 +4046,7 @@ async fn project_join_remote(
         format!("cs:{}", base64_encode_url(&hasher.finalize()))
     };
 
-    let request_id = format!("kgr_{}", nanoid::nanoid!(12));
+    let request_id = format!(r"kgr_{}", nanoid::nanoid!(12));
     let plaintext = kagi_sync::domain::envelope::RequestPlaintext {
         version: 1,
         request_id: request_id.clone(),
@@ -3868,11 +4109,10 @@ async fn project_join_remote(
 }
 
 #[cfg(feature = "server")]
-async fn project_list_remote(
+async fn load_project_list(
     remote_url: &str,
-    c: &Palette,
     allow_insecure: bool,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<(Vec<serde_json::Value>, Vec<serde_json::Value>)> {
     let remote_client = kagi_sync::infrastructure::remote_client::RemoteClient::new(
         remote_url.to_string(),
         allow_insecure,
@@ -3885,8 +4125,7 @@ async fn project_list_remote(
         key_manager.load_or_create_identity()?
     };
 
-    // 1. Fetch pending requests
-    let request_id = format!("kgr_{}", nanoid::nanoid!(12));
+    let request_id = format!(r"kgr_{}", nanoid::nanoid!(12));
     let requests_plaintext = kagi_sync::domain::envelope::RequestPlaintext {
         version: 1,
         request_id: request_id.clone(),
@@ -3904,11 +4143,12 @@ async fn project_list_remote(
     let requests_data = remote_client
         .send_request(&requests_plaintext, &identity)
         .await?;
-    let empty = Vec::new();
-    let requests = requests_data["requests"].as_array().unwrap_or(&empty);
+    let requests = requests_data["requests"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
 
-    // 2. Fetch active projects
-    let request_id = format!("kgr_{}", nanoid::nanoid!(12));
+    let request_id = format!(r"kgr_{}", nanoid::nanoid!(12));
     let projects_plaintext = kagi_sync::domain::envelope::RequestPlaintext {
         version: 1,
         request_id: request_id.clone(),
@@ -3926,48 +4166,12 @@ async fn project_list_remote(
     let projects_data = remote_client
         .send_request(&projects_plaintext, &identity)
         .await?;
-    let projects = projects_data["projects"].as_array().unwrap_or(&empty);
+    let projects = projects_data["projects"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
 
-    if requests.is_empty() && projects.is_empty() {
-        println!(
-            "{} {}",
-            c.prefix(),
-            c.muted("No projects or pending requests found.")
-        );
-        return Ok(());
-    }
-
-    if !requests.is_empty() {
-        println!("{} {}", c.prefix(), c.warning("Pending requests:"));
-        for r in requests {
-            let id = r["project_id"].as_str().unwrap_or("unknown");
-            let name = r["requester_name"].as_str().unwrap_or("");
-            let created_at = r["created_at"].as_str().unwrap_or("");
-            println!(
-                "  {}  {}  {}",
-                c.accent(id),
-                c.muted(&format!("by {}", name)),
-                c.muted(created_at)
-            );
-        }
-    }
-
-    if !projects.is_empty() {
-        println!("{} {}", c.prefix(), c.muted("Active projects:"));
-        for p in projects {
-            let id = p["project_id"].as_str().unwrap_or("unknown");
-            let revision = p["revision"].as_i64().unwrap_or(0);
-            let created_at = p["created_at"].as_str().unwrap_or("");
-            println!(
-                "  {}  rev={}  created={}",
-                c.accent(id),
-                revision,
-                created_at
-            );
-        }
-    }
-
-    Ok(())
+    Ok((requests, projects))
 }
 
 #[cfg(feature = "server")]
@@ -3984,7 +4188,7 @@ async fn project_approve_remote(
     .await?;
     let token = resolve_admin_token(remote_client.fingerprint())?;
 
-    let request_id = format!("kgr_{}", nanoid::nanoid!(12));
+    let request_id = format!(r"kgr_{}", nanoid::nanoid!(12));
     let plaintext = kagi_sync::domain::envelope::RequestPlaintext {
         version: 1,
         request_id: request_id.clone(),
@@ -3993,7 +4197,7 @@ async fn project_approve_remote(
             .unwrap(),
         operation: "approve_project_request".into(),
         method: "POST".into(),
-        path: format!("/v1/projects/requests/{}/approve", project_id),
+        path: format!("/v1/projects/requests/{project_id}/approve"),
         project_id: Some("admin".into()),
         token: Some(token),
         claim_secret: None,
@@ -4033,7 +4237,7 @@ async fn project_del_remote(
     .await?;
     let token = resolve_admin_token(remote_client.fingerprint())?;
 
-    let request_id = format!("kgr_{}", nanoid::nanoid!(12));
+    let request_id = format!(r"kgr_{}", nanoid::nanoid!(12));
     let plaintext = kagi_sync::domain::envelope::RequestPlaintext {
         version: 1,
         request_id: request_id.clone(),
@@ -4042,7 +4246,7 @@ async fn project_del_remote(
             .unwrap(),
         operation: "delete_project".into(),
         method: "POST".into(),
-        path: format!("/v1/projects/{}/delete", project_id),
+        path: format!("/v1/projects/{project_id}/delete"),
         project_id: Some(project_id.into()),
         token: Some(token),
         claim_secret: None,
@@ -4069,8 +4273,7 @@ fn run_backup(out: &str, c: &Palette) -> anyhow::Result<()> {
     let out_dir = Path::new(out);
     if out_dir.exists() {
         return Err(anyhow::anyhow!(
-            "output directory '{}' already exists. Choose a different path.",
-            out
+            "output directory '{out}' already exists. Choose a different path."
         ));
     }
 
@@ -4092,8 +4295,7 @@ fn run_backup(out: &str, c: &Palette) -> anyhow::Result<()> {
         .unwrap_or_else(|_| local_data_dir.clone());
     if canonical_out.starts_with(&canonical_base) || canonical_out.starts_with(&canonical_home) {
         return Err(anyhow::anyhow!(
-            "output directory '{}' is inside the source tree. Choose a different path.",
-            out
+            "output directory '{out}' is inside the source tree. Choose a different path."
         ));
     }
 
@@ -4118,10 +4320,10 @@ fn run_backup(out: &str, c: &Palette) -> anyhow::Result<()> {
         if projects_src.exists() {
             let project_src = projects_src.join(&project_id);
             if project_src.exists() {
-                let dst = home_backup.join(format!("projects/{}", project_id));
+                let dst = home_backup.join(format!("projects/{project_id}"));
                 fs::create_dir_all(dst.parent().unwrap())?;
                 copy_dir_all(&project_src, &dst)?;
-                copied_home_files.push(format!("projects/{}", project_id));
+                copied_home_files.push(format!("projects/{project_id}"));
             }
         }
     }
@@ -4201,7 +4403,7 @@ fn run_backup(out: &str, c: &Palette) -> anyhow::Result<()> {
 fn run_restore(from: &str, force: bool, c: &Palette) -> anyhow::Result<()> {
     let from_dir = Path::new(from);
     if !from_dir.is_dir() {
-        return Err(anyhow::anyhow!("'{}' is not a directory", from));
+        return Err(anyhow::anyhow!("'{from}' is not a directory"));
     }
 
     let manifest_path = from_dir.join("manifest.json");
@@ -4220,7 +4422,7 @@ fn run_restore(from: &str, force: bool, c: &Palette) -> anyhow::Result<()> {
         serde_json::from_str(&fs::read_to_string(&checksum_path)?)?;
     let version = manifest["version"].as_u64().unwrap_or(0);
     if version != 1 {
-        return Err(anyhow::anyhow!("unsupported backup version: {}", version));
+        return Err(anyhow::anyhow!("unsupported backup version: {version}"));
     }
 
     // Verify checksums
@@ -4237,10 +4439,7 @@ fn run_restore(from: &str, force: bool, c: &Palette) -> anyhow::Result<()> {
             .unwrap_or("");
         if actual_hash != expected_hash {
             return Err(anyhow::anyhow!(
-                "checksum mismatch for {}: expected {}, got {}",
-                path,
-                expected_hash,
-                actual_hash
+                "checksum mismatch for {path}: expected {expected_hash}, got {actual_hash}"
             ));
         }
     }
@@ -4277,8 +4476,7 @@ fn run_restore(from: &str, force: bool, c: &Palette) -> anyhow::Result<()> {
                 // Validate path: no path traversal, no absolute paths
                 if rel_path.starts_with('/') || rel_path.contains("..") {
                     return Err(anyhow::anyhow!(
-                        "invalid path in backup manifest: '{}'. Refusing to restore.",
-                        rel_path
+                        "invalid path in backup manifest: '{rel_path}'. Refusing to restore."
                     ));
                 }
                 let src = home_backup.join(rel_path);
@@ -4749,8 +4947,7 @@ mod tests {
         let err = apply_pulled_state(&base, &state).unwrap_err();
         assert!(
             err.to_string().contains("remote project is empty"),
-            "expected error about empty remote, got: {}",
-            err
+            "expected error about empty remote, got: {err}",
         );
     }
 

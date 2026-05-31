@@ -142,10 +142,10 @@ async fn create_project_handler(
     let project_id = plaintext
         .project_id
         .clone()
-        .unwrap_or_else(|| format!("kgp_{}", nanoid::nanoid!(12)));
+        .unwrap_or_else(|| format!(r"kgp_{}", nanoid::nanoid!(12)));
     state.repo.create_project(&project_id).await.map_err(|e| {
         if e.as_database_error()
-            .map(|d| d.is_unique_violation())
+            .map(sqlx::error::DatabaseError::is_unique_violation)
             .unwrap_or(false)
         {
             ServerError::Conflict {
@@ -203,7 +203,7 @@ async fn create_project_request_handler(
     let project_id = plaintext
         .project_id
         .clone()
-        .unwrap_or_else(|| format!("kgp_{}", nanoid::nanoid!(12)));
+        .unwrap_or_else(|| format!(r"kgp_{}", nanoid::nanoid!(12)));
     let requester_member_id = plaintext
         .payload
         .get("requester_member_id")
@@ -224,7 +224,7 @@ async fn create_project_request_handler(
             "missing requester_recipient".into(),
         ))?;
     parse_recipient(requester_recipient)
-        .map_err(|e| ServerError::BadEnvelope(format!("invalid requester_recipient: {}", e)))?;
+        .map_err(|e| ServerError::BadEnvelope(format!("invalid requester_recipient: {e}")))?;
     let claim_secret_hash = plaintext
         .payload
         .get("claim_secret_hash")
@@ -245,7 +245,7 @@ async fn create_project_request_handler(
         .await
         .map_err(|e| {
             if e.as_database_error()
-                .map(|d| d.is_unique_violation())
+                .map(sqlx::error::DatabaseError::is_unique_violation)
                 .unwrap_or(false)
             {
                 ServerError::Conflict {
@@ -261,7 +261,7 @@ async fn create_project_request_handler(
     let _ = state
         .repo
         .create_audit_event(
-            &format!("kae_{}", nanoid::nanoid!(12)),
+            &format!(r"kae_{}", nanoid::nanoid!(12)),
             Some(&project_id),
             None,
             None,
@@ -311,7 +311,7 @@ async fn approve_project_request_handler(
     let (plaintext, response_recipient) = decrypt_and_verify_envelope(
         &state,
         envelope,
-        &format!("/v1/projects/requests/{}/approve", project_id),
+        &format!("/v1/projects/requests/{project_id}/approve"),
         "POST",
     )
     .await?;
@@ -377,7 +377,7 @@ async fn approve_project_request_handler(
         .await
         .map_err(|e| {
             if e.as_database_error()
-                .map(|d| d.is_unique_violation())
+                .map(sqlx::error::DatabaseError::is_unique_violation)
                 .unwrap_or(false)
             {
                 ServerError::Conflict {
@@ -393,7 +393,7 @@ async fn approve_project_request_handler(
     let _ = state
         .repo
         .create_audit_event(
-            &format!("kae_{}", nanoid::nanoid!(12)),
+            &format!(r"kae_{}", nanoid::nanoid!(12)),
             Some(&project_id),
             None,
             Some(&admin_token_id),
@@ -446,7 +446,7 @@ async fn delete_project_handler(
     let (plaintext, response_recipient) = decrypt_and_verify_envelope(
         &state,
         envelope,
-        &format!("/v1/projects/{}/delete", project_id),
+        &format!("/v1/projects/{project_id}/delete"),
         "POST",
     )
     .await?;
@@ -484,7 +484,7 @@ async fn delete_project_handler(
     let _ = state
         .repo
         .create_audit_event(
-            &format!("kae_{}", nanoid::nanoid!(12)),
+            &format!(r"kae_{}", nanoid::nanoid!(12)),
             Some(&project_id),
             None,
             actor_token_id.as_deref(),
@@ -508,7 +508,7 @@ async fn push_handler(
     let (plaintext, response_recipient) = decrypt_and_verify_envelope(
         &state,
         envelope,
-        &format!("/v1/projects/{}/push", project_id),
+        &format!("/v1/projects/{project_id}/push"),
         "POST",
     )
     .await?;
@@ -521,14 +521,14 @@ async fn push_handler(
     let base_revision = plaintext
         .payload
         .get("base_revision")
-        .and_then(|v| v.as_i64())
+        .and_then(serde_json::Value::as_i64)
         .ok_or(ServerError::InvalidRevision)?;
     let state_json = plaintext
         .payload
         .get("state")
         .ok_or(ServerError::InvalidProjectState("missing state".into()))?;
     let project_state: ProjectState = serde_json::from_value(state_json.clone())
-        .map_err(|e| ServerError::InvalidProjectState(format!("{}", e)))?;
+        .map_err(|e| ServerError::InvalidProjectState(format!("{e}")))?;
 
     for file in &project_state.files {
         validate_file_path(&file.path)
@@ -615,7 +615,7 @@ async fn push_handler(
     let _ = state
         .repo
         .create_audit_event(
-            &format!("kae_{}", nanoid::nanoid!(12)),
+            &format!(r"kae_{}", nanoid::nanoid!(12)),
             Some(&project_id),
             None,
             Some(&token_id),
@@ -641,7 +641,7 @@ async fn pull_handler(
     let (plaintext, response_recipient) = decrypt_and_verify_envelope(
         &state,
         envelope,
-        &format!("/v1/projects/{}/pull", project_id),
+        &format!("/v1/projects/{project_id}/pull"),
         "POST",
     )
     .await?;
@@ -713,7 +713,7 @@ async fn pull_handler(
         let _ = state
             .repo
             .create_audit_event(
-                &format!("kae_{}", nanoid::nanoid!(12)),
+                &format!(r"kae_{}", nanoid::nanoid!(12)),
                 Some(&project_id),
                 None,
                 None,
@@ -769,7 +769,7 @@ async fn pull_handler(
         let _ = state
             .repo
             .create_audit_event(
-                &format!("kae_{}", nanoid::nanoid!(12)),
+                &format!(r"kae_{}", nanoid::nanoid!(12)),
                 Some(&project_id),
                 Some(member_id),
                 None,
@@ -800,7 +800,7 @@ async fn status_handler(
     let (plaintext, response_recipient) = decrypt_and_verify_envelope(
         &state,
         envelope,
-        &format!("/v1/projects/{}/status", project_id),
+        &format!("/v1/projects/{project_id}/status"),
         "POST",
     )
     .await?;
@@ -813,7 +813,7 @@ async fn status_handler(
     let local_revision = plaintext
         .payload
         .get("local_revision")
-        .and_then(|v| v.as_i64())
+        .and_then(serde_json::Value::as_i64)
         .unwrap_or(0);
     let remote_revision = state
         .repo
@@ -863,7 +863,7 @@ async fn join_handler(
     let (plaintext, response_recipient) = decrypt_and_verify_envelope(
         &state,
         envelope,
-        &format!("/v1/projects/{}/join", project_id),
+        &format!("/v1/projects/{project_id}/join"),
         "POST",
     )
     .await?;
@@ -890,7 +890,7 @@ async fn join_handler(
         .and_then(|v| v.as_str())
         .ok_or(ServerError::BadRequest("missing recipient".into()))?;
     parse_recipient(recipient)
-        .map_err(|e| ServerError::BadEnvelope(format!("invalid recipient: {}", e)))?;
+        .map_err(|e| ServerError::BadEnvelope(format!("invalid recipient: {e}")))?;
     let signing_public_key = join_req
         .get("signing_public_key")
         .and_then(|v| v.as_str())
@@ -912,7 +912,7 @@ async fn join_handler(
         .await
         .map_err(|e| {
             if e.as_database_error()
-                .map(|d| d.is_unique_violation())
+                .map(sqlx::error::DatabaseError::is_unique_violation)
                 .unwrap_or(false)
             {
                 ServerError::Conflict {
@@ -928,7 +928,7 @@ async fn join_handler(
     let _ = state
         .repo
         .create_audit_event(
-            &format!("kae_{}", nanoid::nanoid!(12)),
+            &format!(r"kae_{}", nanoid::nanoid!(12)),
             Some(&project_id),
             None,
             Some(&token_id),
@@ -952,7 +952,7 @@ async fn token_issue_handler(
     let (plaintext, response_recipient) = decrypt_and_verify_envelope(
         &state,
         envelope,
-        &format!("/v1/projects/{}/tokens/issue", project_id),
+        &format!("/v1/projects/{project_id}/tokens/issue"),
         "POST",
     )
     .await?;
@@ -994,7 +994,7 @@ async fn token_issue_handler(
                 serde_json::from_str::<kagi_sync::domain::manifest::ProjectStateManifest>(
                     &manifest_json,
                 )
-                .map_err(|e| ServerError::Internal(format!("invalid stored manifest: {}", e)))?;
+                .map_err(|e| ServerError::Internal(format!("invalid stored manifest: {e}")))?;
             Some(manifest.signer_public_key)
         }
         _ => None,
@@ -1034,7 +1034,7 @@ async fn token_issue_handler(
     let _ = state
         .repo
         .create_audit_event(
-            &format!("kae_{}", nanoid::nanoid!(12)),
+            &format!(r"kae_{}", nanoid::nanoid!(12)),
             Some(&project_id),
             None,
             None,
@@ -1057,7 +1057,7 @@ async fn token_revoke_handler(
     let (plaintext, response_recipient) = decrypt_and_verify_envelope(
         &state,
         envelope,
-        &format!("/v1/projects/{}/tokens/revoke", project_id),
+        &format!("/v1/projects/{project_id}/tokens/revoke"),
         "POST",
     )
     .await?;
@@ -1082,7 +1082,7 @@ async fn token_revoke_handler(
     let _ = state
         .repo
         .create_audit_event(
-            &format!("kae_{}", nanoid::nanoid!(12)),
+            &format!(r"kae_{}", nanoid::nanoid!(12)),
             Some(&project_id),
             None,
             Some(&token_id),
@@ -1106,7 +1106,7 @@ async fn token_list_handler(
     let (plaintext, response_recipient) = decrypt_and_verify_envelope(
         &state,
         envelope,
-        &format!("/v1/projects/{}/tokens/list", project_id),
+        &format!("/v1/projects/{project_id}/tokens/list"),
         "POST",
     )
     .await?;
@@ -1143,7 +1143,7 @@ async fn token_list_handler(
     let _ = state
         .repo
         .create_audit_event(
-            &format!("kae_{}", nanoid::nanoid!(12)),
+            &format!(r"kae_{}", nanoid::nanoid!(12)),
             Some(&project_id),
             None,
             Some(&token_id),
@@ -1175,7 +1175,7 @@ async fn audit_handler(
     let limit = plaintext
         .payload
         .get("limit")
-        .and_then(|v| v.as_i64())
+        .and_then(serde_json::Value::as_i64)
         .unwrap_or(50)
         .clamp(1, 500);
 
@@ -1217,7 +1217,7 @@ async fn audit_handler(
     let _ = state
         .repo
         .create_audit_event(
-            &format!("kae_{}", nanoid::nanoid!(12)),
+            &format!(r"kae_{}", nanoid::nanoid!(12)),
             project_id,
             None,
             Some(&token_id),
@@ -1271,7 +1271,7 @@ async fn decrypt_and_verify_envelope(
         &plaintext.issued_at,
         &time::format_description::well_known::Rfc3339,
     )
-    .map_err(|e| ServerError::BadEnvelope(format!("invalid issued_at: {}", e)))?;
+    .map_err(|e| ServerError::BadEnvelope(format!("invalid issued_at: {e}")))?;
     let now = OffsetDateTime::now_utc();
     let diff = (now - issued).abs();
     if diff.whole_minutes() > 5 {
@@ -1381,7 +1381,7 @@ fn validate_signing_public_key(signing_public_key: &str) -> Result<(), ServerErr
         use base64::{Engine as _, engine::general_purpose::STANDARD};
         STANDARD
             .decode(signing_public_key)
-            .map_err(|e| ServerError::BadRequest(format!("invalid signing_public_key: {}", e)))?
+            .map_err(|e| ServerError::BadRequest(format!("invalid signing_public_key: {e}")))?
     };
     if bytes.len() != 32 {
         return Err(ServerError::BadRequest(
@@ -1391,7 +1391,7 @@ fn validate_signing_public_key(signing_public_key: &str) -> Result<(), ServerErr
     let mut key_bytes = [0u8; 32];
     key_bytes.copy_from_slice(&bytes);
     ed25519_dalek::VerifyingKey::from_bytes(&key_bytes)
-        .map_err(|e| ServerError::BadRequest(format!("invalid signing_public_key: {}", e)))?;
+        .map_err(|e| ServerError::BadRequest(format!("invalid signing_public_key: {e}")))?;
     Ok(())
 }
 
@@ -1405,9 +1405,9 @@ async fn verify_pushed_manifest(
 ) -> Result<(), ServerError> {
     let manifest: kagi_sync::domain::manifest::ProjectStateManifest =
         serde_json::from_str(manifest_json)
-            .map_err(|e| ServerError::InvalidProjectState(format!("invalid manifest: {}", e)))?;
+            .map_err(|e| ServerError::InvalidProjectState(format!("invalid manifest: {e}")))?;
     let manifest_canonical = serde_json::to_string(&manifest)
-        .map_err(|e| ServerError::InvalidProjectState(format!("invalid manifest: {}", e)))?;
+        .map_err(|e| ServerError::InvalidProjectState(format!("invalid manifest: {e}")))?;
     if manifest_canonical != manifest_json {
         return Err(ServerError::InvalidProjectState(
             "manifest must use canonical JSON encoding".into(),
@@ -1512,7 +1512,7 @@ async fn verify_pushed_manifest(
     }
 
     let access: serde_json::Value = serde_json::from_str(&project_state.access_json)
-        .map_err(|e| ServerError::InvalidProjectState(format!("invalid access_json: {}", e)))?;
+        .map_err(|e| ServerError::InvalidProjectState(format!("invalid access_json: {e}")))?;
     let signer_public_key = access
         .get("members")
         .and_then(|members| members.as_array())
@@ -1536,7 +1536,7 @@ async fn verify_pushed_manifest(
     let signature_bytes = {
         use base64::{Engine as _, engine::general_purpose::STANDARD};
         STANDARD.decode(manifest_signature).map_err(|e| {
-            ServerError::InvalidProjectState(format!("invalid manifest signature: {}", e))
+            ServerError::InvalidProjectState(format!("invalid manifest signature: {e}"))
         })?
     };
     if signature_bytes.len() != 64 {
@@ -1545,11 +1545,11 @@ async fn verify_pushed_manifest(
         ));
     }
     let signature = ed25519_dalek::Signature::from_slice(&signature_bytes)
-        .map_err(|e| ServerError::InvalidProjectState(format!("invalid signature: {}", e)))?;
+        .map_err(|e| ServerError::InvalidProjectState(format!("invalid signature: {e}")))?;
     let public_key_bytes = {
         use base64::{Engine as _, engine::general_purpose::STANDARD};
         STANDARD.decode(&manifest.signer_public_key).map_err(|e| {
-            ServerError::InvalidProjectState(format!("invalid signer public key: {}", e))
+            ServerError::InvalidProjectState(format!("invalid signer public key: {e}"))
         })?
     };
     if public_key_bytes.len() != 32 {
@@ -1560,15 +1560,12 @@ async fn verify_pushed_manifest(
     let mut public_key = [0u8; 32];
     public_key.copy_from_slice(&public_key_bytes);
     let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&public_key)
-        .map_err(|e| ServerError::InvalidProjectState(format!("invalid signer key: {}", e)))?;
+        .map_err(|e| ServerError::InvalidProjectState(format!("invalid signer key: {e}")))?;
     use ed25519_dalek::Verifier;
     verifying_key
         .verify(manifest.compute_hash().as_bytes(), &signature)
         .map_err(|e| {
-            ServerError::InvalidProjectState(format!(
-                "manifest signature verification failed: {}",
-                e
-            ))
+            ServerError::InvalidProjectState(format!("manifest signature verification failed: {e}"))
         })?;
 
     Ok(())
@@ -1599,7 +1596,7 @@ mod tests {
 
     async fn test_repo() -> SqliteRemoteRepository {
         let id = rand::random::<u64>();
-        let path = std::env::temp_dir().join(format!("kagi_route_test_{}.db", id));
+        let path = std::env::temp_dir().join(format!("kagi_route_test_{id}.db"));
         SqliteRemoteRepository::new_file(path).await.unwrap()
     }
 
@@ -2154,7 +2151,7 @@ mod tests {
 
         let files: Vec<_> = (0..1001)
             .map(|i| kagi_sync::domain::project_state::ProjectFile {
-                path: format!("secrets/a{}.enc", i),
+                path: format!("secrets/a{i}.enc"),
                 content: "x".into(),
                 sha256: None,
             })
@@ -3004,10 +3001,7 @@ mod tests {
             .await
             .unwrap();
         let mut headers = axum::http::HeaderMap::new();
-        headers.insert(
-            "authorization",
-            format!("Bearer {}", token).parse().unwrap(),
-        );
+        headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
         let resp = metrics_handler(State(state), headers).await.unwrap();
         let (parts, body) = resp.into_response().into_parts();
         assert_eq!(parts.status, 200);

@@ -2,10 +2,13 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Constraint;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::Span;
-use ratatui::widgets::{Block, Borders, Row, Table};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Row, Table};
 use std::io;
+
+use super::layout;
+use super::theme::Theme;
 
 struct AuditItem {
     timestamp: String,
@@ -71,38 +74,20 @@ pub fn run_tui_audit_log(events: Vec<serde_json::Value>) -> anyhow::Result<()> {
     };
     app.filter_events();
 
-    crossterm::terminal::enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    crossterm::execute!(
-        stdout,
-        crossterm::terminal::EnterAlternateScreen,
-        crossterm::event::EnableMouseCapture
-    )?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    let res = run_app(&mut terminal, &mut app);
-
-    crossterm::terminal::disable_raw_mode()?;
-    crossterm::execute!(
-        terminal.backend_mut(),
-        crossterm::terminal::LeaveAlternateScreen,
-        crossterm::event::DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
-
-    if let Err(e) = res {
-        return Err(anyhow::anyhow!("TUI error: {}", e));
-    }
-    Ok(())
+    let theme = Theme::default();
+    layout::run_tui(|terminal| run_app(terminal, &mut app, &theme))
 }
 
-fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> io::Result<()> {
+fn run_app(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut App,
+    theme: &Theme,
+) -> io::Result<()> {
     let mut last_tick = std::time::Instant::now();
     let tick_rate = std::time::Duration::from_millis(250);
 
     loop {
-        terminal.draw(|f| draw_ui(f, app))?;
+        terminal.draw(|f| draw_ui(f, app, theme))?;
 
         let timeout = tick_rate.saturating_sub(last_tick.elapsed());
         if crossterm::event::poll(timeout)?
@@ -152,13 +137,26 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
     }
 }
 
-fn draw_ui(f: &mut ratatui::Frame, app: &App) {
-    let header_style = Style::default()
-        .fg(Color::Rgb(35, 82, 133))
-        .add_modifier(Modifier::BOLD);
-    let muted_style = Style::default().fg(Color::Rgb(140, 140, 140));
-    let accent_style = Style::default().fg(Color::Rgb(164, 74, 61));
-    let warning_style = Style::default().fg(Color::Rgb(188, 111, 35));
+fn draw_ui(f: &mut ratatui::Frame, app: &App, theme: &Theme) {
+    let title = if app.show_search {
+        format!("Audit Log (filter: {})", app.search_query)
+    } else {
+        format!("Audit Log ({} / {})", app.filtered.len(), app.events.len())
+    };
+
+    let idx = app.current_event_index();
+    let footer = if app.show_search {
+        "Enter=confirm  Esc=clear".to_string()
+    } else {
+        let hints = "j/k=navigate  /=search  q=quit";
+        if let Some(e) = app.events.get(idx) {
+            format!("{} | {}  {hints}", e.event_type, e.project_id)
+        } else {
+            hints.to_string()
+        }
+    };
+
+    let content = layout::draw_frame(f, theme, &title, &footer);
 
     let rows: Vec<Row> = app
         .filtered
@@ -166,31 +164,26 @@ fn draw_ui(f: &mut ratatui::Frame, app: &App) {
         .enumerate()
         .map(|(i, &fi)| {
             let e = &app.events[fi];
-            let style = if i == app.selected {
-                Style::default().add_modifier(Modifier::REVERSED)
+            let row_style = if i == app.selected {
+                theme.highlight_style()
             } else {
                 Style::default()
             };
             Row::new(vec![
-                Span::styled(&e.timestamp, muted_style),
-                Span::styled(&e.event_type, accent_style),
-                Span::styled(&e.project_id, style.fg(Color::White)),
-                Span::styled(&e.actor, muted_style),
-                Span::styled(&e.metadata, muted_style),
+                Span::styled(&e.timestamp, theme.muted_style()),
+                Span::styled(&e.event_type, theme.key_hint_style()),
+                Span::styled(&e.project_id, theme.title_style()),
+                Span::styled(&e.actor, theme.muted_style()),
+                Span::styled(&e.metadata, theme.muted_style()),
             ])
+            .style(row_style)
             .height(1)
         })
         .collect();
 
     let header = Row::new(vec!["Timestamp", "Event", "Project", "Actor", "Metadata"])
-        .style(header_style)
+        .style(theme.header_style())
         .height(1);
-
-    let title = if app.show_search {
-        format!("Audit Log (filter: {})", app.search_query)
-    } else {
-        format!("Audit Log ({} / {})", app.filtered.len(), app.events.len())
-    };
 
     let table = Table::new(
         rows,
@@ -206,29 +199,22 @@ fn draw_ui(f: &mut ratatui::Frame, app: &App) {
     .block(
         Block::default()
             .borders(Borders::ALL)
-            .title(title)
-            .title_style(header_style),
+            .title("Events")
+            .title_style(theme.header_style())
+            .border_style(theme.block_style()),
     );
-    // Status bar
-    let status = if app.show_search {
-        format!("Search: {} | Enter=confirm Esc=clear", app.search_query)
-    } else {
-        let idx = app.current_event_index();
-        let hints = "j/k=navigate /=search q=quit";
-        if let Some(e) = app.events.get(idx) {
-            format!("{} | {} {}", e.event_type, e.project_id, hints)
-        } else {
-            hints.to_string()
-        }
-    };
-    let status_bar = ratatui::widgets::Paragraph::new(Span::styled(status, warning_style));
-    let status_area = ratatui::layout::Layout::default()
-        .direction(ratatui::layout::Direction::Vertical)
-        .constraints([
-            ratatui::layout::Constraint::Min(0),
-            ratatui::layout::Constraint::Length(1),
-        ])
-        .split(f.area());
-    f.render_widget(table, status_area[0]);
-    f.render_widget(status_bar, status_area[1]);
+    f.render_widget(table, content);
+
+    // Search modal
+    if app.show_search {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title("Search")
+            .title_style(theme.header_style())
+            .border_style(theme.block_style());
+        let paragraph = Paragraph::new(app.search_query.clone()).block(block);
+        let area = layout::centered_rect(40, 10, f.area());
+        f.render_widget(Clear, area);
+        f.render_widget(paragraph, area);
+    }
 }

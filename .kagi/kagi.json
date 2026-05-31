@@ -1,0 +1,13 @@
+{
+  "version": "2",
+  "project_id": "kgp_MB1c9txeAYWr",
+  "services": {},
+  "settings": {
+    "nested": false,
+    "envs": [
+      "development",
+      "dev"
+    ],
+    "default_env": "development"
+  }
+}

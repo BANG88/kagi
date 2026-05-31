@@ -70,7 +70,7 @@ pub fn validate_http_transport(remote_url: &str, allow_insecure: bool) -> Result
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
         if !env_override {
-            return Err(DomainError::StoreCorrupted(
+            return Err(DomainError::RemoteProtocolError(
                 "HTTP remotes are only allowed for localhost. Use HTTPS or pass --allow-insecure-http for local testing.".into(),
             ));
         }
@@ -83,7 +83,7 @@ impl RemoteClient {
         validate_http_transport(&remote_url, allow_insecure)?;
         let client = if is_localhost_url(&remote_url) {
             Client::builder().no_proxy().build().map_err(|e| {
-                DomainError::StoreCorrupted(format!("failed to build HTTP client: {}", e))
+                DomainError::RemoteProtocolError(format!("failed to build HTTP client: {e}"))
             })?
         } else {
             Client::new()
@@ -93,11 +93,13 @@ impl RemoteClient {
             .get(&url)
             .send()
             .await
-            .map_err(|e| DomainError::StoreCorrupted(format!("failed to fetch server key: {}", e)))?
+            .map_err(|e| {
+                DomainError::ServerUnavailable(format!("failed to fetch server key: {e}"))
+            })?
             .json()
             .await
             .map_err(|e| {
-                DomainError::StoreCorrupted(format!("invalid server key response: {}", e))
+                DomainError::ServerUnavailable(format!("invalid server key response: {e}"))
             })?;
 
         let server_recipient = parse_recipient(&server_key.recipient)?;
@@ -117,7 +119,7 @@ impl RemoteClient {
     ) -> Result<Self, DomainError> {
         let remote = Self::new(remote_url, allow_insecure).await?;
         if remote.fingerprint != expected_fingerprint {
-            return Err(DomainError::StoreCorrupted(format!(
+            return Err(DomainError::RemoteProtocolError(format!(
                 "server fingerprint mismatch: expected {}, got {}",
                 expected_fingerprint, remote.fingerprint
             )));
@@ -153,22 +155,21 @@ impl RemoteClient {
             .json(&envelope)
             .send()
             .await
-            .map_err(|e| DomainError::StoreCorrupted(format!("request failed: {}", e)))?;
+            .map_err(|e| DomainError::ServerUnavailable(format!("request failed: {e}")))?;
 
         let response_text = response
             .text()
             .await
-            .map_err(|e| DomainError::StoreCorrupted(format!("invalid response body: {}", e)))?;
+            .map_err(|e| DomainError::ServerUnavailable(format!("invalid response body: {e}")))?;
         let response_envelope: ResponseEnvelope =
             serde_json::from_str(&response_text).map_err(|e| {
-                DomainError::StoreCorrupted(format!(
-                    "invalid response: {} | raw: {}",
-                    e, response_text
+                DomainError::ServerUnavailable(format!(
+                    "invalid response: {e} | raw: {response_text}"
                 ))
             })?;
 
         if response_envelope.request_id != plaintext.request_id {
-            return Err(DomainError::StoreCorrupted(
+            return Err(DomainError::RemoteProtocolError(
                 "response request_id mismatch".into(),
             ));
         }
@@ -178,7 +179,7 @@ impl RemoteClient {
             .or(plaintext.claim_secret.as_deref());
         if let Some(key) = mac_key {
             let mac = response_envelope.mac.as_deref().ok_or_else(|| {
-                DomainError::StoreCorrupted("missing response authentication mac".into())
+                DomainError::RemoteProtocolError("missing response authentication mac".into())
             })?;
             if !verify_response_mac(
                 key,
@@ -186,7 +187,7 @@ impl RemoteClient {
                 &response_envelope.ciphertext,
                 mac,
             ) {
-                return Err(DomainError::StoreCorrupted(
+                return Err(DomainError::RemoteProtocolError(
                     "invalid response authentication mac".into(),
                 ));
             }
@@ -199,14 +200,14 @@ impl RemoteClient {
         if decrypted.get("request_id").and_then(|v| v.as_str())
             != Some(plaintext.request_id.as_str())
         {
-            return Err(DomainError::StoreCorrupted(
+            return Err(DomainError::RemoteProtocolError(
                 "decrypted response request_id mismatch".into(),
             ));
         }
 
         if !decrypted
             .get("ok")
-            .and_then(|v| v.as_bool())
+            .and_then(serde_json::Value::as_bool)
             .unwrap_or(false)
         {
             let error = decrypted.get("error").cloned().unwrap_or_default();
@@ -249,7 +250,7 @@ impl RemoteClient {
         claim_secret: &str,
         identity: &x25519::Identity,
     ) -> Result<String, DomainError> {
-        let request_id = format!("kgr_{}", nanoid::nanoid!(12));
+        let request_id = format!(r"kgr_{}", nanoid::nanoid!(12));
         let plaintext = RequestPlaintext {
             version: 1,
             request_id: request_id.clone(),
@@ -258,7 +259,7 @@ impl RemoteClient {
                 .unwrap(),
             operation: "pull".into(),
             method: "POST".into(),
-            path: format!("/v1/projects/{}/pull", project_id),
+            path: format!("/v1/projects/{project_id}/pull"),
             project_id: Some(project_id.to_string()),
             token: None,
             claim_secret: Some(claim_secret.to_string()),
@@ -271,16 +272,16 @@ impl RemoteClient {
             let wrapped = base64::engine::general_purpose::URL_SAFE_NO_PAD
                 .decode(wrapped_b64)
                 .map_err(|e| {
-                    DomainError::StoreCorrupted(format!("invalid wrapped token: {}", e))
+                    DomainError::RemoteProtocolError(format!("invalid wrapped token: {e}"))
                 })?;
             let decrypted = crate::infrastructure::remote_envelope::decrypt_bytes(
                 &wrapped, identity,
             )
             .map_err(|e| {
-                DomainError::StoreCorrupted(format!("failed to decrypt wrapped token: {}", e))
+                DomainError::RemoteProtocolError(format!("failed to decrypt wrapped token: {e}"))
             })?;
             String::from_utf8(decrypted)
-                .map_err(|e| DomainError::StoreCorrupted(format!("invalid token: {}", e)))
+                .map_err(|e| DomainError::RemoteProtocolError(format!("invalid token: {e}")))
         } else {
             Err(DomainError::ProjectTokenUnavailable(
                 "no project token available; ask an active member/admin to approve this member, then run `kagi pull`"
@@ -296,7 +297,7 @@ impl RemoteClient {
         join_request: &MemberJoinRequest,
         identity: &x25519::Identity,
     ) -> Result<JoinResponse, ClientError> {
-        let request_id = format!("kgr_{}", nanoid::nanoid!(12));
+        let request_id = format!(r"kgr_{}", nanoid::nanoid!(12));
         let plaintext = RequestPlaintext {
             version: 1,
             request_id: request_id.clone(),
@@ -305,7 +306,7 @@ impl RemoteClient {
                 .unwrap(),
             operation: "join".into(),
             method: "POST".into(),
-            path: format!("/v1/projects/{}/join", project_id),
+            path: format!("/v1/projects/{project_id}/join"),
             project_id: Some(project_id.to_string()),
             token: Some(token.to_string()),
             claim_secret: None,
@@ -332,7 +333,7 @@ impl RemoteClient {
         member_id: &str,
         identity: &x25519::Identity,
     ) -> Result<TokenIssueResponse, ClientError> {
-        let request_id = format!("kgr_{}", nanoid::nanoid!(12));
+        let request_id = format!(r"kgr_{}", nanoid::nanoid!(12));
         let plaintext = RequestPlaintext {
             version: 1,
             request_id: request_id.clone(),
@@ -341,7 +342,7 @@ impl RemoteClient {
                 .unwrap(),
             operation: "token_issue".into(),
             method: "POST".into(),
-            path: format!("/v1/projects/{}/tokens/issue", project_id),
+            path: format!("/v1/projects/{project_id}/tokens/issue"),
             project_id: Some(project_id.to_string()),
             token: Some(token.to_string()),
             claim_secret: None,
@@ -363,7 +364,7 @@ impl RemoteClient {
         token: &str,
         identity: &x25519::Identity,
     ) -> Result<serde_json::Value, ClientError> {
-        let request_id = format!("kgr_{}", nanoid::nanoid!(12));
+        let request_id = format!(r"kgr_{}", nanoid::nanoid!(12));
         let plaintext = RequestPlaintext {
             version: 1,
             request_id: request_id.clone(),
@@ -372,7 +373,7 @@ impl RemoteClient {
                 .unwrap(),
             operation: "token_list".into(),
             method: "POST".into(),
-            path: format!("/v1/projects/{}/tokens/list", project_id),
+            path: format!("/v1/projects/{project_id}/tokens/list"),
             project_id: Some(project_id.to_string()),
             token: Some(token.to_string()),
             claim_secret: None,
@@ -390,7 +391,7 @@ impl RemoteClient {
         token_ids: &[String],
         identity: &x25519::Identity,
     ) -> Result<serde_json::Value, ClientError> {
-        let request_id = format!("kgr_{}", nanoid::nanoid!(12));
+        let request_id = format!(r"kgr_{}", nanoid::nanoid!(12));
         let plaintext = RequestPlaintext {
             version: 1,
             request_id: request_id.clone(),
@@ -399,7 +400,7 @@ impl RemoteClient {
                 .unwrap(),
             operation: "token_revoke".into(),
             method: "POST".into(),
-            path: format!("/v1/projects/{}/tokens/revoke", project_id),
+            path: format!("/v1/projects/{project_id}/tokens/revoke"),
             project_id: Some(project_id.to_string()),
             token: Some(token.to_string()),
             claim_secret: None,
@@ -419,7 +420,7 @@ impl RemoteClient {
         limit: i64,
         identity: &x25519::Identity,
     ) -> Result<serde_json::Value, ClientError> {
-        let request_id = format!("kgr_{}", nanoid::nanoid!(12));
+        let request_id = format!(r"kgr_{}", nanoid::nanoid!(12));
         let mut payload = serde_json::json!({
             "limit": limit.clamp(1, 500),
         });

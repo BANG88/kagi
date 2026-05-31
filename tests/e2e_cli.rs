@@ -409,13 +409,13 @@ fn test_e2e_server_full_remote_workflow() {
     }
 
     let port = port.unwrap();
-    let base_url = format!("http://127.0.0.1:{}", port);
+    let base_url = format!("http://127.0.0.1:{port}");
 
     // wait for HTTP readiness
     let mut ready = false;
     for _ in 0..50 {
         std::thread::sleep(std::time::Duration::from_millis(100));
-        if let Ok(mut stream) = std::net::TcpStream::connect(format!("127.0.0.1:{}", port))
+        if let Ok(mut stream) = std::net::TcpStream::connect(format!("127.0.0.1:{port}"))
             && stream
                 .write_all(b"GET /v1/server-key HTTP/1.1\r\nHost: localhost\r\n\r\n")
                 .is_ok()
@@ -484,14 +484,14 @@ fn test_e2e_server_full_remote_workflow() {
     cmd.assert().success();
 
     // 10. /v1/metrics with admin token returns data
-    let body = http_get_json(&format!("{}/v1/metrics", base_url), Some(&token));
+    let body = http_get_json(&format!("{base_url}/v1/metrics"), Some(&token));
     assert!(body["active_admins"].is_number());
     assert!(body["active_projects"].is_number());
     assert!(body["active_tokens"].is_number());
     assert!(body["db_size"].is_number());
 
     // 11. /v1/metrics without token returns 401
-    let body = http_get_json(&format!("{}/v1/metrics", base_url), None);
+    let body = http_get_json(&format!("{base_url}/v1/metrics"), None);
     assert!(!body["ok"].as_bool().unwrap_or(true));
     assert_eq!(body["error"]["code"].as_str(), Some("auth_failed"));
 
@@ -660,7 +660,7 @@ fn test_e2e_local_advanced() {
     // rotation journal is stored in KAGI_HOME/projects/{project_id}.rotation.json
     let journal_dir = std::path::Path::new(&home_path).join("projects");
     fs::create_dir_all(&journal_dir).unwrap();
-    let journal_path = journal_dir.join(format!("{}.rotation.json", project_id));
+    let journal_path = journal_dir.join(format!("{project_id}.rotation.json"));
     fs::write(
         &journal_path,
         serde_json::to_string_pretty(&journal).unwrap(),
@@ -787,13 +787,13 @@ fn test_e2e_server_advanced() {
     }
 
     let port = port.unwrap();
-    let base_url = format!("http://127.0.0.1:{}", port);
+    let base_url = format!("http://127.0.0.1:{port}");
 
     // wait for HTTP readiness
     let mut ready = false;
     for _ in 0..50 {
         std::thread::sleep(std::time::Duration::from_millis(100));
-        if let Ok(mut stream) = std::net::TcpStream::connect(format!("127.0.0.1:{}", port))
+        if let Ok(mut stream) = std::net::TcpStream::connect(format!("127.0.0.1:{port}"))
             && stream
                 .write_all(b"GET /v1/server-key HTTP/1.1\r\nHost: localhost\r\n\r\n")
                 .is_ok()
@@ -876,14 +876,13 @@ fn http_get_json(url: &str, token: Option<&str>) -> serde_json::Value {
     let mut cmd = std::process::Command::new("curl");
     cmd.args(["-s", "-w", "\\n%{http_code}", url]);
     if let Some(t) = token {
-        cmd.arg("-H").arg(format!("Authorization: Bearer {}", t));
+        cmd.arg("-H").arg(format!("Authorization: Bearer {t}"));
     }
     let output = cmd.output().expect("curl failed");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let lines: Vec<&str> = stdout.lines().collect();
     let body = lines.first().unwrap_or(&"{}");
-    serde_json::from_str(body)
-        .unwrap_or_else(|_| panic!("failed to parse JSON from {}: {}", url, body))
+    serde_json::from_str(body).unwrap_or_else(|_| panic!("failed to parse JSON from {url}: {body}"))
 }
 
 #[cfg(unix)]
@@ -910,7 +909,7 @@ fn test_e2e_interactive_unset() {
         &["unset", "api", "dev", "KEY"],
         &["y"],
     );
-    assert!(status.success(), "unset failed: {}", output);
+    assert!(status.success(), "unset failed: {output}");
     assert!(output.contains("unset"));
 
     // Verify the key is gone
@@ -951,7 +950,7 @@ fn test_e2e_interactive_env_del() {
         &["env", "del", "test", "--plain"],
         &["test"],
     );
-    assert!(status.success(), "env del failed: {}", output);
+    assert!(status.success(), "env del failed: {output}");
     assert!(output.contains("deleted environment"));
 
     // Verify test env is gone
@@ -961,6 +960,37 @@ fn test_e2e_interactive_env_del() {
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("test").not());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_e2e_interactive_import_cancel_does_not_write() {
+    let home = setup_kagi_home();
+    let home_path = home.path().to_str().unwrap().to_string();
+    let project_dir = TempDir::new().unwrap();
+    let project_path = project_dir.path();
+
+    let mut cmd = kagi_bin(&home_path);
+    cmd.current_dir(project_path);
+    cmd.args(["init", "--envs", "dev"]);
+    cmd.assert().success();
+
+    let env_file = project_path.join(".env");
+    fs::write(&env_file, "API_KEY=secret\n").unwrap();
+
+    let (status, output) = run_kagi_interactive(
+        &home_path,
+        project_path,
+        &["import", "api", "dev", "--file", env_file.to_str().unwrap()],
+        &["n"],
+    );
+    assert!(status.success(), "import cancel failed: {output}");
+    assert!(output.contains("aborted."));
+
+    let mut cmd = kagi_bin(&home_path);
+    cmd.current_dir(project_path);
+    cmd.args(["run", "api", "dev", "sh", "-c", "test -z \"${API_KEY+x}\""]);
+    cmd.assert().success();
 }
 
 #[cfg(unix)]
@@ -1006,7 +1036,7 @@ fn test_e2e_interactive_member_del() {
         &["member", "del", &pending_member_id],
         &[&pending_member_id],
     );
-    assert!(status.success(), "member del failed: {}", output);
+    assert!(status.success(), "member del failed: {output}");
     assert!(output.contains("removed member"));
 
     // Verify the member is marked as removed
@@ -1039,10 +1069,10 @@ fn test_e2e_interactive_search_values() {
     let (status, output) = run_kagi_interactive(
         &home_path,
         project_path,
-        &["search", "--values", "localhost"],
+        &["search", "--values", "--plain", "localhost"],
         &["y"],
     );
-    assert!(status.success(), "search --values failed: {}", output);
+    assert!(status.success(), "search --values --plain failed: {output}");
     assert!(output.contains("api/dev.HOST"));
 }
 
@@ -1073,7 +1103,7 @@ fn test_e2e_interactive_doctor_fix() {
     // rotation journal is stored in KAGI_HOME/projects/{project_id}.rotation.json
     let journal_dir = std::path::Path::new(&home_path).join("projects");
     fs::create_dir_all(&journal_dir).unwrap();
-    let journal_path = journal_dir.join(format!("{}.rotation.json", project_id));
+    let journal_path = journal_dir.join(format!("{project_id}.rotation.json"));
     fs::write(
         &journal_path,
         serde_json::to_string_pretty(&journal).unwrap(),
@@ -1086,7 +1116,36 @@ fn test_e2e_interactive_doctor_fix() {
         &["doctor", "--fix", "--plain"],
         &["y"],
     );
-    assert!(status.success(), "doctor --fix failed: {}", output);
+    assert!(status.success(), "doctor --fix failed: {output}");
     assert!(output.contains("recovered pending rotation"));
     assert!(!journal_path.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_e2e_interactive_init_migration() {
+    let home = setup_kagi_home();
+    let home_path = home.path().to_str().unwrap().to_string();
+    let project_dir = TempDir::new().unwrap();
+    let project_path = project_dir.path();
+
+    fs::write(project_path.join(".env"), "ROOT_KEY=root\n").unwrap();
+    fs::create_dir(project_path.join("api")).unwrap();
+    fs::write(project_path.join("api/.env"), "API_KEY=api\n").unwrap();
+
+    let (status, output) =
+        run_kagi_interactive(&home_path, project_path, &["init", "--envs", "dev"], &["y"]);
+    assert!(status.success(), "init with migration failed: {output}");
+    assert!(
+        output.contains("migrated"),
+        "expected migration output, got: {output}"
+    );
+    assert!(
+        output.contains(".env"),
+        "expected .env file path in output, got: {output}"
+    );
+    assert!(
+        output.contains("api/.env"),
+        "expected api .env file path in output, got: {output}"
+    );
 }

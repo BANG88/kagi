@@ -4,10 +4,14 @@ use kagi_store::fs_store::FileStore;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table};
-use std::io;
+use ratatui::widgets::{Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table};
+use std::io::{self, Write};
+use std::process::{Command, Stdio};
+
+use super::layout;
+use super::theme::Theme;
 
 struct ScopeItem {
     name: String,
@@ -23,8 +27,11 @@ struct App {
     search_query: String,
     search_selected: usize,
     show_copy_modal: bool,
+    copy_error: bool,
     copy_message: String,
     all_keys_filtered: Vec<(usize, usize)>,
+    show_confirm: bool,
+    confirmed_reveal: bool,
 }
 
 impl App {
@@ -76,7 +83,7 @@ impl App {
     }
 }
 
-pub fn run_tui_get(store: FileStore, show_values: bool) -> anyhow::Result<()> {
+pub fn run_tui_get(store: FileStore, _show_values: bool) -> anyhow::Result<()> {
     let mut scopes = Vec::new();
     for scope_name in store.list_services()? {
         let items = store.load(&scope_name)?;
@@ -104,56 +111,29 @@ pub fn run_tui_get(store: FileStore, show_values: bool) -> anyhow::Result<()> {
         search_query: String::new(),
         search_selected: 0,
         show_copy_modal: false,
+        copy_error: false,
         copy_message: String::new(),
         all_keys_filtered: Vec::new(),
+        show_confirm: false,
+        confirmed_reveal: false,
     };
     app.all_keys_filtered = app.filtered_keys();
 
-    if show_values {
-        // Pre-reveal all keys if --show is passed
-        for si in 0..app.scopes.len() {
-            for ki in 0..app.scopes[si].keys.len() {
-                app.revealed.insert((si, ki));
-            }
-        }
-    }
-
-    crossterm::terminal::enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    crossterm::execute!(
-        stdout,
-        crossterm::terminal::EnterAlternateScreen,
-        crossterm::event::EnableMouseCapture
-    )?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    let res = run_app(&mut terminal, &mut app, &store);
-
-    crossterm::terminal::disable_raw_mode()?;
-    crossterm::execute!(
-        terminal.backend_mut(),
-        crossterm::terminal::LeaveAlternateScreen,
-        crossterm::event::DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
-
-    if let Err(e) = res {
-        return Err(anyhow::anyhow!("TUI error: {}", e));
-    }
-    Ok(())
+    let theme = Theme::default();
+    layout::run_tui(|terminal| run_app(terminal, &mut app, &store, &theme))
 }
 
 fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
     store: &FileStore,
+    theme: &Theme,
 ) -> io::Result<()> {
     let mut last_tick = std::time::Instant::now();
     let tick_rate = std::time::Duration::from_millis(250);
 
     loop {
-        terminal.draw(|f| draw_ui(f, app))?;
+        terminal.draw(|f| draw_ui(f, app, theme))?;
 
         let timeout = tick_rate.saturating_sub(last_tick.elapsed());
         if crossterm::event::poll(timeout)?
@@ -164,6 +144,19 @@ fn run_app(
             }
             if app.show_copy_modal {
                 app.show_copy_modal = false;
+                continue;
+            }
+            if app.show_confirm {
+                app.show_confirm = false;
+                match key.code {
+                    KeyCode::Char('y') | KeyCode::Char('Y') => {
+                        app.confirmed_reveal = true;
+                        let si = app.current_scope_index();
+                        let ki = app.current_key_index();
+                        app.revealed.insert((si, ki));
+                    }
+                    _ => {}
+                }
                 continue;
             }
             if app.show_search {
@@ -192,9 +185,12 @@ fn run_app(
                 KeyCode::Char('s') | KeyCode::Enter => {
                     let si = app.current_scope_index();
                     let ki = app.current_key_index();
-                    let key = app.revealed.take(&(si, ki));
-                    if key.is_none() {
+                    if app.revealed.contains(&(si, ki)) {
+                        app.revealed.remove(&(si, ki));
+                    } else if app.confirmed_reveal {
                         app.revealed.insert((si, ki));
+                    } else {
+                        app.show_confirm = true;
                     }
                 }
                 KeyCode::Char('/') => {
@@ -210,9 +206,17 @@ fn run_app(
                         if let Ok(service) = store.load(scope_name)
                             && let Some(secret) = service.get_secret(key_name)
                         {
-                            let _value = secret.value.clone();
-                            app.copy_message =
-                                format!("Copied {}.{} to clipboard", scope_name, key_name);
+                            match copy_to_clipboard(&secret.value) {
+                                Ok(()) => {
+                                    app.copy_error = false;
+                                    app.copy_message =
+                                        format!("Copied {scope_name}.{key_name} to clipboard");
+                                }
+                                Err(error) => {
+                                    app.copy_error = true;
+                                    app.copy_message = format!("Copy failed: {error}");
+                                }
+                            }
                             app.show_copy_modal = true;
                         }
                     }
@@ -261,53 +265,137 @@ fn run_app(
     }
 }
 
-fn draw_ui(f: &mut ratatui::Frame, app: &App) {
-    let main_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(1)])
-        .split(f.area());
+struct ClipboardCommand<'a> {
+    program: &'a str,
+    args: &'a [&'a str],
+}
 
-    let body_layout = Layout::default()
+fn copy_to_clipboard(value: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let commands = [ClipboardCommand {
+        program: "pbcopy",
+        args: &[],
+    }];
+
+    #[cfg(windows)]
+    let commands = [ClipboardCommand {
+        program: "clip",
+        args: &[],
+    }];
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let commands = [
+        ClipboardCommand {
+            program: "wl-copy",
+            args: &[],
+        },
+        ClipboardCommand {
+            program: "xclip",
+            args: &["-selection", "clipboard"],
+        },
+        ClipboardCommand {
+            program: "xsel",
+            args: &["--clipboard", "--input"],
+        },
+    ];
+
+    copy_to_clipboard_with_commands(value, &commands)
+}
+
+fn copy_to_clipboard_with_commands(
+    value: &str,
+    commands: &[ClipboardCommand<'_>],
+) -> Result<(), String> {
+    let mut errors = Vec::new();
+    for command in commands {
+        match copy_with_command(command, value) {
+            Ok(()) => return Ok(()),
+            Err(error) => errors.push(error),
+        }
+    }
+
+    if errors.is_empty() {
+        Err("no clipboard command configured".to_string())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+fn copy_with_command(command: &ClipboardCommand<'_>, value: &str) -> Result<(), String> {
+    let mut child = Command::new(command.program)
+        .args(command.args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("{}: {e}", command.program))?;
+
+    {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| format!("{}: stdin unavailable", command.program))?;
+        stdin
+            .write_all(value.as_bytes())
+            .map_err(|e| format!("{}: {e}", command.program))?;
+    }
+
+    let status = child
+        .wait()
+        .map_err(|e| format!("{}: {e}", command.program))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("{}: exited with {status}", command.program))
+    }
+}
+
+fn draw_ui(f: &mut ratatui::Frame, app: &App, theme: &Theme) {
+    let content = layout::draw_frame(
+        f,
+        theme,
+        "Secret Browser",
+        "s/Enter=reveal  c=copy  /=search  q=quit",
+    );
+
+    let body = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
-        .split(main_layout[0]);
+        .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
+        .split(content);
 
-    let header_style = Style::default()
-        .fg(Color::Rgb(35, 82, 133))
-        .add_modifier(Modifier::BOLD);
-    let active_style = Style::default()
-        .fg(Color::Rgb(72, 121, 78))
-        .add_modifier(Modifier::BOLD);
-    let key_style = Style::default().fg(Color::Rgb(164, 74, 61));
-    let muted_style = Style::default().fg(Color::Rgb(140, 140, 140));
-    let warning_style = Style::default().fg(Color::Rgb(188, 111, 35));
+    let left = body[0];
+    let right = body[1];
 
-    // Left pane: scopes
-    let scope_items: Vec<Line> = app
+    // Left: scope list using List widget
+    let scope_items: Vec<ListItem> = app
         .scopes
         .iter()
         .enumerate()
         .map(|(i, scope)| {
             let style = if i == app.current_scope_index() {
-                active_style
+                theme.highlight_style()
             } else {
-                muted_style
+                Style::default().fg(theme.muted())
             };
-            Line::from(Span::styled(&scope.name, style))
+            ListItem::new(Line::from(Span::styled(&scope.name, style)))
         })
         .collect();
 
-    let left_block = Block::default()
-        .borders(Borders::ALL)
-        .title("Scopes")
-        .title_style(header_style);
-    let left_paragraph = Paragraph::new(scope_items).block(left_block);
-    f.render_widget(left_paragraph, body_layout[0]);
+    let list = List::new(scope_items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Scopes")
+                .title_style(theme.header_style())
+                .border_style(theme.block_style()),
+        )
+        .highlight_style(theme.highlight_style());
+    f.render_widget(list, left);
 
-    // Right pane: keys table
+    // Right: keys table
     let si = app.current_scope_index();
     let header = Row::new(vec!["Key", "Value", "Description"])
-        .style(header_style)
+        .style(theme.header_style())
         .height(1);
 
     let rows: Vec<Row> = if let Some(scope) = app.scopes.get(si) {
@@ -325,22 +413,22 @@ fn draw_ui(f: &mut ratatui::Frame, app: &App) {
                 };
                 let desc_display = desc.as_deref().unwrap_or("");
                 let style = if is_selected {
-                    Style::default().add_modifier(Modifier::REVERSED)
+                    theme.highlight_style()
                 } else {
                     Style::default()
                 };
                 Row::new(vec![
-                    Cell::from(Span::styled(key, key_style)).style(style),
-                    Cell::from(Span::styled(
+                    Cell::new(Span::styled(key, theme.key_hint_style())).style(style),
+                    Cell::new(Span::styled(
                         value_display,
                         if is_revealed {
-                            Style::default().fg(Color::Green)
+                            Style::default().fg(theme.success())
                         } else {
-                            muted_style
+                            Style::default().fg(theme.muted())
                         },
                     ))
                     .style(style),
-                    Cell::from(Span::styled(desc_display, muted_style)).style(style),
+                    Cell::new(Span::styled(desc_display, theme.muted_style())).style(style),
                 ])
                 .height(1)
             })
@@ -356,7 +444,8 @@ fn draw_ui(f: &mut ratatui::Frame, app: &App) {
             app.scopes.get(si).map(|s| s.name.as_str()).unwrap_or("?"),
             app.all_keys_filtered.len()
         ))
-        .title_style(header_style);
+        .title_style(theme.header_style())
+        .border_style(theme.block_style());
     let table = Table::new(
         rows,
         [
@@ -367,42 +456,40 @@ fn draw_ui(f: &mut ratatui::Frame, app: &App) {
     )
     .header(header)
     .block(right_block);
-    f.render_widget(table, body_layout[1]);
+    f.render_widget(table, right);
 
-    // Status bar
-    let status = if app.show_search {
-        format!("Search: {} | Enter=confirm Esc=clear", app.search_query)
-    } else {
-        let si = app.current_scope_index();
-        let ki = app.current_key_index();
-        let revealed = app.revealed.contains(&(si, ki));
-        let hints = if revealed {
-            "s/Enter=hide | c=copy | /=search | q=quit"
-        } else {
-            "s/Enter=reveal | c=copy | /=search | q=quit"
-        };
-        format!(
-            "{} [{}] {}",
-            app.scopes.get(si).map(|s| s.name.as_str()).unwrap_or("?"),
-            app.scopes
-                .get(si)
-                .and_then(|s| s.keys.get(ki))
-                .map(|(k, _, _)| k.as_str())
-                .unwrap_or("?"),
-            hints
-        )
-    };
-    let status_bar = Paragraph::new(Span::styled(status, warning_style));
-    f.render_widget(status_bar, main_layout[1]);
+    // Confirm modal
+    if app.show_confirm {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title("Confirm Reveal")
+            .title_style(theme.warning_style())
+            .border_style(theme.block_style());
+        let paragraph = Paragraph::new("Reveal decrypted value? (y/N)").block(block);
+        let area = layout::centered_rect(40, 10, f.area());
+        f.render_widget(Clear, area);
+        f.render_widget(paragraph, area);
+    }
 
     // Copy modal
     if app.show_copy_modal {
+        let title = if app.copy_error {
+            "Copy Failed"
+        } else {
+            "Copied"
+        };
+        let title_style = if app.copy_error {
+            theme.error_style()
+        } else {
+            theme.success_style()
+        };
         let block = Block::default()
             .borders(Borders::ALL)
-            .title("Copied")
-            .title_style(Style::default().fg(Color::Green));
+            .title(title)
+            .title_style(title_style)
+            .border_style(theme.block_style());
         let paragraph = Paragraph::new(app.copy_message.clone()).block(block);
-        let area = centered_rect(40, 20, f.area());
+        let area = layout::centered_rect(40, 20, f.area());
         f.render_widget(Clear, area);
         f.render_widget(paragraph, area);
     }
@@ -412,34 +499,41 @@ fn draw_ui(f: &mut ratatui::Frame, app: &App) {
         let block = Block::default()
             .borders(Borders::ALL)
             .title("Search")
-            .title_style(header_style);
+            .title_style(theme.header_style())
+            .border_style(theme.block_style());
         let paragraph = Paragraph::new(app.search_query.clone()).block(block);
-        let area = centered_rect(40, 10, f.area());
+        let area = layout::centered_rect(40, 10, f.area());
         f.render_widget(Clear, area);
         f.render_widget(paragraph, area);
     }
 }
 
-fn centered_rect(
-    percent_x: u16,
-    percent_y: u16,
-    r: ratatui::layout::Rect,
-) -> ratatui::layout::Rect {
-    let popup_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(r);
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(popup_layout[1])[1]
+    #[cfg(unix)]
+    #[test]
+    fn copy_to_clipboard_command_writes_value_to_stdin() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let script = dir.path().join("copy.sh");
+        let output = dir.path().join("clipboard.txt");
+        std::fs::write(&script, "#!/bin/sh\ncat > \"$1\"\n").unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&script, permissions).unwrap();
+
+        let output_arg = output.to_str().unwrap().to_string();
+        let args = [output_arg.as_str()];
+        let commands = [ClipboardCommand {
+            program: script.to_str().unwrap(),
+            args: &args,
+        }];
+
+        copy_to_clipboard_with_commands("secret-value", &commands).unwrap();
+
+        assert_eq!(std::fs::read_to_string(output).unwrap(), "secret-value");
+    }
 }

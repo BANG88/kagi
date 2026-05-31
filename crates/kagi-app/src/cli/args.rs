@@ -31,6 +31,10 @@ pub enum Commands {
         /// Overwrite existing .kagi/ directory
         #[arg(long)]
         force: bool,
+
+        /// Skip .env migration wizard
+        #[arg(long)]
+        no_migrate: bool,
     },
 
     /// Store an encrypted secret for an environment
@@ -104,6 +108,10 @@ pub enum Commands {
         /// Also search decrypted values (requires interactive terminal)
         #[arg(long)]
         values: bool,
+
+        /// Force plain text output (disable TUI)
+        #[arg(long)]
+        plain: bool,
     },
 
     /// Run a command with injected environment variables
@@ -191,6 +199,10 @@ pub enum Commands {
             default_value = "development,test,staging,production"
         )]
         envs: Vec<String>,
+
+        /// Force plain text output (disable TUI)
+        #[arg(long)]
+        plain: bool,
     },
 
     /// Manage default environments
@@ -261,6 +273,12 @@ pub enum Commands {
         token: Option<String>,
     },
 
+    /// Generate shell completions for kagi
+    Completions {
+        /// Shell to generate completions for (bash, zsh, fish, elvish, powershell)
+        shell: String,
+    },
+
     /// Create a backup of the project and local credentials
     Backup {
         /// Output directory for the backup
@@ -287,7 +305,11 @@ pub enum Commands {
 #[derive(Subcommand)]
 pub enum EnvCommands {
     /// List configured default environments
-    List,
+    List {
+        /// Force plain text output (disable TUI)
+        #[arg(long)]
+        plain: bool,
+    },
 
     /// Add an environment to every service
     Add {
@@ -333,14 +355,14 @@ pub enum MemberCommands {
 
     /// Approve a pending join request
     Approve {
-        /// Member id from `kagi member list`
-        member_id: String,
+        /// Member id from `kagi member list`. Omit to open TUI selector.
+        member_id: Option<String>,
     },
 
     /// Remove a member's access wrapper
     Del {
-        /// Member id from `kagi member list`
-        member_id: String,
+        /// Member id from `kagi member list`. Omit to open TUI selector.
+        member_id: Option<String>,
     },
 }
 
@@ -386,6 +408,10 @@ pub enum TokenCommands {
         /// Remote server URL (optional if saved via `kagi remote login`)
         #[arg(long)]
         remote: Option<String>,
+
+        /// Force plain text output (disable TUI)
+        #[arg(long)]
+        plain: bool,
     },
 
     /// Revoke a project token
@@ -414,6 +440,10 @@ pub enum ProjectCommands {
         /// Remote server URL (optional if saved via `kagi remote login`)
         #[arg(long)]
         remote: Option<String>,
+
+        /// Force plain text output (disable TUI)
+        #[arg(long)]
+        plain: bool,
     },
 
     /// Approve a pending project registration request (admin only)
@@ -483,6 +513,35 @@ mod tests {
         assert!(
             !names.contains(&"remote"),
             "remote should NOT be present when server feature is disabled"
+        );
+    }
+
+    #[test]
+    fn test_completions_command_exists() {
+        let cmd = Cli::command();
+        let names: Vec<_> = cmd.get_subcommands().map(|c| c.get_name()).collect();
+        assert!(
+            names.contains(&"completions"),
+            "completions should be present"
+        );
+    }
+
+    #[test]
+    fn test_completions_accepts_supported_shells() {
+        for shell in ["bash", "zsh", "fish", "elvish", "powershell"] {
+            let args = vec!["kagi", "completions", shell];
+            let result = Cli::try_parse_from(&args);
+            assert!(result.is_ok(), "completions {shell} should parse");
+        }
+    }
+
+    #[test]
+    fn test_completions_rejects_unknown_shell() {
+        let args = vec!["kagi", "completions", "unknown_shell"];
+        let result = Cli::try_parse_from(&args);
+        assert!(
+            result.is_ok(),
+            "unknown shell should parse at CLI level (error handled at runtime)"
         );
     }
 }

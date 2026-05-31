@@ -16,6 +16,10 @@ pub enum DomainError {
     StoreCorrupted(String),
     #[error("Project token unavailable: {0}")]
     ProjectTokenUnavailable(String),
+    #[error("Server unavailable: {0}")]
+    ServerUnavailable(String),
+    #[error("Remote protocol error: {0}")]
+    RemoteProtocolError(String),
     #[error("Remote rejected request ({code}): {message}")]
     RemoteRejected { code: String, message: String },
     #[error("IO error: {0}")]

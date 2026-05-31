@@ -212,8 +212,7 @@ impl KeyManager {
             .retain(|member| member.member_id != member_id || member.status != "pending");
         if state.members.len() == before {
             return Err(DomainError::StoreCorrupted(format!(
-                "pending member not found: {}",
-                member_id
+                "pending member not found: {member_id}"
             )));
         }
         self.save_access_state(&state)?;
@@ -235,7 +234,7 @@ impl KeyManager {
             status: "pending".to_string(),
             wrapped_key: None,
             wrapped_token: None,
-            signing_public_key: signing_public_key.map(|s| s.to_string()),
+            signing_public_key: signing_public_key.map(std::string::ToString::to_string),
         };
         let mut state = self.load_access_state()?;
         upsert_member(&mut state.members, member.clone());
@@ -264,10 +263,10 @@ impl KeyManager {
             .iter_mut()
             .find(|member| member.member_id == member_id && member.status == "pending")
             .ok_or_else(|| {
-                DomainError::StoreCorrupted(format!("join request not found: {}", member_id))
+                DomainError::StoreCorrupted(format!("join request not found: {member_id}"))
             })?;
         let recipient = x25519::Recipient::from_str(&member.recipient)
-            .map_err(|e| DomainError::StoreCorrupted(format!("invalid member recipient: {}", e)))?;
+            .map_err(|e| DomainError::StoreCorrupted(format!("invalid member recipient: {e}")))?;
         member.status = "active".to_string();
         member.wrapped_key = Some(wrap_key_for_recipient(&recipient, &key)?);
         if let Some(wrapped_token) = wrapped_token {
@@ -331,7 +330,7 @@ impl KeyManager {
                 continue;
             };
             let token = String::from_utf8(token_bytes)
-                .map_err(|e| DomainError::StoreCorrupted(format!("invalid token: {}", e)))?;
+                .map_err(|e| DomainError::StoreCorrupted(format!("invalid token: {e}")))?;
             return Ok(Some(token));
         }
         Ok(None)
@@ -364,7 +363,7 @@ impl KeyManager {
                 .iter_mut()
                 .find(|member| member.member_id == member_id)
                 .ok_or_else(|| {
-                    DomainError::StoreCorrupted(format!("member not found: {}", member_id))
+                    DomainError::StoreCorrupted(format!("member not found: {member_id}"))
                 })?;
             if member.status == "active" && active_count <= 1 {
                 return Err(DomainError::StoreCorrupted(
@@ -459,7 +458,7 @@ impl KeyManager {
         let path = self.local_data_dir()?.join("identities/default.agekey");
         let content = fs::read_to_string(path)?;
         x25519::Identity::from_str(content.trim())
-            .map_err(|e| DomainError::StoreCorrupted(format!("invalid local identity key: {}", e)))
+            .map_err(|e| DomainError::StoreCorrupted(format!("invalid local identity key: {e}")))
     }
 
     fn save_identity(&self, identity: &x25519::Identity) -> Result<(), DomainError> {
@@ -474,7 +473,7 @@ impl KeyManager {
     fn local_project_key_path(&self, project_id: &str) -> Result<PathBuf, DomainError> {
         Ok(self
             .local_data_dir()?
-            .join(format!("projects/{}.key", project_id)))
+            .join(format!("projects/{project_id}.key")))
     }
 
     fn load_local_project_key(
@@ -529,7 +528,7 @@ impl KeyManager {
         let entry = keyring_entry(project_id)?;
         entry
             .set_password(&hex::encode(key))
-            .map_err(|e| DomainError::StoreCorrupted(format!("keyring unavailable: {}", e)))?;
+            .map_err(|e| DomainError::StoreCorrupted(format!("keyring unavailable: {e}")))?;
         Ok(())
     }
 
@@ -544,7 +543,7 @@ impl KeyManager {
     fn signing_key_path(&self, member_id: &str) -> Result<PathBuf, DomainError> {
         Ok(self
             .local_data_dir()?
-            .join(format!("identities/{}.signkey", member_id)))
+            .join(format!("identities/{member_id}.signkey")))
     }
 
     fn save_signing_key(
@@ -569,7 +568,7 @@ impl KeyManager {
         let b64 = fs::read_to_string(&path)?;
         let bytes = general_purpose::STANDARD
             .decode(b64.trim())
-            .map_err(|e| DomainError::StoreCorrupted(format!("invalid signing key: {}", e)))?;
+            .map_err(|e| DomainError::StoreCorrupted(format!("invalid signing key: {e}")))?;
         if bytes.len() != 32 {
             return Err(DomainError::StoreCorrupted(
                 "signing key must be 32 bytes".into(),
@@ -718,18 +717,18 @@ fn keyring_disabled() -> bool {
 
 fn keyring_entry(project_id: &str) -> Result<Entry, DomainError> {
     keyring::use_native_store(false)
-        .map_err(|e| DomainError::StoreCorrupted(format!("keyring unavailable: {}", e)))?;
+        .map_err(|e| DomainError::StoreCorrupted(format!("keyring unavailable: {e}")))?;
     Entry::new(KEYRING_SERVICE, project_id)
-        .map_err(|e| DomainError::StoreCorrupted(format!("keyring unavailable: {}", e)))
+        .map_err(|e| DomainError::StoreCorrupted(format!("keyring unavailable: {e}")))
 }
 
 #[cfg(feature = "server")]
 pub fn keyring_admin_entry(server_fingerprint: &str) -> Result<Entry, DomainError> {
     keyring::use_native_store(false)
-        .map_err(|e| DomainError::StoreCorrupted(format!("keyring unavailable: {}", e)))?;
-    let key = format!("admin:{}", server_fingerprint);
+        .map_err(|e| DomainError::StoreCorrupted(format!("keyring unavailable: {e}")))?;
+    let key = format!("admin:{server_fingerprint}");
     Entry::new(KEYRING_SERVICE, &key)
-        .map_err(|e| DomainError::StoreCorrupted(format!("keyring unavailable: {}", e)))
+        .map_err(|e| DomainError::StoreCorrupted(format!("keyring unavailable: {e}")))
 }
 
 #[cfg(test)]

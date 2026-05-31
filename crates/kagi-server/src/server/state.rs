@@ -46,7 +46,7 @@ impl AppState {
         } else {
             let identity = x25519::Identity::generate();
             let pepper: Vec<u8> = (0..32).map(|_| rand::random::<u8>()).collect();
-            let server_key_id = format!("kgs_{}", nanoid::nanoid!(12));
+            let server_key_id = format!(r"kgs_{}", nanoid::nanoid!(12));
             let key_file = ServerKeyFile {
                 version: 1,
                 server_key_id: server_key_id.clone(),
@@ -71,15 +71,15 @@ impl AppState {
         };
 
         let identity = x25519::Identity::from_str(&key_file.age_identity)
-            .map_err(|e| anyhow::anyhow!("invalid server identity: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("invalid server identity: {e}"))?;
         let fingerprint = key_file.server_key_id.clone();
         let token_pepper = base64_decode_url(&key_file.token_pepper)
-            .map_err(|e| anyhow::anyhow!("invalid token pepper: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("invalid token pepper: {e}"))?;
 
         let has_admin = repo
             .has_admin_token()
             .await
-            .map_err(|e| anyhow::anyhow!("failed to check admin token: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("failed to check admin token: {e}"))?;
         if !has_admin {
             let admin_token = ProjectToken::generate_admin_token(fingerprint.clone());
             let token_hash = {
@@ -91,11 +91,11 @@ impl AppState {
                 format!("kh1:{}", base64_encode_url(&hash))
             };
             let caps_json = serde_json::to_string(&admin_token.payload.capabilities)
-                .map_err(|e| anyhow::anyhow!("failed to serialize capabilities: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("failed to serialize capabilities: {e}"))?;
             let now = time::OffsetDateTime::now_utc().to_string();
             repo.create_admin_token(&admin_token.payload.token_id, &token_hash, &caps_json, &now)
                 .await
-                .map_err(|e| anyhow::anyhow!("failed to store admin token: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("failed to store admin token: {e}"))?;
             println!("kagi: generated admin token: {}", admin_token.full_token);
             println!("kagi: store this in KAGI_ADMIN_TOKEN env var for admin operations");
         }
@@ -137,7 +137,7 @@ mod tests {
 
     async fn test_repo() -> SqliteRemoteRepository {
         let id = rand::random::<u64>();
-        let path = std::env::temp_dir().join(format!("kagi_state_test_{}.db", id));
+        let path = std::env::temp_dir().join(format!("kagi_state_test_{id}.db"));
         SqliteRemoteRepository::new_file(path).await.unwrap()
     }
 
