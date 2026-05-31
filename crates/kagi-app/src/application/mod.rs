@@ -1,3 +1,4 @@
+pub mod env_migration;
 pub mod export_env;
 pub mod get_secret;
 pub mod import_env_file;

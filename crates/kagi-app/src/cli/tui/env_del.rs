@@ -3,11 +3,13 @@ use kagi_domain::repository::secret_repo::SecretRepository;
 use kagi_store::fs_store::FileStore;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use std::io;
+
+use super::layout;
+use super::theme::Theme;
 
 struct App {
     env: String,
@@ -18,7 +20,7 @@ struct App {
 
 pub fn run_tui_env_del(store: &FileStore, env: &str) -> anyhow::Result<bool> {
     let all_services = store.list_services()?;
-    let prefix = format!("/{}", env);
+    let prefix = format!("/{env}");
     let affected: Vec<String> = all_services
         .into_iter()
         .filter(|s| s.ends_with(&prefix))
@@ -31,39 +33,21 @@ pub fn run_tui_env_del(store: &FileStore, env: &str) -> anyhow::Result<bool> {
         confirmed: None,
     };
 
-    crossterm::terminal::enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    crossterm::execute!(
-        stdout,
-        crossterm::terminal::EnterAlternateScreen,
-        crossterm::event::EnableMouseCapture
-    )?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    let res = run_app(&mut terminal, &mut app);
-
-    crossterm::terminal::disable_raw_mode()?;
-    crossterm::execute!(
-        terminal.backend_mut(),
-        crossterm::terminal::LeaveAlternateScreen,
-        crossterm::event::DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
-
-    if let Err(e) = res {
-        return Err(anyhow::anyhow!("TUI error: {}", e));
-    }
-
+    let theme = Theme::default();
+    layout::run_tui(|terminal| run_app(terminal, &mut app, &theme))?;
     Ok(app.confirmed == Some(true))
 }
 
-fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> io::Result<()> {
+fn run_app(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut App,
+    theme: &Theme,
+) -> io::Result<()> {
     let tick_rate = std::time::Duration::from_millis(250);
     let mut last_tick = std::time::Instant::now();
 
     loop {
-        terminal.draw(|f| draw_ui(f, app))?;
+        terminal.draw(|f| draw_ui(f, app, theme))?;
 
         if app.confirmed.is_some() {
             return Ok(());
@@ -100,20 +84,19 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
     }
 }
 
-fn draw_ui(f: &mut ratatui::Frame, app: &App) {
-    let error_style = Style::default()
-        .fg(Color::Rgb(190, 55, 43))
-        .add_modifier(Modifier::BOLD);
-    let warning_style = Style::default().fg(Color::Rgb(188, 111, 35));
-    let muted_style = Style::default().fg(Color::Rgb(140, 140, 140));
-    let white_style = Style::default().fg(Color::White);
+fn draw_ui(f: &mut ratatui::Frame, app: &App, theme: &Theme) {
+    let content = layout::draw_frame(f, theme, "Delete Environment", "Esc=cancel  Enter=confirm");
 
-    let area = centered_rect(60, 50, f.area());
+    let error_style = theme.error_style();
+    let warning_style = theme.warning_style();
+    let muted_style = theme.muted_style();
+    let white_style = Style::default().fg(theme.text());
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title("Delete Environment")
-        .title_style(error_style);
+        .title("Confirm")
+        .title_style(error_style)
+        .border_style(theme.block_style());
 
     let mut lines: Vec<Line> = Vec::new();
     let warning_text = format!(
@@ -122,7 +105,7 @@ fn draw_ui(f: &mut ratatui::Frame, app: &App) {
     );
     lines.push(Line::from(vec![
         Span::styled("WARNING: ", error_style),
-        Span::styled(&warning_text, warning_style),
+        Span::styled(warning_text, warning_style),
     ]));
     lines.push(Line::from(""));
 
@@ -158,39 +141,15 @@ fn draw_ui(f: &mut ratatui::Frame, app: &App) {
     );
     let input_style = if app.confirm_input == app.env {
         Style::default()
-            .fg(Color::Green)
+            .fg(theme.success())
             .add_modifier(Modifier::BOLD)
     } else {
         white_style
     };
-    lines.push(Line::from(vec![Span::styled(&input_display, input_style)]));
+    lines.push(Line::from(vec![Span::styled(input_display, input_style)]));
 
     let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
 
-    f.render_widget(Clear, area);
-    f.render_widget(paragraph, area);
-}
-
-fn centered_rect(
-    percent_x: u16,
-    percent_y: u16,
-    r: ratatui::layout::Rect,
-) -> ratatui::layout::Rect {
-    let popup_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(r);
-
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(popup_layout[1])[1]
+    f.render_widget(Clear, content);
+    f.render_widget(paragraph, content);
 }

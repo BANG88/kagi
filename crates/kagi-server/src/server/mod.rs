@@ -33,7 +33,7 @@ pub async fn serve(
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
     let addr = listener.local_addr()?;
-    println!("kagi: server running on http://{}", addr);
+    println!("kagi: server running on http://{addr}");
     tracing::info!("kagi: listening on http://{}", addr);
 
     if bind.ip().is_unspecified() || !bind.ip().is_loopback() {
@@ -135,11 +135,7 @@ mod tests {
     async fn test_health_check_endpoint() {
         let (addr, _db_dir, _key_dir) = spawn_test_server(10 * 1024 * 1024).await;
         let client = test_http_client();
-        let resp = client
-            .get(format!("http://{}/", addr))
-            .send()
-            .await
-            .unwrap();
+        let resp = client.get(format!("http://{addr}/")).send().await.unwrap();
         assert_eq!(resp.status(), 200);
         let body = resp.text().await.unwrap();
         assert!(body.contains("Kagi"));
@@ -151,7 +147,7 @@ mod tests {
         let (addr, _db_dir, _key_dir) = spawn_test_server(10 * 1024 * 1024).await;
         let client = test_http_client();
         let resp = client
-            .get(format!("http://{}/v1/server-key", addr))
+            .get(format!("http://{addr}/v1/server-key"))
             .send()
             .await
             .unwrap();
@@ -169,7 +165,7 @@ mod tests {
         let client = test_http_client();
         let large_body = serde_json::json!({"data": "x".repeat(2048) });
         let resp = client
-            .post(format!("http://{}/v1/projects/kgp_test/push", addr))
+            .post(format!("http://{addr}/v1/projects/kgp_test/push"))
             .json(&large_body)
             .send()
             .await
@@ -183,7 +179,7 @@ mod tests {
         let (addr, _db_dir, _key_dir) = spawn_test_server(10 * 1024 * 1024).await;
         let client = test_http_client();
         let resp = client
-            .post(format!("http://{}/v1/projects/kgp_test/push", addr))
+            .post(format!("http://{addr}/v1/projects/kgp_test/push"))
             .header("Content-Type", "application/json")
             .body("not valid json {")
             .send()
@@ -206,7 +202,7 @@ mod tests {
 
         // 1. Fetch server key
         let server_key_resp = client
-            .get(format!("http://{}/v1/server-key", addr))
+            .get(format!("http://{addr}/v1/server-key"))
             .send()
             .await
             .unwrap();
@@ -251,7 +247,7 @@ mod tests {
 
         // 5. Send encrypted request
         let resp = client
-            .post(format!("http://{}/v1/projects/requests", addr))
+            .post(format!("http://{addr}/v1/projects/requests"))
             .json(&envelope)
             .send()
             .await
@@ -279,7 +275,7 @@ mod tests {
 
         // First request should succeed
         let resp1 = client
-            .get(format!("http://{}/v1/server-key", addr))
+            .get(format!("http://{addr}/v1/server-key"))
             .send()
             .await
             .unwrap();
@@ -287,7 +283,7 @@ mod tests {
 
         // Immediate second request should be rate limited (429)
         let resp2 = client
-            .get(format!("http://{}/v1/server-key", addr))
+            .get(format!("http://{addr}/v1/server-key"))
             .send()
             .await
             .unwrap();
@@ -300,7 +296,7 @@ mod tests {
         let client = test_http_client();
         // No auth header -> should fail
         let resp = client
-            .get(format!("http://{}/v1/metrics", addr))
+            .get(format!("http://{addr}/v1/metrics"))
             .send()
             .await
             .unwrap();

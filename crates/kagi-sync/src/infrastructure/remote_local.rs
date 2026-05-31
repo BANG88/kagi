@@ -37,17 +37,17 @@ impl RemoteLocalStore {
 
     pub fn remote_metadata_path(&self, project_id: &str) -> PathBuf {
         self.local_data_dir
-            .join(format!("projects/{}/remote.json", project_id))
+            .join(format!("projects/{project_id}/remote.json"))
     }
 
     pub fn token_path(&self, project_id: &str) -> PathBuf {
         self.local_data_dir
-            .join(format!("projects/{}/token.json", project_id))
+            .join(format!("projects/{project_id}/token.json"))
     }
 
     pub fn claim_secret_path(&self, project_id: &str) -> PathBuf {
         self.local_data_dir
-            .join(format!("projects/{}/claim_secret.json", project_id))
+            .join(format!("projects/{project_id}/claim_secret.json"))
     }
 
     pub fn save_remote_metadata(&self, meta: &RemoteMetadata) -> Result<(), DomainError> {
@@ -127,7 +127,7 @@ impl RemoteLocalStore {
 
     pub fn admin_token_path(&self, server_fingerprint: &str) -> PathBuf {
         self.local_data_dir
-            .join(format!("admins/{}/token.json", server_fingerprint))
+            .join(format!("admins/{server_fingerprint}/token.json"))
     }
 
     pub fn save_admin_token(
@@ -161,7 +161,7 @@ impl RemoteLocalStore {
 
     pub fn admin_remote_path(&self, server_fingerprint: &str) -> PathBuf {
         self.local_data_dir
-            .join(format!("admins/{}/remote.json", server_fingerprint))
+            .join(format!("admins/{server_fingerprint}/remote.json"))
     }
 
     pub fn save_admin_remote(

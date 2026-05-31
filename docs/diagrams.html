@@ -337,7 +337,7 @@ body {
       </div>
     </div>
     <div class="note">
-      Encrypted secrets are shared through Git commits and pulls. New members use <code>kagi member join</code> to request access, and existing members use <code>kagi member approve</code> to grant it.
+      Encrypted secrets are shared through Git commits and pulls. New members use <code>kagi member request</code> to request access, and existing members use <code>kagi member approve</code> to grant it.
     </div>
   </div>
 </div>
@@ -381,7 +381,7 @@ body {
         <div class="sub">(member)</div>
       </div>
       <div class="arrow arrow-h arrow-both">
-        <span class="arrow-label">kagi push / pull</span>
+        <span class="arrow-label">kagi remote push / remote pull</span>
       </div>
       <div class="node server">
         <div class="label">Kagi Server</div>
@@ -396,12 +396,12 @@ body {
     <div style="display: grid; grid-template-columns: 1fr 160px 1fr; margin-top: 8px;">
       <div class="code-block" style="justify-self: center; font-size: 11px;">
 kagi init
-kagi project join --remote ...
+kagi remote register --remote ...
       </div>
       <div></div>
       <div class="code-block" style="justify-self: center; font-size: 11px;">
-kagi pull &lt;token&gt;
-kagi push
+kagi remote pull &lt;token&gt;
+kagi remote push
       </div>
     </div>
     <div class="hr"></div>
@@ -412,14 +412,14 @@ kagi push
     <div class="flow-step">
       <div class="num">2</div>
       <div class="text">Admin reviews and approves:<br>
-        <div class="code-block">kagi project list --remote ...
-kagi project approve &lt;project_id&gt;</div>
+        <div class="code-block">kagi remote projects --remote ...
+kagi remote approve &lt;project_id&gt;</div>
         After approval, prints project token and gives it to Alice
       </div>
     </div>
     <div class="flow-step">
       <div class="num">3</div>
-      <div class="text">Alice pulls the project with the token, then uses <code>kagi push / pull</code> to sync encrypted secrets</div>
+      <div class="text">Alice pulls the project with the token, then uses <code>kagi remote push / remote pull</code> to sync encrypted secrets</div>
     </div>
     <div class="note">
       .kagi/ stays local and out of Git. Project tokens contain the remote URL, project ID, and server fingerprint.

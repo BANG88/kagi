@@ -17,7 +17,7 @@ impl<R: SecretRepository> ExportEnvService<R> {
         let mut lines = Vec::new();
         for s in secrets {
             if let Some(desc) = &s.description {
-                lines.push(format!("# {}", desc));
+                lines.push(format!("# {desc}"));
             }
             lines.push(format!("{}={}", s.key, s.value));
         }

@@ -67,7 +67,7 @@ impl ProjectToken {
         let payload_b64 = base64_encode_url(&payload_json);
         let secret_bytes: Vec<u8> = (0..32).map(|_| rand::random::<u8>()).collect();
         let secret = base64_encode_url(&secret_bytes);
-        let full_token = format!("kagi_proj_v1_{}.{}", payload_b64, secret);
+        let full_token = format!("kagi_proj_v1_{payload_b64}.{secret}");
         Self {
             payload,
             full_token,
@@ -90,7 +90,7 @@ impl ProjectToken {
         let payload_b64 = base64_encode_url(&payload_json);
         let secret_bytes: Vec<u8> = (0..32).map(|_| rand::random::<u8>()).collect();
         let secret = base64_encode_url(&secret_bytes);
-        let full_token = format!("kagi_admin_v1_{}.{}", payload_b64, secret);
+        let full_token = format!("kagi_admin_v1_{payload_b64}.{secret}");
         Self {
             payload,
             full_token,
@@ -176,7 +176,7 @@ mod tests {
         );
         let (prefix_and_payload, _) = token.full_token.rsplit_once('.').unwrap();
 
-        assert!(ProjectToken::parse(&format!("{}.!!!", prefix_and_payload)).is_none());
+        assert!(ProjectToken::parse(&format!("{prefix_and_payload}.!!!")).is_none());
         assert!(
             ProjectToken::parse(&format!(
                 "{}.{}",

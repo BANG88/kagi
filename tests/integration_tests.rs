@@ -1,6 +1,7 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 use serde_json::Value;
+use std::fs;
 #[cfg(feature = "server")]
 use std::io::{Read, Write};
 use std::path::Path;
@@ -44,7 +45,7 @@ struct ServerGuard {
 impl Drop for ServerGuard {
     fn drop(&mut self) {
         if let Err(e) = self.child.kill() {
-            eprintln!("Warning: failed to kill server process: {}", e);
+            eprintln!("Warning: failed to kill server process: {e}");
         }
         let _ = self.child.wait();
     }
@@ -148,7 +149,7 @@ fn spawn_server() -> (ServerGuard, String, u16) {
     let mut ready = false;
     for _ in 0..50 {
         std::thread::sleep(std::time::Duration::from_millis(100));
-        if let Ok(mut stream) = std::net::TcpStream::connect(format!("127.0.0.1:{}", port))
+        if let Ok(mut stream) = std::net::TcpStream::connect(format!("127.0.0.1:{port}"))
             && stream
                 .write_all(b"GET /v1/server-key HTTP/1.1\r\nHost: localhost\r\n\r\n")
                 .is_ok()
@@ -163,10 +164,7 @@ fn spawn_server() -> (ServerGuard, String, u16) {
 
     if !ready {
         let _ = child.kill();
-        panic!(
-            "server did not become HTTP-ready on port {} within 5 seconds",
-            port
-        );
+        panic!("server did not become HTTP-ready on port {port} within 5 seconds");
     }
 
     (
@@ -411,11 +409,114 @@ fn test_init_updates_gitignore_for_shareable_kagi_directory() {
 #[test]
 fn test_root_command_prints_help_successfully() {
     let mut cmd = kagi_bin();
-    cmd.assert()
+    let assert = cmd
+        .assert()
         .success()
         .stdout(predicate::str::contains("|___/   K"))
         .stdout(predicate::str::contains("Core Flow"))
         .stdout(predicate::str::contains("Usage"));
+    #[cfg(feature = "server")]
+    let assert = assert.stdout(predicate::str::contains(
+        "remote login, register, sync, and administer remotes",
+    ));
+    #[cfg(not(feature = "server"))]
+    let assert = assert.stdout(predicate::str::contains("remote login").not());
+    assert
+        .stdout(predicate::str::contains("  push").not())
+        .stdout(predicate::str::contains("  pull").not())
+        .stdout(predicate::str::contains("  status").not())
+        .stdout(predicate::str::contains("  project").not());
+}
+
+#[test]
+fn test_help_does_not_mention_tui_publicly() {
+    let help_commands: &[&[&str]] = &[
+        &["get", "--help"],
+        &["search", "--help"],
+        &["doctor", "--help"],
+        &["export", "--help"],
+        &["sync", "--help"],
+        &["env", "list", "--help"],
+        &["env", "remove", "--help"],
+        &["member", "list", "--help"],
+        &["member", "approve", "--help"],
+        &["member", "remove", "--help"],
+    ];
+    #[cfg(feature = "server")]
+    let server_help_commands: &[&[&str]] = &[
+        &["remote", "projects", "--help"][..],
+        &["remote", "tokens", "--help"][..],
+        &["remote", "audit", "--help"][..],
+    ];
+
+    for args in help_commands.iter().copied() {
+        let mut cmd = kagi_bin();
+        cmd.args(args);
+        let assert = cmd.assert().success();
+        let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+        assert!(
+            !stdout.to_ascii_lowercase().contains("tui"),
+            "`kagi {}` help exposed TUI wording:\n{stdout}",
+            args.join(" ")
+        );
+    }
+    #[cfg(feature = "server")]
+    for args in server_help_commands.iter().copied() {
+        let mut cmd = kagi_bin();
+        cmd.args(args);
+        let assert = cmd.assert().success();
+        let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+        assert!(
+            !stdout.to_ascii_lowercase().contains("tui"),
+            "`kagi {}` help exposed TUI wording:\n{stdout}",
+            args.join(" ")
+        );
+    }
+}
+
+#[test]
+#[cfg(not(feature = "tui"))]
+fn test_non_tui_help_hides_plain_option() {
+    let help_commands: &[&[&str]] = &[
+        &["get", "--help"],
+        &["search", "--help"],
+        &["doctor", "--help"],
+        &["export", "--help"],
+        &["sync", "--help"],
+        &["env", "list", "--help"],
+        &["env", "remove", "--help"],
+        &["member", "list", "--help"],
+    ];
+    #[cfg(feature = "server")]
+    let server_help_commands: &[&[&str]] = &[
+        &["remote", "projects", "--help"][..],
+        &["remote", "tokens", "--help"][..],
+        &["remote", "audit", "--help"][..],
+    ];
+
+    for args in help_commands.iter().copied() {
+        let mut cmd = kagi_bin();
+        cmd.args(args);
+        let assert = cmd.assert().success();
+        let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+        assert!(
+            !stdout.contains("--plain"),
+            "`kagi {}` help exposed --plain without tui feature:\n{stdout}",
+            args.join(" ")
+        );
+    }
+    #[cfg(feature = "server")]
+    for args in server_help_commands.iter().copied() {
+        let mut cmd = kagi_bin();
+        cmd.args(args);
+        let assert = cmd.assert().success();
+        let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+        assert!(
+            !stdout.contains("--plain"),
+            "`kagi {}` help exposed --plain without tui feature:\n{stdout}",
+            args.join(" ")
+        );
+    }
 }
 
 #[test]
@@ -469,13 +570,11 @@ fn test_set_does_not_print_secret_value() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(
         stdout.contains("api/development.API_KEY"),
-        "expected key in set output: {}",
-        stdout
+        "expected key in set output: {stdout}"
     );
     assert!(
         !stdout.contains("super_secret"),
-        "set output leaked secret: {}",
-        stdout
+        "set output leaked secret: {stdout}"
     );
 }
 
@@ -556,38 +655,31 @@ fn test_get_lists_masked_service_envs_and_keys() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(
         stdout.contains("api"),
-        "expected api in get output: {}",
-        stdout
+        "expected api in get output: {stdout}"
     );
     assert!(
         stdout.contains("  development"),
-        "expected development env under api: {}",
-        stdout
+        "expected development env under api: {stdout}"
     );
     assert!(
         stdout.contains("Key"),
-        "expected table header in get output: {}",
-        stdout
+        "expected table header in get output: {stdout}"
     );
     assert!(
         stdout.contains("Value"),
-        "expected table header in get output: {}",
-        stdout
+        "expected table header in get output: {stdout}"
     );
     assert!(
         stdout.contains("KEY"),
-        "expected KEY in get output: {}",
-        stdout
+        "expected KEY in get output: {stdout}"
     );
     assert!(
         stdout.contains("********"),
-        "expected masked value in get output: {}",
-        stdout
+        "expected masked value in get output: {stdout}"
     );
     assert!(
         !stdout.contains("val"),
-        "get should not reveal values by default: {}",
-        stdout
+        "get should not reveal values by default: {stdout}"
     );
 
     let mut cmd = kagi_bin();
@@ -597,33 +689,24 @@ fn test_get_lists_masked_service_envs_and_keys() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(
         stdout.contains("api\n  development"),
-        "expected service/env layout in get api: {}",
-        stdout
+        "expected service/env layout in get api: {stdout}"
     );
     assert!(
         stdout.contains("Key"),
-        "expected table header in get api: {}",
-        stdout
+        "expected table header in get api: {stdout}"
     );
     assert!(
         stdout.contains("Value"),
-        "expected table header in get api: {}",
-        stdout
+        "expected table header in get api: {stdout}"
     );
-    assert!(
-        stdout.contains("KEY"),
-        "expected KEY in get api: {}",
-        stdout
-    );
+    assert!(stdout.contains("KEY"), "expected KEY in get api: {stdout}");
     assert!(
         stdout.contains("********"),
-        "expected masked value in get api: {}",
-        stdout
+        "expected masked value in get api: {stdout}"
     );
     assert!(
         !stdout.contains("val"),
-        "get should not reveal values by default: {}",
-        stdout
+        "get should not reveal values by default: {stdout}"
     );
 
     let mut cmd = kagi_bin();
@@ -633,7 +716,7 @@ fn test_get_lists_masked_service_envs_and_keys() {
 }
 
 #[test]
-fn test_join_and_member_approve_flow() {
+fn test_member_request_and_approve_flow() {
     let dir = TempDir::new().unwrap();
 
     let mut cmd = kagi_bin();
@@ -643,10 +726,10 @@ fn test_join_and_member_approve_flow() {
 
     let mut cmd = kagi_bin();
     cmd.current_dir(&dir);
-    cmd.args(["member", "join", "--name", "alice"]);
+    cmd.args(["member", "request", "--name", "alice"]);
     cmd.assert()
         .success()
-        .stdout(predicate::str::contains("created join request"))
+        .stdout(predicate::str::contains("created member request"))
         .stdout(predicate::str::contains("kagi member approve"));
 
     let access_path = dir.path().join(".kagi/access.json");
@@ -668,7 +751,7 @@ fn test_join_and_member_approve_flow() {
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("Members"))
-        .stdout(predicate::str::contains("Join Requests"))
+        .stdout(predicate::str::contains("Member Requests"))
         .stdout(predicate::str::contains("alice"));
 
     let mut cmd = kagi_bin();
@@ -691,7 +774,7 @@ fn test_join_and_member_approve_flow() {
 }
 
 #[test]
-fn test_multiple_join_requests_can_be_pending_together() {
+fn test_multiple_member_requests_can_be_pending_together() {
     let dir = TempDir::new().unwrap();
 
     let mut cmd = kagi_bin();
@@ -701,12 +784,12 @@ fn test_multiple_join_requests_can_be_pending_together() {
 
     let mut cmd = kagi_bin();
     cmd.current_dir(&dir);
-    cmd.args(["member", "join", "--name", "alice"]);
+    cmd.args(["member", "request", "--name", "alice"]);
     cmd.assert().success();
 
     let mut cmd = kagi_bin();
     cmd.current_dir(&dir);
-    cmd.args(["member", "join", "--name", "bob"]);
+    cmd.args(["member", "request", "--name", "bob"]);
     cmd.assert().success();
 
     let access: Value = serde_json::from_str(
@@ -735,7 +818,7 @@ fn test_member_remove_requires_interactive_confirmation() {
 
     let mut cmd = kagi_bin();
     cmd.current_dir(&dir);
-    cmd.args(["member", "del", "kgm_fake"]);
+    cmd.args(["member", "remove", "kgm_fake"]);
     cmd.assert()
         .failure()
         .stderr(predicate::str::contains("requires an interactive terminal"));
@@ -838,7 +921,7 @@ fn test_doctor_fix_requires_interactive() {
     let kagi_home = std::env::temp_dir().join("kagi-integration-tests");
     let journal_dir = kagi_home.join("projects");
     std::fs::create_dir_all(&journal_dir).unwrap();
-    let journal_path = journal_dir.join(format!("{}.rotation.json", project_id));
+    let journal_path = journal_dir.join(format!("{project_id}.rotation.json"));
     std::fs::write(
         &journal_path,
         serde_json::to_string_pretty(&journal).unwrap(),
@@ -1092,6 +1175,42 @@ fn test_import_force_overwrites() {
 
     assert_run_env(dir.path(), &["api"], "API_KEY", "new_value");
     assert_run_env(dir.path(), &["api"], "EXTRA_KEY", "extra");
+}
+
+#[test]
+fn test_import_conflict_without_force_does_not_overwrite_non_interactive() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    std::fs::write(dir.path().join("first.env"), "API_KEY=old_value\n").unwrap();
+    std::fs::write(
+        dir.path().join("second.env"),
+        "API_KEY=new_value\nEXTRA_KEY=extra\n",
+    )
+    .unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["import", "api", "--file", "first.env"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["import", "api", "--file", "second.env"]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("aborted."));
+
+    assert_run_env(dir.path(), &["api"], "API_KEY", "old_value");
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(dir.path());
+    cmd.args(["run", "api", "sh", "-c", "test -z \"${EXTRA_KEY+x}\""]);
+    cmd.assert().success();
 }
 
 #[test]
@@ -1421,19 +1540,16 @@ fn test_get_service_groups_environment_scopes() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(
         stdout.contains("api\n  development"),
-        "expected api/development layout: {}",
-        stdout
+        "expected api/development layout: {stdout}"
     );
     assert!(
         stdout.contains("  production"),
-        "expected api/production layout: {}",
-        stdout
+        "expected api/production layout: {stdout}"
     );
-    assert!(stdout.contains("KEY"), "expected key: {}", stdout);
+    assert!(stdout.contains("KEY"), "expected key: {stdout}");
     assert!(
         !stdout.contains("production-value"),
-        "get should mask values by default: {}",
-        stdout
+        "get should mask values by default: {stdout}"
     );
 }
 
@@ -1453,19 +1569,17 @@ fn test_env_list_shows_configured_envs() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(
         stdout.contains("development"),
-        "expected development: {}",
-        stdout
+        "expected development: {stdout}"
     );
-    assert!(stdout.contains("staging"), "expected staging: {}", stdout);
+    assert!(stdout.contains("staging"), "expected staging: {stdout}");
     assert!(
         stdout.contains("production"),
-        "expected production: {}",
-        stdout
+        "expected production: {stdout}"
     );
 }
 
 #[test]
-fn test_env_del_requires_interactive_confirmation() {
+fn test_env_remove_requires_interactive_confirmation() {
     let dir = TempDir::new().unwrap();
 
     let mut cmd = kagi_bin();
@@ -1475,7 +1589,7 @@ fn test_env_del_requires_interactive_confirmation() {
 
     let mut cmd = kagi_bin();
     cmd.current_dir(&dir);
-    cmd.args(["env", "del", "staging"]);
+    cmd.args(["env", "remove", "staging"]);
     cmd.assert()
         .failure()
         .stderr(predicate::str::contains("requires an interactive terminal"));
@@ -1662,7 +1776,7 @@ fn test_import_captures_description_from_comment() {
 #[cfg(feature = "server")]
 fn test_server_member_join_approve_flow() {
     let (_server, admin_token, port) = spawn_server();
-    let server_url = format!("http://127.0.0.1:{}", port);
+    let server_url = format!("http://127.0.0.1:{port}");
 
     let project_dir = TempDir::new().unwrap();
     let kagi_home = TempDir::new().unwrap();
@@ -1674,7 +1788,7 @@ fn test_server_member_join_approve_flow() {
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
-    cmd.args(["project", "join", "--remote", &server_url]);
+    cmd.args(["remote", "register", "--remote", &server_url]);
     cmd.assert().success();
 
     let kagi_json_path = project_dir.path().join(".kagi/kagi.json");
@@ -1685,17 +1799,17 @@ fn test_server_member_join_approve_flow() {
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
     cmd.env("KAGI_ADMIN_TOKEN", &admin_token);
-    cmd.args(["project", "approve", "--remote", &server_url, &project_id]);
+    cmd.args(["remote", "approve", "--remote", &server_url, &project_id]);
     cmd.assert().success();
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
-    cmd.arg("pull");
+    cmd.args(["remote", "pull"]);
     cmd.assert().success();
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
-    cmd.args(["member", "join", "--name", "alice"]);
+    cmd.args(["member", "request", "--name", "alice"]);
     cmd.assert().success();
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
@@ -1724,7 +1838,7 @@ fn test_server_member_join_approve_flow() {
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
-    cmd.arg("push");
+    cmd.args(["remote", "push"]);
     cmd.assert().success();
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
@@ -1754,7 +1868,7 @@ fn test_server_member_join_approve_flow() {
 #[cfg(feature = "server")]
 fn test_server_push_pull_status() {
     let (_server, admin_token, port) = spawn_server();
-    let server_url = format!("http://127.0.0.1:{}", port);
+    let server_url = format!("http://127.0.0.1:{port}");
 
     let project_dir = TempDir::new().unwrap();
     let kagi_home = TempDir::new().unwrap();
@@ -1766,7 +1880,7 @@ fn test_server_push_pull_status() {
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
-    cmd.args(["project", "join", "--remote", &server_url]);
+    cmd.args(["remote", "register", "--remote", &server_url]);
     cmd.assert().success();
 
     let config: Value = serde_json::from_str(
@@ -1778,12 +1892,12 @@ fn test_server_push_pull_status() {
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
     cmd.env("KAGI_ADMIN_TOKEN", &admin_token);
-    cmd.args(["project", "approve", "--remote", &server_url, &project_id]);
+    cmd.args(["remote", "approve", "--remote", &server_url, &project_id]);
     cmd.assert().success();
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
-    cmd.arg("pull");
+    cmd.args(["remote", "pull"]);
     cmd.assert().success();
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
@@ -1793,27 +1907,26 @@ fn test_server_push_pull_status() {
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
-    cmd.arg("push");
+    cmd.args(["remote", "push"]);
     let assert = cmd.assert().success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(stdout.contains("kagi: pushed revision"));
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
-    cmd.arg("pull");
+    cmd.args(["remote", "pull"]);
     let assert = cmd.assert().success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(stdout.contains("kagi: pulled revision"));
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
-    cmd.arg("status");
+    cmd.args(["remote", "status"]);
     let assert = cmd.assert().success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(
         stdout.contains("equal"),
-        "expected status to show equal: {}",
-        stdout
+        "expected status to show equal: {stdout}"
     );
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
@@ -1823,18 +1936,17 @@ fn test_server_push_pull_status() {
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
-    cmd.arg("push");
+    cmd.args(["remote", "push"]);
     cmd.assert().success();
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
-    cmd.arg("status");
+    cmd.args(["remote", "status"]);
     let assert = cmd.assert().success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(
         stdout.contains("equal"),
-        "expected status to show equal after re-push: {}",
-        stdout
+        "expected status to show equal after re-push: {stdout}"
     );
 }
 
@@ -1857,7 +1969,7 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
 #[cfg(feature = "server")]
 fn test_server_cross_checkout_join_request_visible() {
     let (_server, admin_token, port) = spawn_server();
-    let server_url = format!("http://127.0.0.1:{}", port);
+    let server_url = format!("http://127.0.0.1:{port}");
 
     let owner_dir = TempDir::new().unwrap();
     let owner_home = TempDir::new().unwrap();
@@ -1871,7 +1983,7 @@ fn test_server_cross_checkout_join_request_visible() {
 
     let mut cmd = kagi_bin_with_home(owner_home.path());
     cmd.current_dir(&owner_dir);
-    cmd.args(["project", "join", "--remote", &server_url]);
+    cmd.args(["remote", "register", "--remote", &server_url]);
     cmd.assert().success();
 
     let kagi_json_path = owner_dir.path().join(".kagi/kagi.json");
@@ -1882,17 +1994,17 @@ fn test_server_cross_checkout_join_request_visible() {
     let mut cmd = kagi_bin_with_home(owner_home.path());
     cmd.current_dir(&owner_dir);
     cmd.env("KAGI_ADMIN_TOKEN", &admin_token);
-    cmd.args(["project", "approve", "--remote", &server_url, &project_id]);
+    cmd.args(["remote", "approve", "--remote", &server_url, &project_id]);
     cmd.assert().success();
 
     let mut cmd = kagi_bin_with_home(owner_home.path());
     cmd.current_dir(&owner_dir);
-    cmd.arg("pull");
+    cmd.args(["remote", "pull"]);
     cmd.assert().success();
 
     let mut cmd = kagi_bin_with_home(owner_home.path());
     cmd.current_dir(&owner_dir);
-    cmd.arg("push");
+    cmd.args(["remote", "push"]);
     cmd.assert().success();
 
     copy_dir_all(
@@ -1901,14 +2013,14 @@ fn test_server_cross_checkout_join_request_visible() {
     )
     .unwrap();
     copy_dir_all(
-        &owner_home.path().join(format!("projects/{}", project_id)),
-        &joiner_home.path().join(format!("projects/{}", project_id)),
+        &owner_home.path().join(format!("projects/{project_id}")),
+        &joiner_home.path().join(format!("projects/{project_id}")),
     )
     .unwrap();
 
     let mut cmd = kagi_bin_with_home(joiner_home.path());
     cmd.current_dir(&joiner_dir);
-    cmd.args(["member", "join", "--name", "alice"]);
+    cmd.args(["member", "request", "--name", "alice"]);
     cmd.assert().success();
 
     let joiner_access_path = joiner_dir.path().join(".kagi/access.json");
@@ -1941,13 +2053,11 @@ fn test_server_cross_checkout_join_request_visible() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(
         stdout.contains("alice"),
-        "expected alice in member list: {}",
-        stdout
+        "expected alice in member list: {stdout}"
     );
     assert!(
         stdout.contains("pending"),
-        "expected pending status: {}",
-        stdout
+        "expected pending status: {stdout}"
     );
 
     let owner_access_after_list: Value =
@@ -1958,8 +2068,7 @@ fn test_server_cross_checkout_join_request_visible() {
             .unwrap()
             .iter()
             .all(|m| m["member_id"] != member_id),
-        "member list should not persist the server join request locally: {}",
-        owner_access_after_list
+        "member list should not persist the server member request locally: {owner_access_after_list}"
     );
 
     let mut cmd = kagi_bin_with_home(owner_home.path());
@@ -1969,8 +2078,7 @@ fn test_server_cross_checkout_join_request_visible() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(
         stdout.contains("Token will be activated"),
-        "expected server-mode approval output: {}",
-        stdout
+        "expected server-mode approval output: {stdout}"
     );
 
     let access_after_approve: Value =
@@ -1984,14 +2092,12 @@ fn test_server_cross_checkout_join_request_visible() {
     let approved_signing_public_key = member_after_approve["signing_public_key"].as_str();
     assert!(
         approved_signing_public_key.is_some_and(|key| key.len() > 20),
-        "expected signing_public_key immediately after approve, got member: {}, access: {}",
-        member_after_approve,
-        access_after_approve
+        "expected signing_public_key immediately after approve, got member: {member_after_approve}, access: {access_after_approve}"
     );
 
     let mut cmd = kagi_bin_with_home(owner_home.path());
     cmd.current_dir(&owner_dir);
-    cmd.arg("push");
+    cmd.args(["remote", "push"]);
     cmd.assert().success();
 
     let mut cmd = kagi_bin_with_home(owner_home.path());
@@ -2001,13 +2107,11 @@ fn test_server_cross_checkout_join_request_visible() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     assert!(
         stdout.contains("alice"),
-        "expected alice after push: {}",
-        stdout
+        "expected alice after push: {stdout}"
     );
     assert!(
         stdout.contains("active"),
-        "expected active status after push: {}",
-        stdout
+        "expected active status after push: {stdout}"
     );
 
     let access: Value =
@@ -2030,13 +2134,12 @@ fn test_server_cross_checkout_join_request_visible() {
     let signing_public_key = member["signing_public_key"].as_str();
     assert!(
         signing_public_key.is_some_and(|key| key.len() > 20),
-        "expected signing_public_key to be present, got member: {}",
-        member
+        "expected signing_public_key to be present, got member: {member}"
     );
 
     let mut cmd = kagi_bin_with_home(joiner_home.path());
     cmd.current_dir(&joiner_dir);
-    cmd.arg("pull");
+    cmd.args(["remote", "pull"]);
     cmd.assert().success();
 
     let mut cmd = kagi_bin_with_home(joiner_home.path());
@@ -2046,7 +2149,7 @@ fn test_server_cross_checkout_join_request_visible() {
 
     let mut cmd = kagi_bin_with_home(joiner_home.path());
     cmd.current_dir(&joiner_dir);
-    cmd.arg("push");
+    cmd.args(["remote", "push"]);
     cmd.assert().success();
 }
 
@@ -2054,7 +2157,7 @@ fn test_server_cross_checkout_join_request_visible() {
 #[cfg(feature = "server")]
 fn test_server_pull_blocks_with_pending_approval() {
     let (_server, admin_token, port) = spawn_server();
-    let server_url = format!("http://127.0.0.1:{}", port);
+    let server_url = format!("http://127.0.0.1:{port}");
 
     let project_dir = TempDir::new().unwrap();
     let kagi_home = TempDir::new().unwrap();
@@ -2066,7 +2169,7 @@ fn test_server_pull_blocks_with_pending_approval() {
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
-    cmd.args(["project", "join", "--remote", &server_url]);
+    cmd.args(["remote", "register", "--remote", &server_url]);
     cmd.assert().success();
 
     let kagi_json_path = project_dir.path().join(".kagi/kagi.json");
@@ -2077,17 +2180,17 @@ fn test_server_pull_blocks_with_pending_approval() {
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
     cmd.env("KAGI_ADMIN_TOKEN", &admin_token);
-    cmd.args(["project", "approve", "--remote", &server_url, &project_id]);
+    cmd.args(["remote", "approve", "--remote", &server_url, &project_id]);
     cmd.assert().success();
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
-    cmd.arg("pull");
+    cmd.args(["remote", "pull"]);
     cmd.assert().success();
 
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
-    cmd.args(["member", "join", "--name", "bob"]);
+    cmd.args(["member", "request", "--name", "bob"]);
     cmd.assert().success();
 
     let access_path = project_dir.path().join(".kagi/access.json");
@@ -2119,19 +2222,18 @@ fn test_server_pull_blocks_with_pending_approval() {
 
     let mut cmd = kagi_bin_with_home(kagi_home2.path());
     cmd.current_dir(&project_dir2);
-    cmd.arg("push");
+    cmd.args(["remote", "push"]);
     cmd.assert().success();
 
     // In the original, pull should fail because remote is ahead and local has pending approval
     let mut cmd = kagi_bin_with_home(kagi_home.path());
     cmd.current_dir(&project_dir);
-    cmd.arg("pull");
+    cmd.args(["remote", "pull"]);
     let assert = cmd.assert().failure();
     let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
     assert!(
         stderr.contains("Cannot pull while member approval metadata is pending"),
-        "expected pull guard error, got: {}",
-        stderr
+        "expected pull guard error, got: {stderr}"
     );
 
     // Verify the pending approval metadata is still present after the failed pull
@@ -2150,5 +2252,103 @@ fn test_server_pull_blocks_with_pending_approval() {
     assert!(
         has_pending,
         "expected pending approval metadata to survive the failed pull"
+    );
+}
+
+#[test]
+fn test_completions_generates_shell_script() {
+    let mut cmd = kagi_bin();
+    cmd.args(["completions", "bash"]);
+    cmd.assert()
+        .success()
+        .stdout(predicates::str::contains("_kagi"));
+}
+
+#[test]
+fn test_completions_rejects_unknown_shell() {
+    let mut cmd = kagi_bin();
+    cmd.args(["completions", "unknown_shell"]);
+    cmd.assert()
+        .failure()
+        .stderr(predicates::str::contains("unsupported shell"));
+}
+
+#[test]
+fn test_init_detects_env_files_in_non_interactive() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join(".env"), "ROOT_KEY=root\n").unwrap();
+    fs::create_dir(dir.path().join("api")).unwrap();
+    fs::write(dir.path().join("api/.env"), "API_KEY=api\n").unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(dir.path());
+    cmd.args(["init", "--envs", "development,test"]);
+    let assert = cmd.assert().success();
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+    assert!(
+        stderr.contains("found 2 .env file(s)"),
+        "expected note about found .env files in non-interactive mode, got: {stderr}"
+    );
+}
+
+#[test]
+fn test_init_no_migrate_skips_env_files() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join(".env"), "ROOT_KEY=root\n").unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(dir.path());
+    cmd.args(["init", "--no-migrate"]);
+    let assert = cmd.assert().success();
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+    assert!(
+        !stderr.contains(".env file(s)"),
+        "expected no migration note with --no-migrate"
+    );
+}
+
+#[test]
+fn test_env_list_plain_outputs_text() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["init", "--envs", "development,staging"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["env", "list", "--plain"]);
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("development"),
+        "expected development: {stdout}"
+    );
+    assert!(stdout.contains("staging"), "expected staging: {stdout}");
+}
+
+#[test]
+fn test_search_plain_outputs_text() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["set", "api", "HOST", "localhost"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["search", "--plain", "HOST"]);
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("api/development.HOST"),
+        "expected match: {stdout}"
     );
 }

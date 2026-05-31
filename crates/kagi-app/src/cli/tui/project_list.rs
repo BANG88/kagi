@@ -1,5 +1,4 @@
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
-use kagi_store::key_manager::KeyManager;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Constraint;
@@ -7,56 +6,54 @@ use ratatui::style::Style;
 use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, Cell, Row, Table};
 use std::io;
-use std::path::PathBuf;
 
 use super::layout;
 use super::theme::Theme;
 
-struct MemberItem {
+struct ProjectItem {
     id: String,
-    name: String,
-    status: String,
+    revision: String,
+    created: String,
     is_pending: bool,
+    requester_name: String,
 }
 
 struct App {
-    members: Vec<MemberItem>,
+    items: Vec<ProjectItem>,
     selected: usize,
     active_tab: usize,
 }
 
-pub fn run_tui_member_list() -> anyhow::Result<()> {
-    let cwd = std::env::current_dir()?;
-    let base = find_kagi_base(&cwd)?;
-    let key_manager = KeyManager::new(base.clone());
-    let local_members = key_manager.list_members()?;
-    let local_requests = key_manager.list_join_requests()?;
+pub fn run_tui_project_list(
+    requests: Vec<serde_json::Value>,
+    projects: Vec<serde_json::Value>,
+) -> anyhow::Result<()> {
+    if requests.is_empty() && projects.is_empty() {
+        println!("kagi: no projects or pending requests found.");
+        return Ok(());
+    }
 
-    let mut members: Vec<MemberItem> = local_members
+    let mut items: Vec<ProjectItem> = requests
         .into_iter()
-        .map(|m| MemberItem {
-            id: m.member_id,
-            name: m.name,
-            status: m.status,
-            is_pending: false,
-        })
-        .collect();
-
-    let mut requests: Vec<MemberItem> = local_requests
-        .into_iter()
-        .map(|r| MemberItem {
-            id: r.member_id,
-            name: r.name,
-            status: "pending".to_string(),
+        .map(|r| ProjectItem {
+            id: r["project_id"].as_str().unwrap_or("unknown").to_string(),
+            revision: "-".to_string(),
+            created: r["created_at"].as_str().unwrap_or("").to_string(),
             is_pending: true,
+            requester_name: r["requester_name"].as_str().unwrap_or("").to_string(),
         })
         .collect();
 
-    members.sort_by(|a, b| a.id.cmp(&b.id));
-    requests.sort_by(|a, b| a.id.cmp(&b.id));
+    items.extend(projects.into_iter().map(|p| ProjectItem {
+        id: p["project_id"].as_str().unwrap_or("unknown").to_string(),
+        revision: p["revision"].as_i64().unwrap_or(0).to_string(),
+        created: p["created_at"].as_str().unwrap_or("").to_string(),
+        is_pending: false,
+        requester_name: String::new(),
+    }));
 
     let mut app = App {
-        members: requests.into_iter().chain(members).collect(),
+        items,
         selected: 0,
         active_tab: 0,
     };
@@ -65,30 +62,13 @@ pub fn run_tui_member_list() -> anyhow::Result<()> {
     layout::run_tui(|terminal| run_app(terminal, &mut app, &theme))
 }
 
-fn find_kagi_base(cwd: &std::path::Path) -> anyhow::Result<PathBuf> {
-    let mut current = cwd;
-    loop {
-        let local = current.join(".kagi");
-        if local.is_dir() {
-            return Ok(local);
-        }
-        match current.parent() {
-            Some(p) => current = p,
-            None => break,
-        }
-    }
-    Err(anyhow::anyhow!(
-        "No .kagi directory found in current or parent directories."
-    ))
-}
-
 fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
     theme: &Theme,
 ) -> io::Result<()> {
-    let mut last_tick = std::time::Instant::now();
     let tick_rate = std::time::Duration::from_millis(250);
+    let mut last_tick = std::time::Instant::now();
 
     loop {
         terminal.draw(|f| draw_ui(f, app, theme))?;
@@ -102,7 +82,7 @@ fn run_app(
             }
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                KeyCode::Down if app.selected + 1 < app.members.len() => {
+                KeyCode::Down if app.selected + 1 < app.items.len() => {
                     app.selected += 1;
                 }
                 KeyCode::Up if app.selected > 0 => {
@@ -124,7 +104,7 @@ fn draw_ui(f: &mut ratatui::Frame, app: &App, theme: &Theme) {
     let content = layout::draw_frame(
         f,
         theme,
-        "Member List",
+        "Project List",
         "↑↓=navigate  Tab=switch tab  q=quit",
     );
 
@@ -133,66 +113,32 @@ fn draw_ui(f: &mut ratatui::Frame, app: &App, theme: &Theme) {
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(content);
 
-    let active_members: Vec<_> = app.members.iter().filter(|m| !m.is_pending).collect();
-    let pending_members: Vec<_> = app.members.iter().filter(|m| m.is_pending).collect();
+    let pending_items: Vec<_> = app.items.iter().filter(|i| i.is_pending).collect();
+    let active_items: Vec<_> = app.items.iter().filter(|i| !i.is_pending).collect();
 
-    // Active members
-    let active_rows: Vec<Row> = active_members
+    // Pending requests
+    let pending_rows: Vec<Row> = pending_items
         .iter()
-        .map(|m| {
+        .map(|item| {
             let is_selected = app.active_tab == 0
-                && app.selected == app.members.iter().position(|x| x.id == m.id).unwrap_or(0);
+                && app.selected == app.items.iter().position(|x| x.id == item.id).unwrap_or(0);
             let style = if is_selected {
                 theme.highlight_style()
             } else {
                 Style::default()
             };
             Row::new(vec![
-                Cell::new(Span::styled(&*m.id, theme.key_hint_style())).style(style),
-                Cell::new(Span::styled(&*m.name, theme.title_style())).style(style),
-                Cell::new(Span::styled(&*m.status, theme.success_style())).style(style),
-            ])
-            .height(1)
-        })
-        .collect();
-
-    let active_table = Table::new(
-        active_rows,
-        [
-            Constraint::Percentage(40),
-            Constraint::Percentage(30),
-            Constraint::Percentage(30),
-        ],
-    )
-    .header(
-        Row::new(vec!["ID", "Name", "Status"])
-            .style(theme.header_style())
-            .height(1),
-    )
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(format!("Active ({})", active_members.len()))
-            .title_style(theme.header_style())
-            .border_style(theme.block_style()),
-    );
-    f.render_widget(active_table, body[0]);
-
-    // Pending members
-    let pending_rows: Vec<Row> = pending_members
-        .iter()
-        .map(|m| {
-            let is_selected = app.active_tab == 1
-                && app.selected == app.members.iter().position(|x| x.id == m.id).unwrap_or(0);
-            let style = if is_selected {
-                theme.highlight_style()
-            } else {
-                Style::default()
-            };
-            Row::new(vec![
-                Cell::new(Span::styled(&*m.id, theme.key_hint_style())).style(style),
-                Cell::new(Span::styled(&*m.name, theme.title_style())).style(style),
-                Cell::new(Span::styled(&*m.status, theme.warning_style())).style(style),
+                Cell::new(Span::styled(&item.id, theme.key_hint_style())).style(style),
+                Cell::new(Span::styled(
+                    if item.requester_name.is_empty() {
+                        "-"
+                    } else {
+                        &item.requester_name
+                    },
+                    theme.title_style(),
+                ))
+                .style(style),
+                Cell::new(Span::styled(&item.created, theme.muted_style())).style(style),
             ])
             .height(1)
         })
@@ -207,16 +153,58 @@ fn draw_ui(f: &mut ratatui::Frame, app: &App, theme: &Theme) {
         ],
     )
     .header(
-        Row::new(vec!["ID", "Name", "Status"])
+        Row::new(vec!["ID", "Requester", "Created"])
             .style(theme.header_style())
             .height(1),
     )
     .block(
         Block::default()
             .borders(Borders::ALL)
-            .title(format!("Pending ({})", pending_members.len()))
+            .title(format!("Pending ({})", pending_items.len()))
             .title_style(theme.header_style())
             .border_style(theme.block_style()),
     );
-    f.render_widget(pending_table, body[1]);
+    f.render_widget(pending_table, body[0]);
+
+    // Active projects
+    let active_rows: Vec<Row> = active_items
+        .iter()
+        .map(|item| {
+            let is_selected = app.active_tab == 1
+                && app.selected == app.items.iter().position(|x| x.id == item.id).unwrap_or(0);
+            let style = if is_selected {
+                theme.highlight_style()
+            } else {
+                Style::default()
+            };
+            Row::new(vec![
+                Cell::new(Span::styled(&item.id, theme.key_hint_style())).style(style),
+                Cell::new(Span::styled(&item.revision, theme.info_style())).style(style),
+                Cell::new(Span::styled(&item.created, theme.muted_style())).style(style),
+            ])
+            .height(1)
+        })
+        .collect();
+
+    let active_table = Table::new(
+        active_rows,
+        [
+            Constraint::Percentage(40),
+            Constraint::Percentage(30),
+            Constraint::Percentage(30),
+        ],
+    )
+    .header(
+        Row::new(vec!["ID", "Revision", "Created"])
+            .style(theme.header_style())
+            .height(1),
+    )
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!("Active ({})", active_items.len()))
+            .title_style(theme.header_style())
+            .border_style(theme.block_style()),
+    );
+    f.render_widget(active_table, body[1]);
 }

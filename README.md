@@ -19,6 +19,8 @@ A secure, team-ready CLI for managing encrypted secrets and environment variable
 - Nested service inference lets `kagi run bun dev` work inside `./api`.
 - `.kagi/` is designed to be committed; private keys stay on each device.
 - `get --show` and `export` require terminal confirmation before revealing values.
+- `.env` migration wizard in `kagi init` automatically detects and imports existing `.env` files.
+- Shell completions for bash, zsh, fish, elvish, and powershell via `kagi completions`.
 
 ---
 
@@ -203,14 +205,19 @@ Do not commit real `.env` files. `kagi init` updates `.gitignore` so `.env`,
 | Set production secret | `kagi set api production KEY value` |
 | List masked keys | `kagi get` |
 | Reveal listed values | `kagi get api --show` |
+| Search keys | `kagi search DATABASE` |
+| Search including values | `kagi search --values localhost` |
 | Run app with development env | `kagi run api bun dev` |
 | Run app from inside service folder | `kagi run bun dev` |
 | Add an environment | `kagi env add staging` |
 | Rename an environment | `kagi env rename staging preview` |
-| Delete an environment | `kagi env del preview` |
+| Delete an environment | `kagi env remove preview` |
+| List environments | `kagi env list` |
+| List project members | `kagi member list` |
 | Import an env file | `kagi import api --file .env.local` |
 | Export all service envs | `kagi export api --out .` |
 | Sync missing keys from example | `kagi sync --service api` |
+| Generate shell completions | `kagi completions zsh` |
 
 Use `--service <name>` when a shortcut would be ambiguous:
 
@@ -225,7 +232,10 @@ Environment names cannot conflict with existing service names.
 
 ## Working With `.env` Files
 
-Import existing local files:
+`kagi init` automatically detects `.env` files up to three levels deep and offers
+to import them during initialization. Use `--no-migrate` to skip this wizard.
+
+Import existing local files manually:
 
 ```bash
 kagi import api --file .env.development
@@ -266,7 +276,7 @@ A project is always team-ready. If you work alone, you are the only member.
 New device or teammate:
 
 ```bash
-kagi member join --name alice
+kagi member request --name alice
 git add .kagi/access.json
 git commit -m "chore: request kagi access"
 ```
@@ -286,12 +296,12 @@ If multiple people request access at the same time, keep all pending entries in
 Remove access:
 
 ```bash
-kagi member del <member_id>
+kagi member remove <member_id>
 git add .kagi
 git commit -m "chore: remove kagi member"
 ```
 
-`member del` rotates the project key internally and re-encrypts current
+`member remove` rotates the project key internally and re-encrypts current
 secrets for active members. If rotation is interrupted, kagi writes a local
 journal outside the repository and retries safely on the next command.
 
@@ -303,7 +313,7 @@ journal outside the repository and retries safely on the next command.
 
 ![Git-backed workflow](docs/diagram-git-backed.png)
 
-Encrypted secrets are shared through Git commits and pulls. New members use `kagi member join` to request access, and existing members use `kagi member approve` to grant it.
+Encrypted secrets are shared through Git commits and pulls. New members use `kagi member request` to request access, and existing members use `kagi member approve` to grant it.
 
 ### With Server (Remote Sync)
 
@@ -344,7 +354,7 @@ any public or LAN deployment. For local development only, pass
 `--allow-insecure-http` or set `KAGI_ALLOW_INSECURE_HTTP=1`:
 
 ```bash
-kagi project join --remote http://127.0.0.1:8787
+kagi remote register --remote http://127.0.0.1:8787
 ```
 
 ### Start the server
@@ -364,23 +374,31 @@ Create a local project and request server registration:
 
 ```bash
 kagi init --nested --envs
-kagi project join --remote http://127.0.0.1:8787
+kagi remote register --remote http://127.0.0.1:8787
 ```
 
 An admin approves the pending request:
 
 ```bash
-kagi project list --remote http://127.0.0.1:8787
-kagi project approve --remote http://127.0.0.1:8787 <project_id>
+kagi remote projects --remote http://127.0.0.1:8787
+kagi remote approve --remote http://127.0.0.1:8787 <project_id>
+```
+
+Admin commands:
+
+```bash
+kagi remote audit --remote http://127.0.0.1:8787
+kagi remote tokens --remote http://127.0.0.1:8787
+kagi remote revoke-token --remote http://127.0.0.1:8787 <token_id>
 ```
 
 `approve` prints a project token. Give that token to the requester once. The
 token contains the remote URL, project id, and server fingerprint:
 
 ```bash
-kagi pull <project-token>
-kagi push
-kagi status
+kagi remote pull <project-token>
+kagi remote push
+kagi remote status
 ```
 
 In server mode, keep `.kagi/` local and out of Git. Project tokens are bearer
@@ -438,7 +456,7 @@ encrypted access wrappers. It does not contain the raw project key or private
 identity keys.
 
 For server-backed projects, keep `.kagi/` local and sync encrypted state with
-`kagi push` / `kagi pull` instead.
+`kagi remote push` / `kagi remote pull` instead.
 
 Secrets are encrypted with XChaCha20-Poly1305 and authenticated with their
 scope name, so an encrypted file cannot be silently moved to another scope.
@@ -463,7 +481,7 @@ kagi is organized as a Cargo workspace with 6 crates:
 | **kagi-store** | Local storage (`FileStore`), key manager, env injector | kagi-domain, kagi-crypto |
 | **kagi-sync** | Sync protocol types + remote client (`age`-encrypted HTTP transport) | kagi-domain |
 | **kagi-server** | Axum HTTP server + SQLite remote backend | kagi-domain, kagi-sync |
-| **kagi-app** | CLI application: argument parsing, command dispatch, TUI | kagi-domain, kagi-crypto, kagi-store, kagi-sync |
+| **kagi-app** | CLI application: argument parsing and command dispatch | kagi-domain, kagi-crypto, kagi-store, kagi-sync |
 | **kagi-vault** | Meta-package: provides the `kagi` binary by re-exporting `kagi-app` | kagi-app |
 
 All crates share the same version via `version.workspace = true`. The design
