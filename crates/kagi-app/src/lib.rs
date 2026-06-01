@@ -34,6 +34,7 @@ pub async fn run() {
         ("export", "print KEY=value lines after confirmation"),
         ("import", "import values from a .env file"),
         ("sync", "sync keys from .env.example"),
+        ("file", "manage encrypted files"),
         ("env", "manage default environments"),
         ("member", "request, list, approve, or remove members"),
     ];
@@ -49,6 +50,7 @@ pub async fn run() {
         ("export", "print KEY=value lines after confirmation"),
         ("import", "import values from a .env file"),
         ("sync", "sync keys from .env.example"),
+        ("file", "manage encrypted files"),
         ("env", "manage default environments"),
         ("member", "request, list, approve, or remove members"),
         ("serve", "start the remote sync server"),

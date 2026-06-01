@@ -1240,6 +1240,90 @@ fn test_import_dry_run_does_not_write() {
 }
 
 #[test]
+fn test_file_add_list_and_restore_follow_inferred_scope() {
+    let dir = TempDir::new().unwrap();
+    copy_fixture_dir(Path::new("tests/fixtures/monorepo"), dir.path());
+    let apps_api = dir.path().join("apps/api");
+    std::fs::write(
+        apps_api.join("service-account.json"),
+        r#"{"project_id":"demo"}"#,
+    )
+    .unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["init", "--nested", "--envs", "dev"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&apps_api);
+    cmd.args(["file", "add", "dev", "service-account.json"]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("apps-api/dev"))
+        .stdout(predicate::str::contains("service-account.json"));
+
+    let encrypted_index =
+        std::fs::read_to_string(dir.path().join(".kagi/files/index.enc")).unwrap();
+    assert!(!encrypted_index.contains("service-account"));
+    assert!(!encrypted_index.contains("apps-api"));
+    for entry in std::fs::read_dir(dir.path().join(".kagi/files")).unwrap() {
+        let name = entry.unwrap().file_name().to_string_lossy().to_string();
+        assert!(
+            !name.contains("service-account"),
+            "file name leaked in encrypted store: {name}"
+        );
+    }
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&apps_api);
+    cmd.args(["file", "list", "dev"]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("apps-api/dev"))
+        .stdout(predicate::str::contains("service-account.json"))
+        .stdout(predicate::str::contains("apps/api/service-account.json"));
+
+    std::fs::remove_file(apps_api.join("service-account.json")).unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&apps_api);
+    cmd.args(["file", "restore", "dev", "service-account.json"]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("restored"));
+
+    assert_eq!(
+        std::fs::read_to_string(apps_api.join("service-account.json")).unwrap(),
+        r#"{"project_id":"demo"}"#
+    );
+}
+
+#[test]
+fn test_file_add_rejects_large_files_by_default() {
+    let dir = TempDir::new().unwrap();
+    std::fs::create_dir_all(dir.path().join("api")).unwrap();
+    std::fs::write(dir.path().join("api/.env"), "KEY=val\n").unwrap();
+    std::fs::write(
+        dir.path().join("api/large.bin"),
+        vec![b'x'; 1024 * 1024 + 1],
+    )
+    .unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["init", "--nested"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(dir.path().join("api"));
+    cmd.args(["file", "add", "large.bin"]);
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("file too large"));
+}
+
+#[test]
 fn test_import_service_env_shorthand() {
     let dir = TempDir::new().unwrap();
 

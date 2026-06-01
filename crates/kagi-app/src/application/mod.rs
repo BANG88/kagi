@@ -1,5 +1,6 @@
 pub mod env_migration;
 pub mod export_env;
+pub mod file_artifacts;
 pub mod get_secret;
 pub mod import_env_file;
 pub mod init_service;
