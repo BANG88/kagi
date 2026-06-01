@@ -221,6 +221,12 @@ pub enum Commands {
         plain: bool,
     },
 
+    /// Manage encrypted files scoped like env secrets
+    File {
+        #[command(subcommand)]
+        command: FileCommands,
+    },
+
     /// Manage default environments
     Env {
         #[command(subcommand)]
@@ -286,6 +292,91 @@ pub enum Commands {
         /// Overwrite existing files without prompting
         #[arg(long)]
         force: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum FileCommands {
+    /// Add a small plaintext file to encrypted storage
+    Add {
+        /// Optional service scope (e.g., api, web). Defaults to the inferred nested directory.
+        #[arg(short, long)]
+        service: Option<String>,
+
+        /// Logical file name to use inside kagi
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Replace an existing file with the same name in the selected scope
+        #[arg(long)]
+        force: bool,
+
+        /// Allow files up to 5 MiB instead of the default 1 MiB
+        #[arg(long)]
+        allow_large: bool,
+
+        /// [service] [env] <path>, or [env] <path> when service is inferred
+        #[arg(required = true)]
+        args: Vec<String>,
+    },
+
+    /// List encrypted files in a scope
+    List {
+        /// Optional service scope (e.g., api, web). Defaults to the inferred nested directory.
+        #[arg(short, long)]
+        service: Option<String>,
+
+        /// List files from every scope
+        #[arg(long)]
+        all: bool,
+
+        /// [service] [env], or [env] when service is inferred
+        args: Vec<String>,
+    },
+
+    /// Print one decrypted file to stdout. Requires an interactive terminal.
+    Show {
+        /// Optional service scope (e.g., api, web). Defaults to the inferred nested directory.
+        #[arg(short, long)]
+        service: Option<String>,
+
+        /// [service] [env] <name>, or [env] <name> when service is inferred
+        #[arg(required = true)]
+        args: Vec<String>,
+    },
+
+    /// Restore one decrypted file to its original path or --out path
+    Restore {
+        /// Optional service scope (e.g., api, web). Defaults to the inferred nested directory.
+        #[arg(short, long)]
+        service: Option<String>,
+
+        /// Output path. Defaults to the path captured when the file was added.
+        #[arg(short, long)]
+        out: Option<String>,
+
+        /// Overwrite an existing plaintext output file
+        #[arg(long)]
+        force: bool,
+
+        /// [service] [env] <name>, or [env] <name> when service is inferred
+        #[arg(required = true)]
+        args: Vec<String>,
+    },
+
+    /// Remove one encrypted file from the selected scope
+    Remove {
+        /// Optional service scope (e.g., api, web). Defaults to the inferred nested directory.
+        #[arg(short, long)]
+        service: Option<String>,
+
+        /// Remove without an interactive confirmation prompt
+        #[arg(long)]
+        force: bool,
+
+        /// [service] [env] <name>, or [env] <name> when service is inferred
+        #[arg(required = true)]
+        args: Vec<String>,
     },
 }
 
@@ -476,8 +567,9 @@ mod tests {
         let names: Vec<_> = cmd.get_subcommands().map(|c| c.get_name()).collect();
         assert!(names.contains(&"serve"), "serve should be present");
         assert!(names.contains(&"remote"), "remote should be present");
+        assert!(names.contains(&"status"), "status should be present");
 
-        for removed in ["push", "pull", "status", "project", "token"] {
+        for removed in ["push", "pull", "project", "token"] {
             assert!(
                 !names.contains(&removed),
                 "{removed} should not be present as a top-level command"

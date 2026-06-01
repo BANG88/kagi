@@ -1,4 +1,5 @@
 use crate::application::export_env::ExportEnvService;
+use crate::application::file_artifacts::FileArtifactService;
 use crate::application::get_secret::GetSecretService;
 use crate::application::import_env_file::ImportReport;
 use crate::application::init_service::InitService;
@@ -10,7 +11,7 @@ use crate::application::sync_service::SyncService;
 use crate::application::unset_secret::UnsetSecretService;
 #[cfg(feature = "server")]
 use crate::cli::args::RemoteCommands;
-use crate::cli::args::{Cli, Commands, EnvCommands, MemberCommands};
+use crate::cli::args::{Cli, Commands, EnvCommands, FileCommands, MemberCommands};
 use crate::cli::style::Palette;
 use anyhow::Context;
 #[cfg(feature = "server")]
@@ -448,20 +449,10 @@ fn infer_legacy_nested_service(relative: &Path) -> Option<String> {
         .map(|c| c.as_os_str().to_string_lossy().to_string())
 }
 
-fn monorepo_has_mappings(config: &KagiConfig) -> bool {
-    config
-        .settings
-        .monorepo
-        .as_ref()
-        .is_some_and(|monorepo| !monorepo.services.is_empty())
-}
-
 fn infer_service_from_config(config: &KagiConfig, relative: &Path) -> Option<String> {
     let relative_path = normalized_relative_path(relative);
     infer_monorepo_service(config, &relative_path).or_else(|| {
-        if monorepo_has_mappings(config) {
-            None
-        } else if config.settings.nested.is_allowed(&relative_path) {
+        if config.settings.nested.is_allowed(&relative_path) {
             infer_legacy_nested_service(relative)
         } else {
             None
@@ -690,6 +681,90 @@ fn parse_scope_args(
             "No environment specified. Provide an environment name."
         )),
     }
+}
+
+fn split_file_item_args(args: Vec<String>, item: &str) -> anyhow::Result<(Vec<String>, String)> {
+    if args.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Usage: kagi file <command> [scope] <{item}>"
+        ));
+    }
+    if args.len() > 3 {
+        return Err(anyhow::anyhow!(
+            "Too many arguments. Use [service] [env] <{item}> or [env] <{item}> when service is inferred."
+        ));
+    }
+    let mut args = args;
+    let value = args.pop().unwrap();
+    Ok((args, value))
+}
+
+fn parse_file_scope_parts(
+    default_envs: &[String],
+    default_env: &str,
+    inferred_service: Option<String>,
+    service_flag: Option<String>,
+    scope_parts: Vec<String>,
+) -> anyhow::Result<String> {
+    if scope_parts.len() > 2 {
+        return Err(anyhow::anyhow!(
+            "Too many scope arguments. Use [service] [env] or [env] when service is inferred."
+        ));
+    }
+    parse_scope_args(
+        default_envs,
+        default_env,
+        inferred_service,
+        service_flag,
+        scope_parts.first().cloned(),
+        scope_parts.get(1).cloned(),
+    )
+}
+
+fn resolve_file_service_and_scope(
+    service_flag: Option<String>,
+    scope_parts: Vec<String>,
+) -> anyhow::Result<(FileArtifactService, String)> {
+    let (base_path, inferred) = resolve_kagi_base()?;
+    let config_path = base_path.join(kagi_domain::config::KAGI_CONFIG_FILE);
+    validate_v2_config(&config_path)?;
+    recover_pending_rotation(&base_path)?;
+    let config: KagiConfig = serde_json::from_str(&fs::read_to_string(&config_path)?)?;
+    let scope = parse_file_scope_parts(
+        &config.settings.envs,
+        &config.settings.default_env,
+        inferred,
+        service_flag,
+        scope_parts,
+    )?;
+    let project_key = load_project_key(&base_path)?;
+    let file_service = FileArtifactService::new(base_path, &project_key)?;
+    Ok((file_service, scope))
+}
+
+fn resolve_file_service_for_list(
+    service_flag: Option<String>,
+    scope_parts: Vec<String>,
+    all: bool,
+) -> anyhow::Result<(FileArtifactService, Option<String>)> {
+    let (base_path, inferred) = resolve_kagi_base()?;
+    let config_path = base_path.join(kagi_domain::config::KAGI_CONFIG_FILE);
+    validate_v2_config(&config_path)?;
+    recover_pending_rotation(&base_path)?;
+    let config: KagiConfig = serde_json::from_str(&fs::read_to_string(&config_path)?)?;
+    let project_key = load_project_key(&base_path)?;
+    let file_service = FileArtifactService::new(base_path, &project_key)?;
+    if all || (service_flag.is_none() && inferred.is_none() && scope_parts.is_empty()) {
+        return Ok((file_service, None));
+    }
+    let scope = parse_file_scope_parts(
+        &config.settings.envs,
+        &config.settings.default_env,
+        inferred,
+        service_flag,
+        scope_parts,
+    )?;
+    Ok((file_service, Some(scope)))
 }
 
 enum ScopeSelection {
@@ -999,6 +1074,51 @@ fn print_import_dry_run(report: &ImportReport, service_name: &str, file: &str, c
         for key in &report.overwritten {
             eprintln!("  {} {}", c.warning("~"), c.key(key));
         }
+    }
+}
+
+fn print_file_list(files: &[crate::application::file_artifacts::FileArtifactEntry], c: &Palette) {
+    if files.is_empty() {
+        println!("{} {}", c.prefix(), c.muted("no encrypted files found"));
+        return;
+    }
+
+    let mut current_scope: Option<&str> = None;
+    for file in files {
+        if current_scope != Some(file.scope.as_str()) {
+            current_scope = Some(&file.scope);
+            println!("{}", c.accent(&file.scope));
+        }
+        println!(
+            "  {} {} {}",
+            c.key(&file.name),
+            c.muted(&format!("{} bytes", file.size)),
+            c.muted(&file.restore_path)
+        );
+    }
+}
+
+fn confirm_file_remove(tty: bool, scope: &str, name: &str, c: &Palette) -> anyhow::Result<()> {
+    if !tty || !io::stdin().is_terminal() {
+        return Err(anyhow::anyhow!(
+            "kagi file remove deletes encrypted files and requires an interactive terminal. Use --force to remove without prompting."
+        ));
+    }
+
+    eprint!(
+        "{} {} {} [y/N]: ",
+        c.prefix(),
+        c.warning("warning:"),
+        c.info(&format!(
+            "this will remove encrypted file '{scope}.{name}' permanently."
+        ))
+    );
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    if input.trim().eq_ignore_ascii_case("y") {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("aborted"))
     }
 }
 
@@ -1476,7 +1596,30 @@ pub fn collect_doctor_checks(base_path: &Path) -> anyhow::Result<(Vec<DoctorChec
         }
     }
 
-    // Check 5: all services can be decrypted
+    // Check 5: encrypted file artifacts can be decrypted
+    if let Ok(key) = &key_result {
+        match crate::application::file_artifacts::validate_file_artifacts(base_path, key) {
+            Ok(count) => checks.push(DoctorCheck {
+                name: "encrypted files",
+                ok: true,
+                detail: if count == 0 {
+                    "none".to_string()
+                } else {
+                    format!("{count} file artifact(s)")
+                },
+            }),
+            Err(e) => {
+                checks.push(DoctorCheck {
+                    name: "encrypted files",
+                    ok: false,
+                    detail: format!("invalid file artifacts: {e}"),
+                });
+                errors += 1;
+            }
+        }
+    }
+
+    // Check 6: all services can be decrypted
     if let Ok(key) = &key_result {
         let store = store_from_project_key(base_path.to_path_buf(), key)?;
         match store.list_services() {
@@ -1526,7 +1669,7 @@ pub fn collect_doctor_checks(base_path: &Path) -> anyhow::Result<(Vec<DoctorChec
         }
     }
 
-    // Check 6: rotation journal
+    // Check 7: rotation journal
     let journal_path = KeyManager::new(base_path.to_path_buf())
         .rotation_journal_path()
         .unwrap_or_else(|_| base_path.join("rotation.journal.json"));
@@ -2446,6 +2589,100 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Restore { from, force } => {
             run_restore(&from, force, &c)?;
         }
+        Commands::File { command } => match command {
+            FileCommands::Add {
+                service,
+                name,
+                force,
+                allow_large,
+                args,
+            } => {
+                let (scope_parts, path) = split_file_item_args(args, "path")?;
+                let (file_service, scope) = resolve_file_service_and_scope(service, scope_parts)?;
+                let added = file_service.add_file(
+                    &scope,
+                    Path::new(&path),
+                    name.as_deref(),
+                    force,
+                    allow_large,
+                )?;
+                println!(
+                    "{} {} {} to {}",
+                    c.prefix(),
+                    if added.replaced {
+                        c.success("replaced file")
+                    } else {
+                        c.success("added file")
+                    },
+                    c.accent(&added.entry.name),
+                    c.accent(&added.entry.scope)
+                );
+                println!(
+                    "{} {} {}",
+                    c.prefix(),
+                    c.muted("restore path:"),
+                    c.muted(&added.entry.restore_path)
+                );
+            }
+            FileCommands::List { service, all, args } => {
+                let (file_service, scope) = resolve_file_service_for_list(service, args, all)?;
+                let files = file_service.list_files(scope.as_deref())?;
+                print_file_list(&files, &c);
+            }
+            FileCommands::Show { service, args } => {
+                let (scope_parts, name) = split_file_item_args(args, "name")?;
+                let (file_service, scope) = resolve_file_service_and_scope(service, scope_parts)?;
+                confirm_secret_output(tty, "kagi file show", &c)?;
+                let bytes = file_service.read_file(&scope, &name)?;
+                io::stdout().write_all(&bytes)?;
+            }
+            FileCommands::Restore {
+                service,
+                out,
+                force,
+                args,
+            } => {
+                let (scope_parts, name) = split_file_item_args(args, "name")?;
+                let (file_service, scope) = resolve_file_service_and_scope(service, scope_parts)?;
+                let restored = file_service.restore_file(
+                    &scope,
+                    &name,
+                    out.as_deref().map(Path::new),
+                    force,
+                )?;
+                println!(
+                    "{} {} {} to {}",
+                    c.prefix(),
+                    c.success("restored"),
+                    c.accent(&restored.entry.name),
+                    c.accent(&restored.path.display().to_string())
+                );
+                println!(
+                    "{} {}",
+                    c.prefix(),
+                    c.warning("plaintext file restored; keep it out of git")
+                );
+            }
+            FileCommands::Remove {
+                service,
+                force,
+                args,
+            } => {
+                let (scope_parts, name) = split_file_item_args(args, "name")?;
+                let (file_service, scope) = resolve_file_service_and_scope(service, scope_parts)?;
+                if !force {
+                    confirm_file_remove(tty, &scope, &name, &c)?;
+                }
+                let removed = file_service.remove_file(&scope, &name)?;
+                println!(
+                    "{} {} {} from {}",
+                    c.prefix(),
+                    c.success("removed"),
+                    c.accent(&removed.name),
+                    c.accent(&removed.scope)
+                );
+            }
+        },
         Commands::Import {
             service: service_name,
             first,
@@ -3189,6 +3426,42 @@ async fn remote_revoke_token(
 }
 
 #[cfg(feature = "server")]
+fn project_state_file(
+    path: String,
+    content: String,
+) -> kagi_sync::domain::project_state::ProjectFile {
+    let content_hash = {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(content.as_bytes());
+        hex::encode(hasher.finalize())
+    };
+    kagi_sync::domain::project_state::ProjectFile {
+        path,
+        content,
+        sha256: Some(content_hash),
+    }
+}
+
+#[cfg(feature = "server")]
+fn collect_project_state_files_for_push(
+    base_path: &Path,
+    store: &FileStore,
+) -> anyhow::Result<Vec<kagi_sync::domain::project_state::ProjectFile>> {
+    let mut files = Vec::new();
+    for scope in store.list_services()? {
+        let (file_name, content) = store.raw_service_content(&scope)?;
+        files.push(project_state_file(file_name, content));
+    }
+    for (file_name, content) in
+        crate::application::file_artifacts::collect_encrypted_file_artifacts(base_path)?
+    {
+        files.push(project_state_file(file_name, content));
+    }
+    Ok(files)
+}
+
+#[cfg(feature = "server")]
 async fn remote_push(c: &Palette, allow_insecure: bool) -> anyhow::Result<()> {
     let (base_path, _) = resolve_kagi_base()?;
     let config_path = base_path.join(kagi_domain::config::KAGI_CONFIG_FILE);
@@ -3223,22 +3496,7 @@ async fn remote_push(c: &Palette, allow_insecure: bool) -> anyhow::Result<()> {
     let kagi_json = fs::read_to_string(&config_path)?;
     let access_json =
         fs::read_to_string(base_path.join("access.json")).unwrap_or_else(|_| "{}".to_string());
-
-    let mut files = Vec::new();
-    for scope in store.list_services()? {
-        let (file_name, content) = store.raw_service_content(&scope)?;
-        let content_hash = {
-            use sha2::{Digest, Sha256};
-            let mut hasher = Sha256::new();
-            hasher.update(content.as_bytes());
-            hex::encode(hasher.finalize())
-        };
-        files.push(kagi_sync::domain::project_state::ProjectFile {
-            path: file_name,
-            content,
-            sha256: Some(content_hash),
-        });
-    }
+    let files = collect_project_state_files_for_push(&base_path, &store)?;
 
     let project_state = kagi_sync::domain::project_state::ProjectState {
         project_id: project_id.to_string(),
@@ -3662,7 +3920,8 @@ fn remove_stale_pulled_secret_files(
         Ok(())
     }
 
-    visit_dir(base_path, &base_path.join("secrets"), expected_files)
+    visit_dir(base_path, &base_path.join("secrets"), expected_files)?;
+    visit_dir(base_path, &base_path.join("files"), expected_files)
 }
 
 #[cfg(feature = "server")]
@@ -5296,6 +5555,90 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(base.join("secrets/readme.txt")).unwrap(),
+            "local note"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "server")]
+    fn test_collect_project_state_files_for_push_includes_file_artifacts() {
+        let dir = TempDir::new().unwrap();
+        let base = dir.path().join(".kagi");
+        fs::create_dir_all(base.join("files")).unwrap();
+        fs::write(
+            base.join("kagi.json"),
+            serde_json::json!({
+                "version": "3",
+                "project_id": "kgp_test",
+                "services": {},
+                "settings": {
+                    "envs": ["development"],
+                    "default_env": "development"
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(base.join("files/index.enc"), "index").unwrap();
+        fs::write(base.join("files/kgf_test.enc"), "blob").unwrap();
+
+        let key = [7_u8; 32];
+        let store = store_from_project_key(base.clone(), &key).unwrap();
+        let files = collect_project_state_files_for_push(&base, &store).unwrap();
+
+        assert!(
+            files
+                .iter()
+                .any(|file| file.path == "files/index.enc" && file.content == "index")
+        );
+        assert!(
+            files
+                .iter()
+                .any(|file| file.path == "files/kgf_test.enc" && file.content == "blob")
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "server")]
+    fn test_apply_pulled_state_removes_local_file_artifacts_absent_from_remote() {
+        let dir = TempDir::new().unwrap();
+        let base = dir.path().join(".kagi");
+        fs::create_dir_all(base.join("files")).unwrap();
+        fs::write(base.join("files/index.enc"), "stale-index").unwrap();
+        fs::write(base.join("files/kgf_keep.enc"), "old").unwrap();
+        fs::write(base.join("files/kgf_stale.enc"), "stale").unwrap();
+        fs::write(base.join("files/readme.txt"), "local note").unwrap();
+
+        let state = serde_json::json!({
+            "project_id": "kgp_test",
+            "revision": 2,
+            "kagi_json": "{\"project_id\":\"kgp_test\"}",
+            "access_json": "{\"members\":[]}",
+            "files": [
+                {
+                    "path": "files/index.enc",
+                    "content": "remote-index"
+                },
+                {
+                    "path": "files/kgf_keep.enc",
+                    "content": "remote-blob"
+                }
+            ]
+        });
+
+        apply_pulled_state(&base, &state).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(base.join("files/index.enc")).unwrap(),
+            "remote-index"
+        );
+        assert_eq!(
+            fs::read_to_string(base.join("files/kgf_keep.enc")).unwrap(),
+            "remote-blob"
+        );
+        assert!(!base.join("files/kgf_stale.enc").exists());
+        assert_eq!(
+            fs::read_to_string(base.join("files/readme.txt")).unwrap(),
             "local note"
         );
     }

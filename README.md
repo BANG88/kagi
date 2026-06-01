@@ -20,6 +20,7 @@ A secure, team-ready CLI for managing encrypted secrets and environment variable
 - `.kagi/` is designed to be committed; private keys stay on each device.
 - `get --show` and `export` require terminal confirmation before revealing values.
 - Conservative `.env` migration in `kagi init` detects high-confidence `.env*` files and can map monorepo service folders.
+- Encrypted small-file artifacts via `kagi file`, scoped the same way as env secrets.
 - Shell completions for bash, zsh, fish, elvish, and powershell via `kagi completions`.
 
 ---
@@ -223,6 +224,9 @@ Do not commit real `.env` files. `kagi init` updates `.gitignore` so `.env`,
 | Import an env file | `kagi import api --file .env.local` |
 | Preview an import | `kagi import api --file .env.local --dry-run` |
 | Import and normalize keys | `kagi import api --file .env.local --upper-snake` |
+| Add an encrypted file | `kagi file add api service-account.json` |
+| List encrypted files | `kagi file list api` |
+| Restore an encrypted file | `kagi file restore api service-account.json` |
 | Export all service envs | `kagi export api --out .` |
 | Sync missing keys from example | `kagi sync --service api` |
 | Generate shell completions | `kagi completions zsh` |
@@ -286,6 +290,54 @@ kagi sync --service api
 ```
 
 Existing values are never overwritten.
+
+---
+
+## Working With Encrypted Files
+
+Use `kagi file` for small secret files that should share the same service and
+environment scope as your env secrets:
+
+```bash
+kagi file add api service-account.json
+kagi file list api
+kagi file restore api service-account.json
+```
+
+Inside a nested or monorepo service directory, scope inference works the same as
+`set`, `get`, `run`, and `import`:
+
+```bash
+cd apps/api
+kagi file add dev service-account.json
+kagi file list dev
+kagi file restore dev service-account.json
+```
+
+The command stores encrypted blobs under `.kagi/files/`. File names, restore
+paths, and scopes are stored in encrypted `files/index.enc`; Git and the remote
+server only see opaque encrypted artifact ids such as `files/kgf_xxxxxx.enc`.
+
+Restoring writes plaintext back to the repo-relative path captured at `add`
+time, unless `--out <path>` is supplied:
+
+```bash
+kagi file restore api service-account.json --out apps/api/service-account.json
+```
+
+Safety limits:
+
+- Default max file size is 1 MiB.
+- `--allow-large` raises the limit to 5 MiB.
+- Directories, symlinks, device files, build artifacts, `.git/`, and `.kagi/`
+  paths are rejected.
+- Git-tracked plaintext files are rejected; remove them from Git first with
+  `git rm --cached <path>`.
+- `show` requires terminal confirmation because it prints decrypted content.
+- `restore` refuses to overwrite existing plaintext unless `--force` is used.
+
+Git-backed and server-backed sharing use the same encrypted project state. Commit
+or push `.kagi/files/**`; do not commit restored plaintext files.
 
 ---
 

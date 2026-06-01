@@ -903,6 +903,7 @@ mod tests {
             local.path().to_path_buf(),
         );
         let path = km.rotation_journal_path().unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, "{}").unwrap();
         assert!(path.exists());
 

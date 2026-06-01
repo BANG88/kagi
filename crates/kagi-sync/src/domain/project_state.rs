@@ -27,8 +27,11 @@ pub fn validate_file_path(path: &str) -> Result<(), &'static str> {
             return Err("invalid path segment");
         }
     }
-    if !path.starts_with("secrets/") || !path.ends_with(".enc") {
-        return Err("path must start with secrets/ and end with .enc");
+    let is_secret = path.starts_with("secrets/") && path.ends_with(".enc");
+    let is_file_artifact =
+        path == "files/index.enc" || (path.starts_with("files/kgf_") && path.ends_with(".enc"));
+    if !is_secret && !is_file_artifact {
+        return Err("path must be an encrypted secrets or files artifact");
     }
     Ok(())
 }
@@ -41,6 +44,8 @@ mod tests {
     fn test_validate_file_path_valid() {
         assert!(validate_file_path("secrets/api/development.enc").is_ok());
         assert!(validate_file_path("secrets/web/production.enc").is_ok());
+        assert!(validate_file_path("files/index.enc").is_ok());
+        assert!(validate_file_path("files/kgf_abc123.enc").is_ok());
     }
 
     #[test]
@@ -87,7 +92,7 @@ mod tests {
     fn test_validate_file_path_rejects_wrong_prefix() {
         assert_eq!(
             validate_file_path("config/development.enc"),
-            Err("path must start with secrets/ and end with .enc")
+            Err("path must be an encrypted secrets or files artifact")
         );
     }
 
@@ -95,7 +100,15 @@ mod tests {
     fn test_validate_file_path_rejects_wrong_suffix() {
         assert_eq!(
             validate_file_path("secrets/api/development.txt"),
-            Err("path must start with secrets/ and end with .enc")
+            Err("path must be an encrypted secrets or files artifact")
+        );
+    }
+
+    #[test]
+    fn test_validate_file_path_rejects_raw_file_artifact_name() {
+        assert_eq!(
+            validate_file_path("files/service-account.json.enc"),
+            Err("path must be an encrypted secrets or files artifact")
         );
     }
 }

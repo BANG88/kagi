@@ -103,11 +103,21 @@ impl InitService {
 fn find_git_root(start: &Path) -> Option<PathBuf> {
     let mut current = start;
     loop {
-        if current.join(".git").exists() {
+        if is_git_root(current) {
             return Some(current.to_path_buf());
         }
         current = current.parent()?;
     }
+}
+
+fn is_git_root(path: &Path) -> bool {
+    let git_path = path.join(".git");
+    if git_path.is_file() {
+        return fs::read_to_string(git_path)
+            .map(|content| content.trim_start().starts_with("gitdir:"))
+            .unwrap_or(false);
+    }
+    git_path.is_dir() && (git_path.join("HEAD").exists() || git_path.join("commondir").exists())
 }
 
 fn gitignore_kagi_prefix(git_root: &Path, project_root: &Path) -> String {
@@ -192,11 +202,26 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    fn create_fake_git_dir(path: &Path) {
+        let git_dir = path.join(".git");
+        fs::create_dir(&git_dir).unwrap();
+        fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    }
+
+    fn test_init_service(base_path: PathBuf, local_data_dir: PathBuf, nested: bool) -> InitService {
+        InitService {
+            key_manager: KeyManager::new_with_local_data_dir(base_path.clone(), local_data_dir),
+            base_path,
+            nested,
+            envs: vec![DEFAULT_ENV_NAME.to_string()],
+        }
+    }
+
     #[test]
     fn test_init_creates_structure() {
         let dir = TempDir::new().unwrap();
         let base = dir.path().join(".kagi");
-        let service = InitService::new(base.clone());
+        let service = test_init_service(base.clone(), dir.path().join(".kagi-home"), false);
         service.execute().unwrap();
         assert!(base.join(KAGI_CONFIG_FILE).exists());
         assert!(base.join("access.json").exists());
@@ -228,7 +253,7 @@ mod tests {
     fn test_init_can_enable_nested() {
         let dir = TempDir::new().unwrap();
         let base = dir.path().join(".kagi");
-        let service = InitService::with_nested(base.clone(), true);
+        let service = test_init_service(base.clone(), dir.path().join(".kagi-home"), true);
         service.execute().unwrap();
 
         let config: KagiConfig =
@@ -243,10 +268,10 @@ mod tests {
     #[test]
     fn test_init_updates_gitignore_in_git_repo() {
         let dir = TempDir::new().unwrap();
-        fs::create_dir(dir.path().join(".git")).unwrap();
+        create_fake_git_dir(dir.path());
 
         let base = dir.path().join(".kagi");
-        let service = InitService::new(base);
+        let service = test_init_service(base, dir.path().join(".kagi-home"), false);
         service.execute().unwrap();
 
         let gitignore = dir.path().join(".gitignore");
@@ -266,12 +291,12 @@ mod tests {
     #[test]
     fn test_init_appends_to_existing_gitignore() {
         let dir = TempDir::new().unwrap();
-        fs::create_dir(dir.path().join(".git")).unwrap();
+        create_fake_git_dir(dir.path());
         let gitignore = dir.path().join(".gitignore");
         fs::write(&gitignore, "/target\n").unwrap();
 
         let base = dir.path().join(".kagi");
-        let service = InitService::new(base);
+        let service = test_init_service(base, dir.path().join(".kagi-home"), false);
         service.execute().unwrap();
 
         let content = fs::read_to_string(&gitignore).unwrap();
@@ -290,13 +315,13 @@ mod tests {
     #[test]
     fn test_init_rewrites_gitignore_for_subdirectory_project() {
         let dir = TempDir::new().unwrap();
-        fs::create_dir(dir.path().join(".git")).unwrap();
+        create_fake_git_dir(dir.path());
         fs::create_dir_all(dir.path().join("tests")).unwrap();
         let gitignore = dir.path().join(".gitignore");
         fs::write(&gitignore, ".kagi/\n/tests/.kagi/\n/target\n").unwrap();
 
         let base = dir.path().join("tests/.kagi");
-        let service = InitService::new(base);
+        let service = test_init_service(base, dir.path().join(".kagi-home"), false);
         service.execute().unwrap();
 
         let content = fs::read_to_string(&gitignore).unwrap();
