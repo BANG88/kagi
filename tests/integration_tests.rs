@@ -1295,6 +1295,8 @@ fn test_file_add_list_and_restore_follow_inferred_scope() {
     let dir = TempDir::new().unwrap();
     copy_fixture_dir(Path::new("tests/fixtures/monorepo"), dir.path());
     let apps_api = dir.path().join("apps/api");
+    std::fs::create_dir_all(&apps_api).unwrap();
+    std::fs::write(apps_api.join(".env.dev"), "KEY=val\n").unwrap();
     std::fs::write(
         apps_api.join("service-account.json"),
         r#"{"project_id":"demo"}"#,

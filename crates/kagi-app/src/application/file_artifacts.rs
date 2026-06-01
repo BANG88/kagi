@@ -352,15 +352,13 @@ impl FileArtifactService {
                 normalize_path(std::env::current_dir()?.join(out))?
             }
         } else {
-            self.project_root.join(&entry.restore_path)
+            normalize_path(self.project_root.join(&entry.restore_path))?
         };
-        let relative = target
-            .strip_prefix(&self.project_root)
-            .map_err(|_| anyhow::anyhow!("output path must stay inside the repository"))?
-            .to_string_lossy()
-            .replace('\\', "/");
-        validate_safe_relative_path(&relative)?;
         reject_symlink_components(&target)?;
+        let target = canonicalize_existing_path_prefix(&target)?;
+        let relative = repo_relative_path(&self.project_root, &target)
+            .map_err(|_| anyhow::anyhow!("output path must stay inside the repository"))?;
+        validate_safe_relative_path(&relative)?;
         Ok(target)
     }
 
@@ -586,6 +584,36 @@ fn normalize_path(path: PathBuf) -> anyhow::Result<PathBuf> {
         }
     }
     Ok(normalized)
+}
+
+fn canonicalize_existing_path_prefix(path: &Path) -> anyhow::Result<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let absolute = normalize_path(absolute)?;
+    if let Ok(canonical) = absolute.canonicalize() {
+        return Ok(canonical);
+    }
+
+    let mut missing = Vec::new();
+    let mut current = absolute.as_path();
+    while !current.exists() {
+        let Some(name) = current.file_name() else {
+            break;
+        };
+        missing.push(name.to_os_string());
+        current = current
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("output path has no existing parent"))?;
+    }
+
+    let mut canonical = current.canonicalize()?;
+    for component in missing.iter().rev() {
+        canonical.push(component);
+    }
+    normalize_path(canonical)
 }
 
 fn reject_symlink_components(path: &Path) -> anyhow::Result<()> {
