@@ -882,7 +882,7 @@ mod tests {
 
     async fn test_repo() -> SqliteRemoteRepository {
         let id = rand::random::<u64>();
-        let path = std::env::temp_dir().join(format!("kagi_test_{}.db", id));
+        let path = std::env::temp_dir().join(format!("kagi_test_{id}.db"));
         SqliteRemoteRepository::new_file(path).await.unwrap()
     }
 

@@ -10,6 +10,7 @@ pub struct SearchResult {
     pub scope: String,
     pub key: String,
     pub description: Option<String>,
+    pub value: Option<String>,
 }
 
 impl<R: SecretRepository> SearchSecretsService<R> {
@@ -35,6 +36,7 @@ impl<R: SecretRepository> SearchSecretsService<R> {
                         scope: scope.clone(),
                         key: key.clone(),
                         description: secret.description.clone(),
+                        value: None,
                     });
                 }
             }
@@ -64,6 +66,7 @@ impl<R: SecretRepository> SearchSecretsService<R> {
                         scope: scope.clone(),
                         key: key.clone(),
                         description: secret.description.clone(),
+                        value: Some(secret.value.clone()),
                     });
                 }
             }

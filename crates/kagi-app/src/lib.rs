@@ -35,7 +35,7 @@ pub async fn run() {
         ("import", "import values from a .env file"),
         ("sync", "sync keys from .env.example"),
         ("env", "manage default environments"),
-        ("member", "list, approve, or remove members"),
+        ("member", "request, list, approve, or remove members"),
     ];
     #[cfg(feature = "server")]
     let cmd_lines: Vec<(&str, &str)> = vec![
@@ -50,13 +50,9 @@ pub async fn run() {
         ("import", "import values from a .env file"),
         ("sync", "sync keys from .env.example"),
         ("env", "manage default environments"),
-        ("member", "list, approve, or remove members"),
+        ("member", "request, list, approve, or remove members"),
         ("serve", "start the remote sync server"),
-        ("push", "upload project state to remote server"),
-        ("pull", "download project state from remote server"),
-        ("status", "compare local and remote revisions"),
-        ("project", "manage remote projects"),
-        ("remote", "manage remote server credentials"),
+        ("remote", "login, register, sync, and administer remotes"),
     ];
     let max_cmd = cmd_lines.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
     let cmd_list = cmd_lines
@@ -110,7 +106,7 @@ pub async fn run() {
 
     if std::env::args_os().len() == 1 {
         if let Err(e) = cmd.print_help() {
-            eprintln!("{}", e);
+            eprintln!("{e}");
             std::process::exit(1);
         }
         println!();
@@ -125,7 +121,7 @@ pub async fn run() {
     if let Err(e) = cli::commands::run(cli).await {
         let tty = std::io::stdout().is_terminal();
         let c = cli::style::Palette::new(tty);
-        eprintln!("{} {}", c.prefix(), c.error(&format!("error: {}", e)));
+        eprintln!("{} {}", c.prefix(), c.error(&format!("error: {e}")));
         std::process::exit(1);
     }
 }

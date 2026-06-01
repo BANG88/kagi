@@ -52,11 +52,10 @@ impl FileStore {
                 .any(|part| part.is_empty() || part == "." || part == "..")
         {
             return Err(DomainError::StoreCorrupted(format!(
-                "invalid service or environment name: {}",
-                service_name
+                "invalid service or environment name: {service_name}"
             )));
         }
-        Ok(format!("secrets/{}.enc", service_name))
+        Ok(format!("secrets/{service_name}.enc"))
     }
 
     fn validate_env_name(env_name: &str) -> Result<(), DomainError> {
@@ -68,8 +67,7 @@ impl FileStore {
             || env_name == ".."
         {
             return Err(DomainError::StoreCorrupted(format!(
-                "invalid environment name: {}",
-                env_name
+                "invalid environment name: {env_name}"
             )));
         }
         Ok(())
@@ -84,15 +82,14 @@ impl FileStore {
                 .any(|part| part.is_empty() || part == "." || part == "..")
         {
             return Err(DomainError::StoreCorrupted(format!(
-                "invalid encrypted service path: {}",
-                file
+                "invalid encrypted service path: {file}"
             )));
         }
         Ok(())
     }
 
     fn aad_for_service(service_name: &str) -> Vec<u8> {
-        format!("kagi:v1:{}:{}", XCHACHA20_POLY1305, service_name).into_bytes()
+        format!("kagi:v1:{XCHACHA20_POLY1305}:{service_name}").into_bytes()
     }
 
     fn set_private_file_permissions(_path: &std::path::Path) -> Result<(), DomainError> {
@@ -137,7 +134,7 @@ impl FileStore {
 
     pub fn ensure_service_envs(&self, service_name: &str) -> Result<(), DomainError> {
         for env_name in self.default_envs()? {
-            let scope = format!("{}/{}", service_name, env_name);
+            let scope = format!("{service_name}/{env_name}");
             match self.load(&scope) {
                 Ok(_) => {}
                 Err(DomainError::ServiceNotFound(_)) => self.save(&Service::new(scope))?,
@@ -189,8 +186,7 @@ impl FileStore {
         let service_names = service_names_from_config(&config);
         if service_names.iter().any(|service| service == env_name) {
             return Err(DomainError::StoreCorrupted(format!(
-                "environment name conflicts with existing service: {}",
-                env_name
+                "environment name conflicts with existing service: {env_name}"
             )));
         }
         if !config.settings.envs.iter().any(|env| env == env_name) {
@@ -214,14 +210,12 @@ impl FileStore {
         let config = self.load_config()?;
         if !config.settings.envs.iter().any(|env| env == old_env) {
             return Err(DomainError::StoreCorrupted(format!(
-                "environment not configured: {}",
-                old_env
+                "environment not configured: {old_env}"
             )));
         }
         if config.settings.envs.iter().any(|env| env == new_env) {
             return Err(DomainError::StoreCorrupted(format!(
-                "environment already exists: {}",
-                new_env
+                "environment already exists: {new_env}"
             )));
         }
 
@@ -232,15 +226,14 @@ impl FileStore {
             } else if let Some((service, env)) = scope.split_once('/')
                 && env == old_env
             {
-                renames.push((scope.clone(), format!("{}/{}", service, new_env)));
+                renames.push((scope.clone(), format!("{service}/{new_env}")));
             }
         }
 
         for (_, new_scope) in &renames {
             if config.services.contains_key(new_scope) {
                 return Err(DomainError::StoreCorrupted(format!(
-                    "scope already exists: {}",
-                    new_scope
+                    "scope already exists: {new_scope}"
                 )));
             }
         }
@@ -267,14 +260,12 @@ impl FileStore {
         let config = self.load_config()?;
         if config.settings.default_env == env_name {
             return Err(DomainError::StoreCorrupted(format!(
-                "cannot delete default environment: {}",
-                env_name
+                "cannot delete default environment: {env_name}"
             )));
         }
         if !config.settings.envs.iter().any(|env| env == env_name) {
             return Err(DomainError::StoreCorrupted(format!(
-                "environment not configured: {}",
-                env_name
+                "environment not configured: {env_name}"
             )));
         }
 
@@ -317,8 +308,7 @@ impl FileStore {
             .clone();
         if config.services.contains_key(new_scope) {
             return Err(DomainError::StoreCorrupted(format!(
-                "scope already exists: {}",
-                new_scope
+                "scope already exists: {new_scope}"
             )));
         }
 
@@ -384,8 +374,7 @@ impl SecretRepository for FileStore {
             }
             Some(other) => {
                 return Err(DomainError::StoreCorrupted(format!(
-                    "unsupported algorithm: {}",
-                    other
+                    "unsupported algorithm: {other}"
                 )));
             }
         };

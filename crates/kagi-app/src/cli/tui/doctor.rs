@@ -2,13 +2,16 @@ use crate::cli::commands::{DoctorCheck, collect_doctor_checks};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
+use ratatui::layout::Constraint;
+use ratatui::style::Style;
+use ratatui::text::Span;
+use ratatui::widgets::{Block, Borders, Cell, Row, Table};
 use std::io;
 use std::io::IsTerminal;
 use std::path::Path;
+
+use super::layout;
+use super::theme::Theme;
 
 struct App {
     checks: Vec<DoctorCheck>,
@@ -61,38 +64,20 @@ pub fn run_tui_doctor(base_path: &Path, fix: bool) -> anyhow::Result<()> {
         show_detail: false,
     };
 
-    crossterm::terminal::enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    crossterm::execute!(
-        stdout,
-        crossterm::terminal::EnterAlternateScreen,
-        crossterm::event::EnableMouseCapture
-    )?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    let res = run_app(&mut terminal, &mut app);
-
-    crossterm::terminal::disable_raw_mode()?;
-    crossterm::execute!(
-        terminal.backend_mut(),
-        crossterm::terminal::LeaveAlternateScreen,
-        crossterm::event::DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
-
-    if let Err(e) = res {
-        return Err(anyhow::anyhow!("TUI error: {}", e));
-    }
-    Ok(())
+    let theme = Theme::default();
+    layout::run_tui(|terminal| run_app(terminal, &mut app, &theme))
 }
 
-fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> io::Result<()> {
+fn run_app(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut App,
+    theme: &Theme,
+) -> io::Result<()> {
     let mut last_tick = std::time::Instant::now();
     let tick_rate = std::time::Duration::from_millis(250);
 
     loop {
-        terminal.draw(|f| draw_ui(f, app))?;
+        terminal.draw(|f| draw_ui(f, app, theme))?;
 
         let timeout = tick_rate.saturating_sub(last_tick.elapsed());
         if crossterm::event::poll(timeout)?
@@ -121,22 +106,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
     }
 }
 
-fn draw_ui(f: &mut ratatui::Frame, app: &App) {
-    let main_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(1)])
-        .split(f.area());
-
-    let header_style = Style::default()
-        .fg(Color::Rgb(35, 82, 133))
-        .add_modifier(Modifier::BOLD);
-    let success_style = Style::default()
-        .fg(Color::Rgb(72, 121, 78))
-        .add_modifier(Modifier::BOLD);
-    let error_style = Style::default().fg(Color::Rgb(190, 55, 43));
-    let warning_style = Style::default().fg(Color::Rgb(188, 111, 35));
-    let muted_style = Style::default().fg(Color::Rgb(140, 140, 140));
-
+fn draw_ui(f: &mut ratatui::Frame, app: &App, theme: &Theme) {
     let summary = if app.errors > 0 {
         format!("{} error(s), {} warning(s)", app.errors, app.warnings)
     } else if app.warnings > 0 {
@@ -145,21 +115,12 @@ fn draw_ui(f: &mut ratatui::Frame, app: &App) {
         "all checks passed".to_string()
     };
 
-    let header = Paragraph::new(Line::from(vec![
-        Span::styled("Kagi Doctor", header_style),
-        Span::raw("  "),
-        Span::styled(
-            &summary,
-            if app.errors > 0 {
-                error_style
-            } else if app.warnings > 0 {
-                warning_style
-            } else {
-                success_style
-            },
-        ),
-    ]));
-    f.render_widget(header, main_layout[1]);
+    let content = layout::draw_frame(
+        f,
+        theme,
+        &format!("Doctor — {summary}"),
+        "↑↓=navigate  Enter=details  q=quit",
+    );
 
     let rows: Vec<Row> = app
         .checks
@@ -168,23 +129,27 @@ fn draw_ui(f: &mut ratatui::Frame, app: &App) {
         .map(|(i, check)| {
             let is_selected = i == app.selected;
             let icon = if check.ok { "✓" } else { "✗" };
-            let icon_style = if check.ok { success_style } else { error_style };
+            let icon_style = if check.ok {
+                theme.success_style()
+            } else {
+                theme.error_style()
+            };
             let style = if is_selected {
-                Style::default().add_modifier(Modifier::REVERSED)
+                theme.highlight_style()
             } else {
                 Style::default()
             };
             let cells = vec![
-                Cell::from(Span::styled(icon, icon_style)).style(style),
-                Cell::from(Span::styled(check.name, style.fg(Color::Rgb(35, 82, 133)))),
-                Cell::from(Span::styled(&check.detail, muted_style)).style(style),
+                Cell::new(Span::styled(icon, icon_style)).style(style),
+                Cell::new(Span::styled(check.name, theme.title_style())).style(style),
+                Cell::new(Span::styled(&check.detail, theme.muted_style())).style(style),
             ];
             Row::new(cells).height(1)
         })
         .collect();
 
     let header_row = Row::new(vec!["", "Check", "Detail"])
-        .style(header_style)
+        .style(theme.header_style())
         .height(1);
 
     let table = Table::new(
@@ -200,45 +165,15 @@ fn draw_ui(f: &mut ratatui::Frame, app: &App) {
         Block::default()
             .borders(Borders::ALL)
             .title("Checks")
-            .title_style(header_style),
+            .title_style(theme.header_style())
+            .border_style(theme.block_style()),
     );
-    f.render_widget(table, main_layout[0]);
+    f.render_widget(table, content);
 
-    // Detail panel
+    // Detail modal
     if app.show_detail {
         let check = &app.checks[app.selected];
-        let detail_text = format!("{}\n{}", check.name, check.detail);
-        let detail_block = Block::default()
-            .borders(Borders::ALL)
-            .title("Detail")
-            .title_style(header_style);
-        let detail = Paragraph::new(detail_text).block(detail_block);
-        let area = centered_rect(60, 40, f.area());
-        f.render_widget(ratatui::widgets::Clear, area);
-        f.render_widget(detail, area);
+        let detail_text = check.detail.to_string();
+        layout::draw_modal(f, theme, check.name, &detail_text, (60, 40));
     }
-}
-
-fn centered_rect(
-    percent_x: u16,
-    percent_y: u16,
-    r: ratatui::layout::Rect,
-) -> ratatui::layout::Rect {
-    let popup_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(r);
-
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(popup_layout[1])[1]
 }
