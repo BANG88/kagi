@@ -346,6 +346,29 @@ impl KeyManager {
         self.save_local_project_key(&self.project_id()?, key)
     }
 
+    pub fn clear_cached_project_key(&self, project_id: &str) -> Result<(), DomainError> {
+        let local_key_path = self.local_project_key_path(project_id)?;
+        if local_key_path.exists() {
+            fs::remove_file(local_key_path)?;
+        }
+
+        if !keyring_disabled()
+            && let Ok(entry) = keyring_entry(project_id)
+        {
+            let _ = entry.delete_credential();
+        }
+
+        Ok(())
+    }
+
+    pub fn clear_rotation_journal(&self) -> Result<(), DomainError> {
+        let path = self.rotation_journal_path()?;
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+        Ok(())
+    }
+
     pub fn rotated_access_json(
         &self,
         key: &[u8],
@@ -825,5 +848,65 @@ mod tests {
     fn test_decode_hex_invalid_chars() {
         let result = decode_hex("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz");
         assert!(matches!(result, Err(DomainError::InvalidProjectKey)));
+    }
+
+    #[test]
+    fn test_clear_cached_project_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join(".kagi")).unwrap();
+        let config = KagiConfig {
+            version: "2".into(),
+            project_id: "kgp_test".into(),
+            services: Default::default(),
+            settings: Default::default(),
+        };
+        fs::write(
+            dir.path().join(".kagi").join(KAGI_CONFIG_FILE),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
+
+        let km = KeyManager::new_with_local_data_dir(
+            dir.path().join(".kagi"),
+            local.path().to_path_buf(),
+        );
+        let project_id = km.project_id().unwrap();
+        let key = vec![1u8; 32];
+
+        km.save_local_project_key(&project_id, &key).unwrap();
+        assert!(km.load_local_project_key(&project_id).unwrap().is_some());
+
+        km.clear_cached_project_key(&project_id).unwrap();
+        assert!(km.load_local_project_key(&project_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_clear_rotation_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join(".kagi")).unwrap();
+        let config = KagiConfig {
+            version: "2".into(),
+            project_id: "kgp_test".into(),
+            services: Default::default(),
+            settings: Default::default(),
+        };
+        fs::write(
+            dir.path().join(".kagi").join(KAGI_CONFIG_FILE),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
+
+        let km = KeyManager::new_with_local_data_dir(
+            dir.path().join(".kagi"),
+            local.path().to_path_buf(),
+        );
+        let path = km.rotation_journal_path().unwrap();
+        fs::write(&path, "{}").unwrap();
+        assert!(path.exists());
+
+        km.clear_rotation_journal().unwrap();
+        assert!(!path.exists());
     }
 }

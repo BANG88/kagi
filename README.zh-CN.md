@@ -16,9 +16,10 @@
 - 开箱即用的团队协作：一个人就是团队中的唯一成员
 - 支持按服务和环境隔离，例如 `api/development` 和 `web/production`
 - `development` 是默认环境，日常命令更简洁
-- 嵌套服务推断：在 `./api` 目录内运行 `kagi run bun dev` 即可工作
+- 嵌套服务推断：在 `./api` 或 `./apps/api` 这类 monorepo 目录内运行 `kagi run bun dev` 即可工作
 - `.kagi/` 目录设计为可提交到 Git；私钥保存在每个设备上
 - `get --show` 和 `export` 在显示密钥值前需要终端确认
+- `kagi init` 会保守检测高置信度 `.env*` 文件，并可为 monorepo 服务目录建立映射
 
 ---
 
@@ -88,7 +89,7 @@ kagi init --nested --envs
 
 `--envs` 不带参数会创建标准环境：`development`、`test` 和 `production`。
 
-`development` 是默认环境，所以通常不需要指定。`--nested` 让 kagi 可以根据当前目录推断服务名称。
+`development` 是默认环境，所以通常不需要指定。`--nested` 让 kagi 可以根据当前目录推断服务名称。在 monorepo 中，`init` 会记录 `apps/api`、`packages/api` 这类检测到的服务路径，所以在这些目录里运行命令不需要手动指定 `--service`。
 
 提交生成的 `.kagi/` 文件：
 
@@ -107,6 +108,8 @@ git commit -m "chore: initialize kagi"
 kagi set api DATABASE_URL postgres://localhost/api
 kagi set api production DATABASE_URL postgres://db/prod
 ```
+
+通过 `set` 和 `get` 手动传入的 key 默认会转换为 upper snake case，例如 `abc-d` 会变成 `ABC_D`。发生转换时 kagi 会打印一条简短提示。
 
 在 `./api` 目录内：
 
@@ -183,12 +186,15 @@ git commit -m "chore: update kagi secrets"
 | 设置生产环境密钥 | `kagi set api production KEY value` |
 | 列出脱敏密钥 | `kagi get` |
 | 显示密钥值 | `kagi get api --show` |
+| 显示当前项目上下文 | `kagi status` |
 | 使用开发环境运行应用 | `kagi run api bun dev` |
 | 在服务目录内运行应用 | `kagi run bun dev` |
 | 添加环境 | `kagi env add staging` |
 | 重命名环境 | `kagi env rename staging preview` |
 | 删除环境 | `kagi env del preview` |
 | 导入 env 文件 | `kagi import api --file .env.local` |
+| 预览导入结果 | `kagi import api --file .env.local --dry-run` |
+| 导入并转换 key | `kagi import api --file .env.local --upper-snake` |
 | 导出所有服务环境 | `kagi export api --out .` |
 | 从示例同步缺失密钥 | `kagi sync --service api` |
 
@@ -205,12 +211,19 @@ kagi run --service api production bun start
 
 ## 与 `.env` 文件配合使用
 
+`kagi init` 会检测最深四层目录内的高置信度 `.env*` 文件，并在初始化时询问是否导入。它会刻意保守：`.env` 和 `.env.example` 映射到默认环境；`.env.dev` 这类文件只有在 `dev` 是已配置环境时才会自动导入。使用 `--no-migrate` 可以跳过导入提示。
+
+启用 `--nested` 时，检测到的嵌套 env 文件也会创建 monorepo 服务映射。例如 `apps/api/.env.dev` 会把 `apps/api` 内运行的命令映射到 `apps-api` 服务，`packages/api/.env.dev` 会映射到 `packages-api`。
+
 导入现有的本地文件：
 
 ```bash
 kagi import api --file .env.development
 kagi import api production --file .env.production
+kagi import api --file .env.local --dry-run
 ```
+
+手动导入默认保留原始 key 名称。如果希望导入时也转换成 upper snake case，可以加 `--upper-snake`。
 
 导出正常的环境文件：
 

@@ -19,7 +19,7 @@ use clap::CommandFactory;
 #[cfg(feature = "server")]
 use ed25519_dalek::Signer;
 use kagi_crypto::xchacha_crypto::XChaChaEncryptor;
-use kagi_domain::config::{DEFAULT_ENV_NAME, KagiConfig};
+use kagi_domain::config::{DEFAULT_ENV_NAME, KagiConfig, MonorepoServiceMapping, MonorepoSettings};
 use kagi_domain::repository::secret_repo::SecretRepository;
 use kagi_domain::runner::CommandRunner;
 use kagi_store::env_injector::SystemCommandRunner;
@@ -61,6 +61,58 @@ struct RotationJournal {
 
 fn draw_key_table(items: &[(String, String, Option<String>)], show_values: bool, c: &Palette) {
     draw_key_table_with_indent(items, show_values, c, "");
+}
+
+fn is_upper_snake_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_uppercase() || first == '_')
+        && chars.all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_')
+}
+
+fn upper_snake_key(key: &str) -> String {
+    let mut out = String::new();
+    let mut last_was_underscore = false;
+
+    for ch in key.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_uppercase());
+            last_was_underscore = false;
+        } else if !last_was_underscore {
+            out.push('_');
+            last_was_underscore = true;
+        }
+    }
+
+    out.trim_matches('_').to_string()
+}
+
+fn normalize_manual_secret_key(key: String) -> String {
+    if is_upper_snake_key(&key) {
+        return key;
+    }
+    let normalized = upper_snake_key(&key);
+    if normalized.is_empty() {
+        key
+    } else {
+        normalized
+    }
+}
+
+fn normalize_manual_secret_key_with_tip(key: String, operation: &str, c: &Palette) -> String {
+    let normalized = normalize_manual_secret_key(key.clone());
+    if normalized != key {
+        eprintln!(
+            "{} {} {} -> {}",
+            c.prefix(),
+            c.info(&format!("{operation}: normalized key")),
+            c.key(&key),
+            c.key(&normalized)
+        );
+    }
+    normalized
 }
 
 fn draw_key_table_with_indent(
@@ -360,6 +412,191 @@ fn scope_name(service: Option<&str>, env: &str) -> String {
 
 fn service_from_scope(scope: &str) -> Option<&str> {
     scope.split_once('/').map(|(service, _)| service)
+}
+
+fn normalized_relative_path(path: &Path) -> String {
+    path.components()
+        .filter_map(|part| part.as_os_str().to_str())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn mapping_matches(relative_path: &str, mapping_path: &str) -> bool {
+    let mapping_path = mapping_path
+        .replace('\\', "/")
+        .trim_matches('/')
+        .to_string();
+    !mapping_path.is_empty()
+        && (relative_path == mapping_path || relative_path.starts_with(&(mapping_path + "/")))
+}
+
+fn infer_monorepo_service(config: &KagiConfig, relative_path: &str) -> Option<String> {
+    let monorepo = config.settings.monorepo.as_ref()?;
+    monorepo
+        .services
+        .iter()
+        .filter(|mapping| mapping_matches(relative_path, &mapping.path))
+        .max_by_key(|mapping| mapping.path.replace('\\', "/").split('/').count())
+        .map(|mapping| mapping.service.clone())
+}
+
+fn infer_legacy_nested_service(relative: &Path) -> Option<String> {
+    relative
+        .components()
+        .next()
+        .map(|c| c.as_os_str().to_string_lossy().to_string())
+}
+
+fn monorepo_has_mappings(config: &KagiConfig) -> bool {
+    config
+        .settings
+        .monorepo
+        .as_ref()
+        .is_some_and(|monorepo| !monorepo.services.is_empty())
+}
+
+fn infer_service_from_config(config: &KagiConfig, relative: &Path) -> Option<String> {
+    let relative_path = normalized_relative_path(relative);
+    infer_monorepo_service(config, &relative_path).or_else(|| {
+        if monorepo_has_mappings(config) {
+            None
+        } else if config.settings.nested.is_allowed(&relative_path) {
+            infer_legacy_nested_service(relative)
+        } else {
+            None
+        }
+    })
+}
+
+fn write_monorepo_mappings(
+    config_path: &Path,
+    candidates: &[crate::application::env_migration::EnvFileCandidate],
+) -> anyhow::Result<usize> {
+    let mut config: KagiConfig = serde_json::from_str(&fs::read_to_string(config_path)?)?;
+    if !matches!(
+        config.settings.nested,
+        kagi_domain::config::NestedMode::Bool(true)
+    ) {
+        return Ok(0);
+    }
+
+    let mut mappings = std::collections::BTreeMap::new();
+    for candidate in candidates {
+        if let (Some(path), Some(service)) = (&candidate.service_path, &candidate.service_name) {
+            mappings.insert(path.clone(), service.clone());
+        }
+    }
+    mappings = disambiguate_monorepo_service_names(mappings);
+    if mappings.is_empty() {
+        return Ok(0);
+    }
+
+    config.settings.monorepo = Some(MonorepoSettings {
+        max_depth: crate::application::env_migration::DEFAULT_ENV_SCAN_DEPTH,
+        services: mappings
+            .into_iter()
+            .map(|(path, service)| MonorepoServiceMapping { path, service })
+            .collect(),
+    });
+    let mapping_count = config
+        .settings
+        .monorepo
+        .as_ref()
+        .map_or(0, |monorepo| monorepo.services.len());
+    fs::write(config_path, serde_json::to_string_pretty(&config)?)?;
+    Ok(mapping_count)
+}
+
+fn disambiguate_monorepo_service_names(
+    mappings: std::collections::BTreeMap<String, String>,
+) -> std::collections::BTreeMap<String, String> {
+    let mut service_counts = std::collections::BTreeMap::<String, usize>::new();
+    for service in mappings.values() {
+        *service_counts.entry(service.clone()).or_default() += 1;
+    }
+
+    mappings
+        .into_iter()
+        .map(|(path, service)| {
+            if service_counts.get(&service).copied().unwrap_or(0) > 1 {
+                let suffix = short_monorepo_path_hash(&path);
+                (path, format!("{service}-{suffix}"))
+            } else {
+                (path, service)
+            }
+        })
+        .collect()
+}
+
+fn short_monorepo_path_hash(path: &str) -> String {
+    let normalized = path.replace('\\', "/");
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in normalized.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{:06x}", hash & 0xff_ffff)
+}
+
+fn run_status(c: &Palette) -> anyhow::Result<()> {
+    let cwd = std::env::current_dir()?;
+    let (base_path, inferred_service) = resolve_kagi_base()?;
+    let config_path = base_path.join(kagi_domain::config::KAGI_CONFIG_FILE);
+    validate_v2_config(&config_path)?;
+    let config: KagiConfig = serde_json::from_str(&fs::read_to_string(&config_path)?)?;
+    let project_root = base_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| base_path.clone());
+    let relative = cwd.strip_prefix(&project_root).unwrap_or(Path::new(""));
+    let relative = normalized_relative_path(relative);
+    let envs = if config.settings.envs.is_empty() {
+        DEFAULT_ENV_NAME.to_string()
+    } else {
+        config.settings.envs.join(", ")
+    };
+    let mapping_count = config
+        .settings
+        .monorepo
+        .as_ref()
+        .map_or(0, |monorepo| monorepo.services.len());
+
+    println!("{} {}", c.prefix(), c.accent("status"));
+    println!("  repo: {}", c.muted(&project_root.display().to_string()));
+    println!("  kagi: {}", c.muted(&base_path.display().to_string()));
+    println!(
+        "  cwd: {}",
+        c.muted(if relative.is_empty() { "." } else { &relative })
+    );
+    println!("  project: {}", c.accent(&config.project_id));
+    println!("  default env: {}", c.accent(&config.settings.default_env));
+    println!("  envs: {}", c.accent(&envs));
+    println!(
+        "  inferred service: {}",
+        inferred_service
+            .as_deref()
+            .map(|service| c.accent(service))
+            .unwrap_or_else(|| c.muted("(none)"))
+    );
+    println!(
+        "  stored scopes: {}",
+        c.accent(&config.services.len().to_string())
+    );
+    println!(
+        "  monorepo mappings: {}",
+        c.accent(&mapping_count.to_string())
+    );
+    println!(
+        "  remote: {}",
+        if config.settings.sync.is_some() {
+            c.accent("configured")
+        } else {
+            c.muted("not configured")
+        }
+    );
+
+    Ok(())
 }
 
 fn root_or_default_service_scope(default_envs: &[String], default_env: &str, name: &str) -> String {
@@ -734,6 +971,34 @@ fn print_import_report(report: &ImportReport, service_name: &str, file: &str, c:
             c.key(key),
             overwritten_marker
         );
+    }
+}
+
+fn print_import_dry_run(report: &ImportReport, service_name: &str, file: &str, c: &Palette) {
+    println!(
+        "{} {} {} {}",
+        c.prefix(),
+        c.info("dry run:"),
+        c.accent(file),
+        c.muted(&format!("-> {service_name}"))
+    );
+    println!(
+        "{} {} {}",
+        c.prefix(),
+        c.success("would import"),
+        c.accent(&report.imported.len().to_string())
+    );
+    if !report.imported.is_empty() {
+        eprintln!("{} {}", c.prefix(), c.muted("keys:"));
+        for key in &report.imported {
+            eprintln!("  {} {}", c.success("+"), c.key(key));
+        }
+    }
+    if !report.overwritten.is_empty() {
+        eprintln!("{} {}", c.prefix(), c.warning("would overwrite:"));
+        for key in &report.overwritten {
+            eprintln!("  {} {}", c.warning("~"), c.key(key));
+        }
     }
 }
 
@@ -1394,15 +1659,10 @@ fn resolve_kagi_base() -> anyhow::Result<(PathBuf, Option<String>)> {
             let relative = cwd
                 .strip_prefix(current)
                 .unwrap_or(std::path::Path::new(""));
-            let rel_str = relative.to_string_lossy();
             let inferred = if let Ok(content) = std::fs::read_to_string(&config_path)
                 && let Ok(config) = serde_json::from_str::<KagiConfig>(&content)
-                && config.settings.nested.is_allowed(&rel_str)
             {
-                relative
-                    .components()
-                    .next()
-                    .map(|c| c.as_os_str().to_string_lossy().to_string())
+                infer_service_from_config(&config, relative)
             } else {
                 None
             };
@@ -1683,7 +1943,19 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             );
 
             if !no_migrate {
-                let candidates = crate::application::env_migration::scan_env_files(&cwd);
+                let config_path = local.join(kagi_domain::config::KAGI_CONFIG_FILE);
+                let config: KagiConfig = serde_json::from_str(&fs::read_to_string(&config_path)?)?;
+                let candidates =
+                    crate::application::env_migration::scan_env_files(&cwd, &config.settings.envs);
+                let mapping_count = write_monorepo_mappings(&config_path, &candidates)?;
+                if mapping_count > 0 {
+                    eprintln!(
+                        "{} {} {}",
+                        c.prefix(),
+                        c.info("detected workspace layout:"),
+                        c.accent(&format!("{mapping_count} service mapping(s)"))
+                    );
+                }
                 if !candidates.is_empty() {
                     if tty && io::stdin().is_terminal() {
                         eprintln!(
@@ -1698,9 +1970,20 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                         for candidate in &candidates {
                             let label = match &candidate.service_name {
                                 Some(s) => {
-                                    format!("{} -> service '{}'", candidate.path.display(), s)
+                                    format!(
+                                        "{} -> service '{}' env '{}'",
+                                        candidate.path.display(),
+                                        s,
+                                        candidate.env_name
+                                    )
                                 }
-                                None => format!("{} -> root scope", candidate.path.display()),
+                                None => {
+                                    format!(
+                                        "{} -> root env '{}'",
+                                        candidate.path.display(),
+                                        candidate.env_name
+                                    )
+                                }
                             };
                             eprintln!("  {}", c.muted(&label));
                         }
@@ -1716,10 +1999,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                                 );
                             for candidate in &candidates {
                                 let scope = match &candidate.service_name {
-                                    Some(s) => {
-                                        format!("{}/{}", s, kagi_domain::config::DEFAULT_ENV_NAME)
-                                    }
-                                    None => kagi_domain::config::DEFAULT_ENV_NAME.to_string(),
+                                    Some(s) => format!("{}/{}", s, candidate.env_name),
+                                    None => candidate.env_name.clone(),
                                 };
                                 match import_service.execute(
                                     &scope,
@@ -1774,6 +2055,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let _ = plain;
             run_doctor(&base_path, fix, tty, &c)?;
         }
+        Commands::Status => {
+            run_status(&c)?;
+        }
         Commands::Set {
             service: service_name,
             desc,
@@ -1804,6 +2088,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 },
                 "Usage: kagi set [--service <service>] [env] <key> <value> or kagi set <service> <env> <key> <value>",
             )?;
+            let key = normalize_manual_secret_key_with_tip(key, "set", &c);
             ensure_default_envs_for_scope(&store, &scope)?;
             let set_service = SetSecretService::new(store);
             set_service.execute(&scope, &key, &value, desc.as_deref())?;
@@ -1884,6 +2169,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                     }
                 }
                 GetSelection::Key(scope, key) => {
+                    let key = normalize_manual_secret_key_with_tip(key, "get", &c);
                     confirm_secret_output(tty, "kagi get", &c)?;
                     let secret_desc = store
                         .load(&scope)
@@ -2166,6 +2452,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             second,
             file,
             force,
+            dry_run,
+            upper_snake,
         } => {
             let (store, inferred) = resolve_store()?;
             let default_envs = store
@@ -2182,10 +2470,18 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 first,
                 second,
             )?;
-            ensure_default_envs_for_scope(&store, &service_name)?;
+            if !dry_run {
+                ensure_default_envs_for_scope(&store, &service_name)?;
+            }
             let import_service =
                 crate::application::import_env_file::ImportEnvFileService::new(store);
-            let preview = import_service.preview(&service_name, &file)?;
+            let import_options = crate::application::import_env_file::ImportOptions { upper_snake };
+            let preview =
+                import_service.preview_with_options(&service_name, &file, import_options)?;
+            if dry_run {
+                print_import_dry_run(&preview, &service_name, &file, &c);
+                return Ok(());
+            }
             let interactive_import = tty && io::stdin().is_terminal() && !force;
             #[cfg(feature = "tui")]
             if interactive_import {
@@ -2195,7 +2491,12 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                     service_name.clone(),
                     file.clone(),
                 )? {
-                    let report = import_service.execute(&service_name, &file, true)?;
+                    let report = import_service.execute_with_options(
+                        &service_name,
+                        &file,
+                        true,
+                        import_options,
+                    )?;
                     print_import_report(&report, &service_name, &file, &c);
                 } else {
                     println!("{} {}", c.prefix(), c.error("aborted."));
@@ -2230,8 +2531,12 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 return Ok(());
             }
 
-            let report =
-                import_service.execute(&service_name, &file, force || interactive_import)?;
+            let report = import_service.execute_with_options(
+                &service_name,
+                &file,
+                force || interactive_import,
+                import_options,
+            )?;
             print_import_report(&report, &service_name, &file, &c);
         }
         Commands::Sync {

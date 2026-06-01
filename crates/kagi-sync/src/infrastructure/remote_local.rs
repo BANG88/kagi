@@ -107,6 +107,22 @@ impl RemoteLocalStore {
         Ok(())
     }
 
+    pub fn clear_token(&self, project_id: &str) -> Result<(), DomainError> {
+        let path = self.token_path(project_id);
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+        Ok(())
+    }
+
+    pub fn clear_claim_secret(&self, project_id: &str) -> Result<(), DomainError> {
+        let path = self.claim_secret_path(project_id);
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+        Ok(())
+    }
+
     pub fn load_claim_secret(&self, project_id: &str) -> Result<Option<String>, DomainError> {
         let path = self.claim_secret_path(project_id);
         if !path.exists() {
@@ -118,9 +134,15 @@ impl RemoteLocalStore {
     }
 
     pub fn delete_claim_secret(&self, project_id: &str) -> Result<(), DomainError> {
-        let path = self.claim_secret_path(project_id);
-        if path.exists() {
-            fs::remove_file(path)?;
+        self.clear_claim_secret(project_id)
+    }
+
+    pub fn clear_project_data(&self, project_id: &str) -> Result<(), DomainError> {
+        self.clear_token(project_id)?;
+        self.clear_claim_secret(project_id)?;
+        let remote_metadata_path = self.remote_metadata_path(project_id);
+        if remote_metadata_path.exists() {
+            fs::remove_file(remote_metadata_path)?;
         }
         Ok(())
     }
@@ -306,6 +328,19 @@ mod tests {
         let store = test_store();
         let loaded = store.load_token("kgp_missing").unwrap();
         assert!(loaded.is_none());
+    }
+
+    #[test]
+    fn test_clear_project_data() {
+        let store = test_store();
+        store.save_token("kgp_test", "project-token").unwrap();
+        store.save_claim_secret("kgp_test", "claim-secret").unwrap();
+        assert!(store.load_token("kgp_test").unwrap().is_some());
+        assert!(store.load_claim_secret("kgp_test").unwrap().is_some());
+
+        store.clear_project_data("kgp_test").unwrap();
+        assert!(store.load_token("kgp_test").unwrap().is_none());
+        assert!(store.load_claim_secret("kgp_test").unwrap().is_none());
     }
 
     #[test]

@@ -64,6 +64,20 @@ pub struct Settings {
     pub default_env: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monorepo: Option<MonorepoSettings>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct MonorepoSettings {
+    pub max_depth: usize,
+    pub services: Vec<MonorepoServiceMapping>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct MonorepoServiceMapping {
+    pub path: String,
+    pub service: String,
 }
 
 impl KagiConfig {
@@ -95,6 +109,7 @@ impl KagiConfig {
                 envs,
                 default_env: DEFAULT_ENV_NAME.to_string(),
                 sync: None,
+                monorepo: None,
             },
         }
     }
