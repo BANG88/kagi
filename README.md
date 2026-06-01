@@ -16,10 +16,10 @@ A secure, team-ready CLI for managing encrypted secrets and environment variable
 - Team-ready by default: one developer is just one member.
 - Service and environment scopes like `api/development` and `web/production`.
 - `development` is the default environment, so daily commands stay short.
-- Nested service inference lets `kagi run bun dev` work inside `./api`.
+- Nested service inference lets `kagi run bun dev` work inside `./api` and mapped monorepo packages like `./apps/api`.
 - `.kagi/` is designed to be committed; private keys stay on each device.
 - `get --show` and `export` require terminal confirmation before revealing values.
-- `.env` migration wizard in `kagi init` automatically detects and imports existing `.env` files.
+- Conservative `.env` migration in `kagi init` detects high-confidence `.env*` files and can map monorepo service folders.
 - Shell completions for bash, zsh, fish, elvish, and powershell via `kagi completions`.
 
 ---
@@ -106,7 +106,9 @@ kagi init --nested --envs
 `development`, `test`, and `production`.
 
 `development` is the default, so you usually do not type it. `--nested` lets
-kagi infer the service from the folder you are in.
+kagi infer the service from the folder you are in. In monorepos, `init` records
+detected service paths such as `apps/api` and `packages/api` so commands inside
+those folders do not need `--service`.
 
 Commit the generated `.kagi/` files:
 
@@ -125,6 +127,9 @@ From the repository root:
 kagi set api DATABASE_URL postgres://localhost/api
 kagi set api production DATABASE_URL postgres://db/prod
 ```
+
+Keys passed to `set` and `get` are normalized to upper snake case by default,
+so `abc-d` becomes `ABC_D`. kagi prints a short tip when it normalizes a key.
 
 Inside `./api`:
 
@@ -207,6 +212,7 @@ Do not commit real `.env` files. `kagi init` updates `.gitignore` so `.env`,
 | Reveal listed values | `kagi get api --show` |
 | Search keys | `kagi search DATABASE` |
 | Search including values | `kagi search --values localhost` |
+| Show current project context | `kagi status` |
 | Run app with development env | `kagi run api bun dev` |
 | Run app from inside service folder | `kagi run bun dev` |
 | Add an environment | `kagi env add staging` |
@@ -215,6 +221,8 @@ Do not commit real `.env` files. `kagi init` updates `.gitignore` so `.env`,
 | List environments | `kagi env list` |
 | List project members | `kagi member list` |
 | Import an env file | `kagi import api --file .env.local` |
+| Preview an import | `kagi import api --file .env.local --dry-run` |
+| Import and normalize keys | `kagi import api --file .env.local --upper-snake` |
 | Export all service envs | `kagi export api --out .` |
 | Sync missing keys from example | `kagi sync --service api` |
 | Generate shell completions | `kagi completions zsh` |
@@ -232,15 +240,27 @@ Environment names cannot conflict with existing service names.
 
 ## Working With `.env` Files
 
-`kagi init` automatically detects `.env` files up to three levels deep and offers
-to import them during initialization. Use `--no-migrate` to skip this wizard.
+`kagi init` detects high-confidence `.env*` files up to four levels deep and
+offers to import them during initialization. It is intentionally conservative:
+`.env` and `.env.example` map to the default environment, while files like
+`.env.dev` are only imported automatically when `dev` is one of the configured
+environments. Use `--no-migrate` to skip this import prompt.
+
+When `--nested` is enabled, detected nested env files also create monorepo
+service mappings. For example, `apps/api/.env.dev` maps commands run inside
+`apps/api` to the `apps-api` service, while `packages/api/.env.dev` maps to
+`packages-api`.
 
 Import existing local files manually:
 
 ```bash
 kagi import api --file .env.development
 kagi import api production --file .env.production
+kagi import api --file .env.local --dry-run
 ```
+
+Manual imports preserve key names by default. Add `--upper-snake` if you want
+imported keys normalized the same way as `set` and `get`.
 
 Export creates normal runtime files when needed:
 

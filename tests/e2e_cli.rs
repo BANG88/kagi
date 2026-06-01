@@ -1129,6 +1129,40 @@ fn test_e2e_interactive_doctor_fix() {
 
 #[cfg(unix)]
 #[test]
+fn test_e2e_interactive_set_can_normalize_key_to_upper_snake() {
+    let home = setup_kagi_home();
+    let home_path = home.path().to_str().unwrap().to_string();
+    let project_dir = TempDir::new().unwrap();
+    let project_path = project_dir.path();
+
+    let mut cmd = kagi_bin(&home_path);
+    cmd.current_dir(project_path);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    let (status, output) = run_kagi_interactive(
+        &home_path,
+        project_path,
+        &["set", "api", "abc-d", "val"],
+        &[],
+    );
+    assert!(status.success(), "interactive set failed: {output}");
+    assert!(output.contains("normalized key"));
+
+    let mut cmd = kagi_bin(&home_path);
+    cmd.current_dir(project_path);
+    cmd.args(["run", "api", "sh", "-c", "printf %s \"$ABC_D\""]);
+    cmd.assert().success().stdout("val");
+
+    let (status, output) =
+        run_kagi_interactive(&home_path, project_path, &["get", "api", "abc-d"], &["y"]);
+    assert!(status.success(), "interactive get failed: {output}");
+    assert!(output.contains("normalized key"));
+    assert!(output.contains("val"));
+}
+
+#[cfg(unix)]
+#[test]
 fn test_e2e_interactive_init_migration() {
     let home = setup_kagi_home();
     let home_path = home.path().to_str().unwrap().to_string();

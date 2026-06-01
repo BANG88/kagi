@@ -854,6 +854,24 @@ impl SqliteRemoteRepository {
             .collect())
     }
 
+    pub async fn request_id_seen(
+        &self,
+        project_id: &str,
+        request_id: &str,
+        event_type: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let seen: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM audit_events WHERE project_id = ? AND request_id = ? AND event_type = ? LIMIT 1",
+        )
+        .bind(project_id)
+        .bind(request_id)
+        .bind(event_type)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(seen.is_some())
+    }
+
     pub async fn get_metrics(&self) -> Result<(i64, i64, i64, i64), sqlx::Error> {
         let projects: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM projects")
             .fetch_one(&self.pool)
@@ -1266,6 +1284,45 @@ mod tests {
         assert!(!meta.contains("secret"));
         assert!(!meta.contains("token"));
         assert!(!meta.contains("claim_secret"));
+    }
+
+    #[tokio::test]
+    async fn test_request_id_seen() {
+        let repo = test_repo().await;
+        repo.create_project("kgp_test").await.unwrap();
+
+        let request_id = "kgr_test";
+        assert!(
+            !repo
+                .request_id_seen("kgp_test", request_id, "push")
+                .await
+                .unwrap()
+        );
+
+        repo.create_audit_event(
+            "kae_1",
+            Some("kgp_test"),
+            Some("kgm_alice"),
+            Some("kgt_123"),
+            "push",
+            Some(request_id),
+            Some("127.0.0.1"),
+            Some("{}"),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            repo.request_id_seen("kgp_test", request_id, "push")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !repo
+                .request_id_seen("kgp_test", request_id, "join_request")
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]

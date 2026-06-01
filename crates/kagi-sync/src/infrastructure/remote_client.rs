@@ -33,6 +33,17 @@ fn is_localhost_url(url: &str) -> bool {
     }
 }
 
+const HTTP_ERROR_BODY_PREVIEW_LEN: usize = 512;
+
+fn summarize_http_error_body(body: &str) -> String {
+    let preview: String = body.chars().take(HTTP_ERROR_BODY_PREVIEW_LEN).collect();
+    if body.chars().count() > HTTP_ERROR_BODY_PREVIEW_LEN {
+        format!("{preview}...")
+    } else {
+        preview
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum ClientError {
     #[error("invalid token")]
@@ -156,11 +167,19 @@ impl RemoteClient {
             .send()
             .await
             .map_err(|e| DomainError::ServerUnavailable(format!("request failed: {e}")))?;
+        let status = response.status();
 
         let response_text = response
             .text()
             .await
             .map_err(|e| DomainError::ServerUnavailable(format!("invalid response body: {e}")))?;
+        if !status.is_success() {
+            return Err(DomainError::RemoteProtocolError(format!(
+                "request failed with status {status}: {}",
+                summarize_http_error_body(&response_text),
+            )));
+        }
+
         let response_envelope: ResponseEnvelope =
             serde_json::from_str(&response_text).map_err(|e| {
                 DomainError::ServerUnavailable(format!(
@@ -556,5 +575,18 @@ mod tests {
         let _lock = ENV_LOCK.lock().unwrap();
         let _env = EnvVarGuard::set("KAGI_ALLOW_INSECURE_HTTP", "1");
         assert!(validate_http_transport("http://example.com", false).is_ok());
+    }
+
+    #[test]
+    fn test_summarize_http_error_body_short() {
+        assert_eq!(summarize_http_error_body("error body"), "error body");
+    }
+
+    #[test]
+    fn test_summarize_http_error_body_long() {
+        let body = "x".repeat(1024);
+        let summary = summarize_http_error_body(&body);
+        assert_eq!(summary.len(), 515);
+        assert!(summary.ends_with("..."));
     }
 }

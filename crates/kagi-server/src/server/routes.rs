@@ -100,17 +100,7 @@ async fn metrics_handler(
     if token.is_empty() {
         return Err(ServerError::AuthFailed);
     }
-
-    let token_hash = state.hash_token(token);
-    let is_admin = state
-        .repo
-        .authenticate_admin_token(&token_hash)
-        .await
-        .map_err(|e| ServerError::Internal(e.to_string()))?
-        .is_some();
-    if !is_admin {
-        return Err(ServerError::AuthFailed);
-    }
+    let _ = require_admin_token(&state, token).await?;
 
     let (projects, tokens, admins, db_size) = state
         .repo
@@ -133,10 +123,7 @@ async fn create_project_handler(
     let (plaintext, response_recipient) =
         decrypt_and_verify_envelope(&state, envelope, "/v1/projects", "POST").await?;
     let token_str = plaintext.token.as_ref().ok_or(ServerError::AuthFailed)?;
-    let (_token_id, caps) = authenticate_admin(&state, token_str).await?;
-    if !caps.iter().any(|c| c == "admin") {
-        return Err(ServerError::Forbidden);
-    }
+    let _ = require_admin_token(&state, token_str).await?;
     let remote_url = remote_url_from_plaintext(&plaintext, Some(token_str))?;
 
     let project_id = plaintext
@@ -283,10 +270,7 @@ async fn list_project_requests_handler(
     let (plaintext, response_recipient) =
         decrypt_and_verify_envelope(&state, envelope, "/v1/projects/requests/list", "POST").await?;
     let token_str = plaintext.token.as_ref().ok_or(ServerError::AuthFailed)?;
-    let (_token_id, caps) = authenticate_admin(&state, token_str).await?;
-    if !caps.iter().any(|c| c == "admin") {
-        return Err(ServerError::Forbidden);
-    }
+    let _ = require_admin_token(&state, token_str).await?;
 
     let requests = state
         .repo
@@ -316,10 +300,7 @@ async fn approve_project_request_handler(
     )
     .await?;
     let token_str = plaintext.token.as_ref().ok_or(ServerError::AuthFailed)?;
-    let (admin_token_id, caps) = authenticate_admin(&state, token_str).await?;
-    if !caps.iter().any(|c| c == "admin") {
-        return Err(ServerError::Forbidden);
-    }
+    let admin_token_id = require_admin_token(&state, token_str).await?;
 
     let request = state
         .repo
@@ -418,10 +399,7 @@ async fn list_projects_handler(
     let (plaintext, response_recipient) =
         decrypt_and_verify_envelope(&state, envelope, "/v1/projects/list", "POST").await?;
     let token_str = plaintext.token.as_ref().ok_or(ServerError::AuthFailed)?;
-    let (_token_id, caps) = authenticate_admin(&state, token_str).await?;
-    if !caps.iter().any(|c| c == "admin") {
-        return Err(ServerError::Forbidden);
-    }
+    let _ = require_admin_token(&state, token_str).await?;
 
     let projects = state
         .repo
@@ -451,29 +429,7 @@ async fn delete_project_handler(
     )
     .await?;
     let token_str = plaintext.token.as_ref().ok_or(ServerError::AuthFailed)?;
-
-    let (actor_token_id, is_admin) =
-        if let Ok((token_id, caps)) = authenticate_admin(&state, token_str).await {
-            (Some(token_id), caps.iter().any(|c| c == "admin"))
-        } else {
-            (None, false)
-        };
-
-    if !is_admin {
-        let (_token_id, _caps, member_id) = authenticate(&state, &project_id, token_str).await?;
-        if let Some(member_id) = member_id {
-            let role = state
-                .repo
-                .get_project_member_role(&project_id, &member_id)
-                .await
-                .map_err(|e| ServerError::Internal(e.to_string()))?;
-            if role.as_deref() != Some("admin") {
-                return Err(ServerError::Forbidden);
-            }
-        } else {
-            return Err(ServerError::Forbidden);
-        }
-    }
+    let actor_token_id = require_project_or_admin_token(&state, &project_id, token_str).await?;
 
     state
         .repo
@@ -487,7 +443,7 @@ async fn delete_project_handler(
             &format!(r"kae_{}", nanoid::nanoid!(12)),
             Some(&project_id),
             None,
-            actor_token_id.as_deref(),
+            Some(&actor_token_id),
             "project_deleted",
             Some(&plaintext.request_id),
             Some(&addr.to_string()),
@@ -513,10 +469,9 @@ async fn push_handler(
     )
     .await?;
     let token_str = plaintext.token.as_ref().ok_or(ServerError::AuthFailed)?;
-    let (token_id, caps, _member_id) = authenticate(&state, &project_id, token_str).await?;
-    if !caps.iter().any(|c| c == "push") {
-        return Err(ServerError::Forbidden);
-    }
+    let (token_id, _) =
+        require_project_capability(&state, &project_id, token_str, &["push"]).await?;
+    ensure_request_id_once(&state, &project_id, &plaintext.request_id, "push").await?;
 
     let base_revision = plaintext
         .payload
@@ -647,10 +602,8 @@ async fn pull_handler(
     .await?;
 
     if let Some(token_str) = plaintext.token.as_ref() {
-        let (_token_id, caps, _member_id) = authenticate(&state, &project_id, token_str).await?;
-        if !caps.iter().any(|c| c == "pull") {
-            return Err(ServerError::Forbidden);
-        }
+        let (_, caps) =
+            require_project_capability(&state, &project_id, token_str, &["pull"]).await?;
 
         let (revision, files) = state
             .repo
@@ -805,10 +758,7 @@ async fn status_handler(
     )
     .await?;
     let token_str = plaintext.token.as_ref().ok_or(ServerError::AuthFailed)?;
-    let (_token_id, caps, _member_id) = authenticate(&state, &project_id, token_str).await?;
-    if !caps.iter().any(|c| c == "pull") {
-        return Err(ServerError::Forbidden);
-    }
+    let (_, caps) = require_project_capability(&state, &project_id, token_str, &["pull"]).await?;
 
     let local_revision = plaintext
         .payload
@@ -868,10 +818,9 @@ async fn join_handler(
     )
     .await?;
     let token_str = plaintext.token.as_ref().ok_or(ServerError::AuthFailed)?;
-    let (token_id, caps, _member_id) = authenticate(&state, &project_id, token_str).await?;
-    if !caps.iter().any(|c| c == "join") {
-        return Err(ServerError::Forbidden);
-    }
+    let (token_id, _) =
+        require_project_capability(&state, &project_id, token_str, &["join"]).await?;
+    ensure_request_id_once(&state, &project_id, &plaintext.request_id, "join_request").await?;
 
     let join_req = plaintext
         .payload
@@ -957,10 +906,9 @@ async fn token_issue_handler(
     )
     .await?;
     let token_str = plaintext.token.as_ref().ok_or(ServerError::AuthFailed)?;
-    let (_token_id, caps, _member_id) = authenticate(&state, &project_id, token_str).await?;
-    if !caps.iter().any(|c| c == "rotate") {
-        return Err(ServerError::Forbidden);
-    }
+    let (_token_id, _) =
+        require_project_capability(&state, &project_id, token_str, &["rotate"]).await?;
+    ensure_request_id_once(&state, &project_id, &plaintext.request_id, "token_issued").await?;
 
     let capabilities: Vec<String> = plaintext
         .payload
@@ -1062,10 +1010,8 @@ async fn token_revoke_handler(
     )
     .await?;
     let token_str = plaintext.token.as_ref().ok_or(ServerError::AuthFailed)?;
-    let (token_id, caps, _member_id) = authenticate(&state, &project_id, token_str).await?;
-    if !caps.iter().any(|c| c == "rotate") {
-        return Err(ServerError::Forbidden);
-    }
+    let (token_id, _) =
+        require_project_capability(&state, &project_id, token_str, &["rotate"]).await?;
 
     let token_ids: Vec<String> = plaintext
         .payload
@@ -1111,10 +1057,8 @@ async fn token_list_handler(
     )
     .await?;
     let token_str = plaintext.token.as_ref().ok_or(ServerError::AuthFailed)?;
-    let (token_id, caps, _member_id) = authenticate(&state, &project_id, token_str).await?;
-    if !caps.iter().any(|c| c == "rotate" || c == "admin") {
-        return Err(ServerError::Forbidden);
-    }
+    let (token_id, _) =
+        require_project_capability(&state, &project_id, token_str, &["rotate", "admin"]).await?;
 
     let tokens = state
         .repo
@@ -1293,6 +1237,79 @@ async fn authenticate(
         .await
         .map_err(|e| ServerError::Internal(e.to_string()))?;
     result.ok_or(ServerError::AuthFailed)
+}
+
+fn has_any_capability(caps: &[String], required: &[&str]) -> bool {
+    caps.iter()
+        .any(|cap| required.iter().any(|required| cap == required))
+}
+
+async fn require_admin_token(state: &AppState, token_str: &str) -> Result<String, ServerError> {
+    let (token_id, caps) = authenticate_admin(state, token_str).await?;
+    if !has_any_capability(&caps, &["admin"]) {
+        return Err(ServerError::Forbidden);
+    }
+    Ok(token_id)
+}
+
+async fn require_project_capability(
+    state: &AppState,
+    project_id: &str,
+    token_str: &str,
+    capabilities: &[&str],
+) -> Result<(String, Vec<String>), ServerError> {
+    let (token_id, caps, _member_id) = authenticate(state, project_id, token_str).await?;
+    if !has_any_capability(&caps, capabilities) {
+        return Err(ServerError::Forbidden);
+    }
+    Ok((token_id, caps))
+}
+
+async fn require_project_or_admin_token(
+    state: &AppState,
+    project_id: &str,
+    token_str: &str,
+) -> Result<String, ServerError> {
+    if let Ok(token_id) = require_admin_token(state, token_str).await {
+        return Ok(token_id);
+    }
+
+    let (token_id, _caps, member_id) = authenticate(state, project_id, token_str).await?;
+    let member_id = member_id.ok_or(ServerError::Forbidden)?;
+    let role = state
+        .repo
+        .get_project_member_role(project_id, &member_id)
+        .await
+        .map_err(|e| ServerError::Internal(e.to_string()))?;
+    if role.as_deref() != Some("admin") {
+        return Err(ServerError::Forbidden);
+    }
+    Ok(token_id)
+}
+
+async fn ensure_request_id_once(
+    state: &AppState,
+    project_id: &str,
+    request_id: &str,
+    event_type: &str,
+) -> Result<(), ServerError> {
+    let seen = state
+        .repo
+        .request_id_seen(project_id, request_id, event_type)
+        .await
+        .map_err(|e| ServerError::Internal(e.to_string()))?;
+
+    if seen {
+        return Err(ServerError::Conflict {
+            code: "duplicate_request".into(),
+            message: "request_id already processed".into(),
+            details: Some(
+                json!({"project_id": project_id, "request_id": request_id, "event_type": event_type}),
+            ),
+        });
+    }
+
+    Ok(())
 }
 
 async fn authenticate_admin(

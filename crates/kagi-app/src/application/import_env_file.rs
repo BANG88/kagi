@@ -16,6 +16,11 @@ struct ImportPlan {
     report: ImportReport,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ImportOptions {
+    pub upper_snake: bool,
+}
+
 pub struct ImportEnvFileService<R: SecretRepository> {
     repo: R,
 }
@@ -30,7 +35,18 @@ impl<R: SecretRepository> ImportEnvFileService<R> {
         service_name: &str,
         file_path: &str,
     ) -> Result<ImportReport, DomainError> {
-        Ok(self.prepare_import(service_name, file_path)?.report)
+        self.preview_with_options(service_name, file_path, ImportOptions::default())
+    }
+
+    pub fn preview_with_options(
+        &self,
+        service_name: &str,
+        file_path: &str,
+        options: ImportOptions,
+    ) -> Result<ImportReport, DomainError> {
+        Ok(self
+            .prepare_import(service_name, file_path, options)?
+            .report)
     }
 
     pub fn execute(
@@ -39,7 +55,17 @@ impl<R: SecretRepository> ImportEnvFileService<R> {
         file_path: &str,
         force: bool,
     ) -> Result<ImportReport, DomainError> {
-        let plan = self.prepare_import(service_name, file_path)?;
+        self.execute_with_options(service_name, file_path, force, ImportOptions::default())
+    }
+
+    pub fn execute_with_options(
+        &self,
+        service_name: &str,
+        file_path: &str,
+        force: bool,
+        options: ImportOptions,
+    ) -> Result<ImportReport, DomainError> {
+        let plan = self.prepare_import(service_name, file_path, options)?;
 
         // If conflicts exist and not forced, return preview without writing
         if !plan.report.overwritten.is_empty() && !force {
@@ -69,9 +95,20 @@ impl<R: SecretRepository> ImportEnvFileService<R> {
         &self,
         service_name: &str,
         file_path: &str,
+        options: ImportOptions,
     ) -> Result<ImportPlan, DomainError> {
         let content = fs::read_to_string(file_path)?;
-        let vars = parse_dotenv(&content);
+        let vars = parse_dotenv(&content)
+            .into_iter()
+            .map(|(key, value, desc)| {
+                let key = if options.upper_snake {
+                    upper_snake_key(&key)
+                } else {
+                    key
+                };
+                (key, value, desc)
+            })
+            .collect::<Vec<_>>();
 
         let existing_keys: HashSet<String> = match self.repo.load(service_name) {
             Ok(svc) => svc.secrets.keys().cloned().collect(),
@@ -95,6 +132,28 @@ impl<R: SecretRepository> ImportEnvFileService<R> {
                 overwritten,
             },
         })
+    }
+}
+
+fn upper_snake_key(key: &str) -> String {
+    let mut out = String::new();
+    let mut last_was_underscore = false;
+
+    for ch in key.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_uppercase());
+            last_was_underscore = false;
+        } else if !last_was_underscore {
+            out.push('_');
+            last_was_underscore = true;
+        }
+    }
+
+    let normalized = out.trim_matches('_').to_string();
+    if normalized.is_empty() {
+        key.to_string()
+    } else {
+        normalized
     }
 }
 

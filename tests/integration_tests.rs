@@ -240,6 +240,20 @@ fn assert_run_env(current_dir: &Path, scope: &[&str], key: &str, expected: &str)
         .stdout(predicate::eq(expected.to_string()));
 }
 
+fn copy_fixture_dir(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).unwrap();
+    for entry in std::fs::read_dir(src).unwrap() {
+        let entry = entry.unwrap();
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_fixture_dir(&src_path, &dst_path);
+        } else {
+            std::fs::copy(src_path, dst_path).unwrap();
+        }
+    }
+}
+
 #[test]
 #[ignore = "requires a real unlocked OS keychain/session"]
 fn test_os_keychain_project_key_survives_local_data_loss() {
@@ -424,8 +438,35 @@ fn test_root_command_prints_help_successfully() {
     assert
         .stdout(predicate::str::contains("  push").not())
         .stdout(predicate::str::contains("  pull").not())
-        .stdout(predicate::str::contains("  status").not())
         .stdout(predicate::str::contains("  project").not());
+}
+
+#[test]
+fn test_status_shows_current_monorepo_inference() {
+    let dir = TempDir::new().unwrap();
+    copy_fixture_dir(Path::new("tests/fixtures/monorepo"), dir.path());
+    let apps_api = dir.path().join("apps/api/src");
+    std::fs::create_dir_all(&apps_api).unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["init", "--nested", "--envs", "dev"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&apps_api);
+    cmd.arg("status");
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("inferred service:"),
+        "status output: {stdout}"
+    );
+    assert!(stdout.contains("apps-api"), "status output: {stdout}");
+    assert!(
+        stdout.contains("monorepo mappings:"),
+        "status output: {stdout}"
+    );
 }
 
 #[test]
@@ -552,6 +593,23 @@ fn test_set_preserves_special_characters_when_passed_as_one_argument() {
     cmd.assert().success();
 
     assert_run_env(dir.path(), &["development"], "DATABASE_URL", value);
+}
+
+#[test]
+fn test_set_defaults_to_upper_snake_non_interactive() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["set", "api", "abc_d", "val"]);
+    cmd.assert().success();
+
+    assert_run_env(dir.path(), &["api"], "ABC_D", "val");
 }
 
 #[test]
@@ -1122,6 +1180,62 @@ fn test_import_from_file() {
 
     assert_run_env(dir.path(), &["api"], "API_KEY", "secret");
     assert_run_env(dir.path(), &["api"], "DB_URL", "postgres://localhost");
+}
+
+#[test]
+fn test_import_upper_snake_option_normalizes_keys() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    std::fs::write(
+        dir.path().join("development.env"),
+        "api-key=secret\nabc_d=value\n",
+    )
+    .unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args([
+        "import",
+        "api",
+        "--file",
+        "development.env",
+        "--upper-snake",
+    ]);
+    cmd.assert().success();
+
+    assert_run_env(dir.path(), &["api"], "API_KEY", "secret");
+    assert_run_env(dir.path(), &["api"], "ABC_D", "value");
+}
+
+#[test]
+fn test_import_dry_run_does_not_write() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    std::fs::write(dir.path().join("development.env"), "API_KEY=secret\n").unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["import", "api", "--file", "development.env", "--dry-run"]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("dry run"))
+        .stdout(predicate::str::contains("would import"));
+
+    assert!(
+        !dir.path()
+            .join(".kagi/secrets/api/development.enc")
+            .exists()
+    );
 }
 
 #[test]
@@ -1702,6 +1816,100 @@ fn test_explicit_service_overrides_inference() {
 
     // Verify it's under 'web', not 'api'
     assert_run_env(dir.path(), &["web"], "KEY", "val");
+}
+
+#[test]
+fn test_nested_monorepo_mappings_are_inferred_from_env_layout() {
+    let dir = TempDir::new().unwrap();
+    copy_fixture_dir(Path::new("tests/fixtures/monorepo"), dir.path());
+    let apps_api = dir.path().join("apps/api/src");
+    let packages_api = dir.path().join("packages/api/src");
+    std::fs::create_dir_all(&apps_api).unwrap();
+    std::fs::create_dir_all(&packages_api).unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["init", "--nested", "--envs", "dev,prod"]);
+    cmd.assert().success();
+
+    let config: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join(".kagi/kagi.json")).unwrap())
+            .unwrap();
+    let mappings = config["settings"]["monorepo"]["services"]
+        .as_array()
+        .expect("expected monorepo mappings");
+    assert!(
+        mappings
+            .iter()
+            .any(|mapping| { mapping["path"] == "apps/api" && mapping["service"] == "apps-api" })
+    );
+    assert!(mappings.iter().any(|mapping| {
+        mapping["path"] == "packages/api" && mapping["service"] == "packages-api"
+    }));
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&apps_api);
+    cmd.args(["set", "KEY", "apps-value"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&packages_api);
+    cmd.args(["set", "KEY", "packages-value"]);
+    cmd.assert().success();
+
+    assert_run_env(&apps_api, &[], "KEY", "apps-value");
+    assert_run_env(&packages_api, &[], "KEY", "packages-value");
+}
+
+#[test]
+fn test_nested_monorepo_mapping_name_collisions_get_stable_aliases() {
+    let dir = TempDir::new().unwrap();
+    let flat_app = dir.path().join("packages/app-db/src");
+    let nested_app = dir.path().join("packages/app/db/src");
+    std::fs::create_dir_all(&flat_app).unwrap();
+    std::fs::create_dir_all(&nested_app).unwrap();
+    std::fs::write(dir.path().join("packages/app-db/.env.dev"), "KEY=flat\n").unwrap();
+    std::fs::write(dir.path().join("packages/app/db/.env.dev"), "KEY=nested\n").unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["init", "--nested", "--envs", "dev"]);
+    cmd.assert().success();
+
+    let config: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join(".kagi/kagi.json")).unwrap())
+            .unwrap();
+    let mappings = config["settings"]["monorepo"]["services"]
+        .as_array()
+        .expect("expected monorepo mappings");
+    let service_for = |path: &str| -> String {
+        mappings
+            .iter()
+            .find(|mapping| mapping["path"] == path)
+            .and_then(|mapping| mapping["service"].as_str())
+            .unwrap_or_else(|| panic!("missing mapping for {path}: {mappings:?}"))
+            .to_string()
+    };
+    let flat_service = service_for("packages/app-db");
+    let nested_service = service_for("packages/app/db");
+    assert_ne!(flat_service, nested_service);
+    assert!(flat_service.starts_with("packages-app-db-"));
+    assert!(nested_service.starts_with("packages-app-db-"));
+    assert_ne!(flat_service, "packages-app-db");
+    assert_ne!(nested_service, "packages-app-db");
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&flat_app);
+    cmd.args(["set", "KEY", "flat-value"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&nested_app);
+    cmd.args(["set", "KEY", "nested-value"]);
+    cmd.assert().success();
+
+    assert_run_env(&flat_app, &[], "KEY", "flat-value");
+    assert_run_env(&nested_app, &[], "KEY", "nested-value");
 }
 
 #[test]

@@ -139,6 +139,9 @@ pub enum Commands {
         plain: bool,
     },
 
+    /// Show current repository, inferred service, environments, and remote hints
+    Status,
+
     /// Export secrets as KEY=value lines (suitable for shell sourcing)
     Export {
         /// Optional service scope (e.g., api, web). Defaults to the inferred nested directory.
@@ -180,6 +183,14 @@ pub enum Commands {
         /// Overwrite existing keys without prompting
         #[arg(long)]
         force: bool,
+
+        /// Preview import changes without writing secrets
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Normalize imported keys to UPPER_SNAKE_CASE
+        #[arg(long)]
+        upper_snake: bool,
     },
 
     /// Synchronize keys from .env.example (and optional sources) across environments

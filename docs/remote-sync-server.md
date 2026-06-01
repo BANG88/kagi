@@ -512,6 +512,13 @@ that it is local to that machine.
 Admin tokens are **never** stored in local files. They live exclusively in the
 OS keychain under the account `admin:{server_fingerprint}`.
 
+Local cleanup:
+
+- When a project token is revoked locally or a project is removed, clear
+  project-local secrets and metadata with `RemoteLocalStore::clear_project_data`
+  and `KeyManager::clear_cached_project_key` so stale key material does not
+  remain on disk.
+
 ## `.kagi` State
 
 Use a new schema version. Backward compatibility is not required.
@@ -691,6 +698,9 @@ Checks:
 - Server checks `response_recipient` in the encrypted plaintext matches the
   envelope before encrypting a response to it.
 - Server rejects `issued_at` outside a small clock window, for example 5 minutes.
+- For retry-safe state updates, `push`, `join`, and `token_issue` treat repeated
+  requests with the same `{project_id, request_id, event_type}` as duplicates
+  and return `409 conflict`.
 - CLI rejects responses where `request_id` does not match the request.
 - CLI verifies the response `mac` before trusting decrypted data for all
   token-authenticated operations.
