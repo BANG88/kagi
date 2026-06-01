@@ -567,8 +567,9 @@ mod tests {
         let names: Vec<_> = cmd.get_subcommands().map(|c| c.get_name()).collect();
         assert!(names.contains(&"serve"), "serve should be present");
         assert!(names.contains(&"remote"), "remote should be present");
+        assert!(names.contains(&"status"), "status should be present");
 
-        for removed in ["push", "pull", "status", "project", "token"] {
+        for removed in ["push", "pull", "project", "token"] {
             assert!(
                 !names.contains(&removed),
                 "{removed} should not be present as a top-level command"

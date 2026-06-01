@@ -51,4 +51,5 @@ age = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.27.0"
+kagi-domain = { workspace = true, features = ["test-utils"] }
 kagi-store = { workspace = true, features = ["test-utils"] }

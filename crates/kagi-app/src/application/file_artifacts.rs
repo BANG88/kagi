@@ -1,3 +1,4 @@
+use anyhow::Context;
 use base64::{Engine as _, engine::general_purpose};
 use kagi_crypto::xchacha_crypto::XChaChaEncryptor;
 use kagi_domain::XCHACHA20_POLY1305;
@@ -205,7 +206,8 @@ impl FileArtifactService {
             fs::create_dir_all(parent)?;
         }
         write_private_file(&target, &plaintext)?;
-        self.ensure_local_git_exclude(&entry.restore_path)?;
+        let actual_restore_path = repo_relative_path(&self.project_root, &target)?;
+        self.ensure_local_git_exclude(&actual_restore_path)?;
         Ok(RestoredFile {
             entry,
             path: target,
@@ -358,6 +360,7 @@ impl FileArtifactService {
             .to_string_lossy()
             .replace('\\', "/");
         validate_safe_relative_path(&relative)?;
+        reject_symlink_components(&target)?;
         Ok(target)
     }
 
@@ -401,15 +404,93 @@ pub fn collect_encrypted_file_artifacts(base_path: &Path) -> anyhow::Result<Vec<
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or_else(|| anyhow::anyhow!("encrypted file artifact path must be UTF-8"))?;
-        if file_name != "index.enc"
-            && (!file_name.starts_with("kgf_") || !file_name.ends_with(".enc"))
-        {
+        if !is_valid_encrypted_file_artifact_name(file_name) {
             continue;
         }
         files.push((format!("files/{file_name}"), fs::read_to_string(path)?));
     }
     files.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(files)
+}
+
+pub fn validate_file_artifacts(base_path: &Path, project_key: &[u8]) -> anyhow::Result<usize> {
+    let files_dir = base_path.join("files");
+    if !files_dir.exists() {
+        return Ok(0);
+    }
+
+    let mut encrypted_files = 0_usize;
+    let mut has_index = false;
+    for entry in fs::read_dir(&files_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() || path.extension().and_then(|ext| ext.to_str()) != Some("enc") {
+            continue;
+        }
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| anyhow::anyhow!("encrypted file artifact path must be UTF-8"))?;
+        if !is_valid_encrypted_file_artifact_name(file_name) {
+            return Err(anyhow::anyhow!(
+                "invalid file artifact path: files/{file_name}"
+            ));
+        }
+        encrypted_files += 1;
+        if file_name == "index.enc" {
+            has_index = true;
+        }
+    }
+
+    if encrypted_files == 0 {
+        return Ok(0);
+    }
+    if !has_index {
+        return Err(anyhow::anyhow!("missing files/index.enc"));
+    }
+
+    let service = FileArtifactService::new(base_path.to_path_buf(), project_key)?;
+    let index = service
+        .load_index()
+        .context("failed to decrypt file artifact index")?;
+    for entry in &index.files {
+        validate_artifact_id(&entry.id)?;
+        validate_logical_name(&entry.name)?;
+        validate_safe_relative_path(&entry.restore_path)?;
+        let content_path = service.content_path(&entry.id);
+        if !content_path.is_file() {
+            return Err(anyhow::anyhow!(
+                "missing encrypted file artifact content: files/{}.enc",
+                entry.id
+            ));
+        }
+    }
+
+    Ok(index.files.len())
+}
+
+fn is_valid_encrypted_file_artifact_name(file_name: &str) -> bool {
+    if file_name == "index.enc" {
+        return true;
+    }
+    let Some(id) = file_name.strip_suffix(".enc") else {
+        return false;
+    };
+    validate_artifact_id(id).is_ok()
+}
+
+fn validate_artifact_id(id: &str) -> anyhow::Result<()> {
+    let Some(rest) = id.strip_prefix("kgf_") else {
+        return Err(anyhow::anyhow!("invalid file artifact id"));
+    };
+    if rest.is_empty()
+        || !rest
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        return Err(anyhow::anyhow!("invalid file artifact id"));
+    }
+    Ok(())
 }
 
 fn resolve_input_path(path: &Path) -> anyhow::Result<PathBuf> {
@@ -505,6 +586,22 @@ fn normalize_path(path: PathBuf) -> anyhow::Result<PathBuf> {
         }
     }
     Ok(normalized)
+}
+
+fn reject_symlink_components(path: &Path) -> anyhow::Result<()> {
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        current.push(component.as_os_str());
+        if let Ok(metadata) = fs::symlink_metadata(&current)
+            && metadata.file_type().is_symlink()
+        {
+            return Err(anyhow::anyhow!(
+                "refusing to restore through symlink: {}",
+                current.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {

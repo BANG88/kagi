@@ -449,20 +449,10 @@ fn infer_legacy_nested_service(relative: &Path) -> Option<String> {
         .map(|c| c.as_os_str().to_string_lossy().to_string())
 }
 
-fn monorepo_has_mappings(config: &KagiConfig) -> bool {
-    config
-        .settings
-        .monorepo
-        .as_ref()
-        .is_some_and(|monorepo| !monorepo.services.is_empty())
-}
-
 fn infer_service_from_config(config: &KagiConfig, relative: &Path) -> Option<String> {
     let relative_path = normalized_relative_path(relative);
     infer_monorepo_service(config, &relative_path).or_else(|| {
-        if monorepo_has_mappings(config) {
-            None
-        } else if config.settings.nested.is_allowed(&relative_path) {
+        if config.settings.nested.is_allowed(&relative_path) {
             infer_legacy_nested_service(relative)
         } else {
             None
@@ -1606,7 +1596,30 @@ pub fn collect_doctor_checks(base_path: &Path) -> anyhow::Result<(Vec<DoctorChec
         }
     }
 
-    // Check 5: all services can be decrypted
+    // Check 5: encrypted file artifacts can be decrypted
+    if let Ok(key) = &key_result {
+        match crate::application::file_artifacts::validate_file_artifacts(base_path, key) {
+            Ok(count) => checks.push(DoctorCheck {
+                name: "encrypted files",
+                ok: true,
+                detail: if count == 0 {
+                    "none".to_string()
+                } else {
+                    format!("{count} file artifact(s)")
+                },
+            }),
+            Err(e) => {
+                checks.push(DoctorCheck {
+                    name: "encrypted files",
+                    ok: false,
+                    detail: format!("invalid file artifacts: {e}"),
+                });
+                errors += 1;
+            }
+        }
+    }
+
+    // Check 6: all services can be decrypted
     if let Ok(key) = &key_result {
         let store = store_from_project_key(base_path.to_path_buf(), key)?;
         match store.list_services() {
@@ -1656,7 +1669,7 @@ pub fn collect_doctor_checks(base_path: &Path) -> anyhow::Result<(Vec<DoctorChec
         }
     }
 
-    // Check 6: rotation journal
+    // Check 7: rotation journal
     let journal_path = KeyManager::new(base_path.to_path_buf())
         .rotation_journal_path()
         .unwrap_or_else(|_| base_path.join("rotation.journal.json"));
@@ -3413,6 +3426,42 @@ async fn remote_revoke_token(
 }
 
 #[cfg(feature = "server")]
+fn project_state_file(
+    path: String,
+    content: String,
+) -> kagi_sync::domain::project_state::ProjectFile {
+    let content_hash = {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(content.as_bytes());
+        hex::encode(hasher.finalize())
+    };
+    kagi_sync::domain::project_state::ProjectFile {
+        path,
+        content,
+        sha256: Some(content_hash),
+    }
+}
+
+#[cfg(feature = "server")]
+fn collect_project_state_files_for_push(
+    base_path: &Path,
+    store: &FileStore,
+) -> anyhow::Result<Vec<kagi_sync::domain::project_state::ProjectFile>> {
+    let mut files = Vec::new();
+    for scope in store.list_services()? {
+        let (file_name, content) = store.raw_service_content(&scope)?;
+        files.push(project_state_file(file_name, content));
+    }
+    for (file_name, content) in
+        crate::application::file_artifacts::collect_encrypted_file_artifacts(base_path)?
+    {
+        files.push(project_state_file(file_name, content));
+    }
+    Ok(files)
+}
+
+#[cfg(feature = "server")]
 async fn remote_push(c: &Palette, allow_insecure: bool) -> anyhow::Result<()> {
     let (base_path, _) = resolve_kagi_base()?;
     let config_path = base_path.join(kagi_domain::config::KAGI_CONFIG_FILE);
@@ -3447,37 +3496,7 @@ async fn remote_push(c: &Palette, allow_insecure: bool) -> anyhow::Result<()> {
     let kagi_json = fs::read_to_string(&config_path)?;
     let access_json =
         fs::read_to_string(base_path.join("access.json")).unwrap_or_else(|_| "{}".to_string());
-
-    let mut files = Vec::new();
-    for scope in store.list_services()? {
-        let (file_name, content) = store.raw_service_content(&scope)?;
-        let content_hash = {
-            use sha2::{Digest, Sha256};
-            let mut hasher = Sha256::new();
-            hasher.update(content.as_bytes());
-            hex::encode(hasher.finalize())
-        };
-        files.push(kagi_sync::domain::project_state::ProjectFile {
-            path: file_name,
-            content,
-            sha256: Some(content_hash),
-        });
-    }
-    for (file_name, content) in
-        crate::application::file_artifacts::collect_encrypted_file_artifacts(&base_path)?
-    {
-        let content_hash = {
-            use sha2::{Digest, Sha256};
-            let mut hasher = Sha256::new();
-            hasher.update(content.as_bytes());
-            hex::encode(hasher.finalize())
-        };
-        files.push(kagi_sync::domain::project_state::ProjectFile {
-            path: file_name,
-            content,
-            sha256: Some(content_hash),
-        });
-    }
+    let files = collect_project_state_files_for_push(&base_path, &store)?;
 
     let project_state = kagi_sync::domain::project_state::ProjectState {
         project_id: project_id.to_string(),
@@ -5536,6 +5555,90 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(base.join("secrets/readme.txt")).unwrap(),
+            "local note"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "server")]
+    fn test_collect_project_state_files_for_push_includes_file_artifacts() {
+        let dir = TempDir::new().unwrap();
+        let base = dir.path().join(".kagi");
+        fs::create_dir_all(base.join("files")).unwrap();
+        fs::write(
+            base.join("kagi.json"),
+            serde_json::json!({
+                "version": "3",
+                "project_id": "kgp_test",
+                "services": {},
+                "settings": {
+                    "envs": ["development"],
+                    "default_env": "development"
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(base.join("files/index.enc"), "index").unwrap();
+        fs::write(base.join("files/kgf_test.enc"), "blob").unwrap();
+
+        let key = [7_u8; 32];
+        let store = store_from_project_key(base.clone(), &key).unwrap();
+        let files = collect_project_state_files_for_push(&base, &store).unwrap();
+
+        assert!(
+            files
+                .iter()
+                .any(|file| file.path == "files/index.enc" && file.content == "index")
+        );
+        assert!(
+            files
+                .iter()
+                .any(|file| file.path == "files/kgf_test.enc" && file.content == "blob")
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "server")]
+    fn test_apply_pulled_state_removes_local_file_artifacts_absent_from_remote() {
+        let dir = TempDir::new().unwrap();
+        let base = dir.path().join(".kagi");
+        fs::create_dir_all(base.join("files")).unwrap();
+        fs::write(base.join("files/index.enc"), "stale-index").unwrap();
+        fs::write(base.join("files/kgf_keep.enc"), "old").unwrap();
+        fs::write(base.join("files/kgf_stale.enc"), "stale").unwrap();
+        fs::write(base.join("files/readme.txt"), "local note").unwrap();
+
+        let state = serde_json::json!({
+            "project_id": "kgp_test",
+            "revision": 2,
+            "kagi_json": "{\"project_id\":\"kgp_test\"}",
+            "access_json": "{\"members\":[]}",
+            "files": [
+                {
+                    "path": "files/index.enc",
+                    "content": "remote-index"
+                },
+                {
+                    "path": "files/kgf_keep.enc",
+                    "content": "remote-blob"
+                }
+            ]
+        });
+
+        apply_pulled_state(&base, &state).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(base.join("files/index.enc")).unwrap(),
+            "remote-index"
+        );
+        assert_eq!(
+            fs::read_to_string(base.join("files/kgf_keep.enc")).unwrap(),
+            "remote-blob"
+        );
+        assert!(!base.join("files/kgf_stale.enc").exists());
+        assert_eq!(
+            fs::read_to_string(base.join("files/readme.txt")).unwrap(),
             "local note"
         );
     }

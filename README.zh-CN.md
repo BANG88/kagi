@@ -20,6 +20,7 @@
 - `.kagi/` 目录设计为可提交到 Git；私钥保存在每个设备上
 - `get --show` 和 `export` 在显示密钥值前需要终端确认
 - `kagi init` 会保守检测高置信度 `.env*` 文件，并可为 monorepo 服务目录建立映射
+- 通过 `kagi file` 管理小型加密文件，作用域与 env 密钥一致
 
 ---
 
@@ -195,6 +196,9 @@ git commit -m "chore: update kagi secrets"
 | 导入 env 文件 | `kagi import api --file .env.local` |
 | 预览导入结果 | `kagi import api --file .env.local --dry-run` |
 | 导入并转换 key | `kagi import api --file .env.local --upper-snake` |
+| 添加加密文件 | `kagi file add api service-account.json` |
+| 列出加密文件 | `kagi file list api` |
+| 恢复加密文件 | `kagi file restore api service-account.json` |
 | 导出所有服务环境 | `kagi export api --out .` |
 | 从示例同步缺失密钥 | `kagi sync --service api` |
 
@@ -248,6 +252,49 @@ kagi sync --service api
 ```
 
 现有值永远不会被覆盖。
+
+---
+
+## 与加密文件配合使用
+
+`kagi file` 用于小型私密文件，并且复用 env 密钥的服务和环境作用域：
+
+```bash
+kagi file add api service-account.json
+kagi file list api
+kagi file restore api service-account.json
+```
+
+在嵌套目录或 monorepo 服务目录内，推断规则与 `set`、`get`、`run`、`import`
+一致：
+
+```bash
+cd apps/api
+kagi file add dev service-account.json
+kagi file list dev
+kagi file restore dev service-account.json
+```
+
+文件会以加密 blob 存在 `.kagi/files/` 中。文件名、恢复路径和作用域都保存在加密的
+`files/index.enc` 里；Git 和远程服务器只能看到 `files/kgf_xxxxxx.enc` 这类不透明加密文件。
+
+`restore` 默认写回 `add` 时记录的仓库相对路径；也可以用 `--out <path>` 指定输出位置：
+
+```bash
+kagi file restore api service-account.json --out apps/api/service-account.json
+```
+
+安全限制：
+
+- 默认单文件最大 1 MiB。
+- `--allow-large` 将上限提高到 5 MiB。
+- 拒绝目录、symlink、设备文件、构建产物目录、`.git/` 和 `.kagi/` 路径。
+- 已被 Git 跟踪的明文文件会被拒绝；先用 `git rm --cached <path>` 从 Git 移除。
+- `show` 会打印解密内容，因此需要终端确认。
+- `restore` 默认不覆盖已有明文文件，除非使用 `--force`。
+
+Git 共享和自托管 server 同步使用同一份加密 project state。提交或同步
+`.kagi/files/**`，不要提交恢复出来的明文文件。
 
 ---
 

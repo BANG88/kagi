@@ -393,6 +393,7 @@ fn test_init_does_not_create_gitignore_outside_git_repo() {
 fn test_init_updates_gitignore_for_shareable_kagi_directory() {
     let dir = TempDir::new().unwrap();
     std::fs::create_dir(dir.path().join(".git")).unwrap();
+    std::fs::write(dir.path().join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
     std::fs::create_dir(dir.path().join("tests")).unwrap();
     std::fs::write(
         dir.path().join(".gitignore"),
@@ -958,6 +959,56 @@ fn test_doctor_passes_on_healthy_project() {
 }
 
 #[test]
+fn test_doctor_checks_encrypted_files() {
+    let dir = TempDir::new().unwrap();
+    std::fs::create_dir_all(dir.path().join("apps/api")).unwrap();
+    std::fs::write(dir.path().join("apps/api/service-account.json"), "secret").unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["init", "--nested", "--no-migrate", "--envs", "dev"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(dir.path().join("apps/api"));
+    cmd.args(["file", "add", "service-account.json"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.arg("doctor");
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("encrypted files"))
+        .stdout(predicate::str::contains("1 file artifact"));
+}
+
+#[test]
+fn test_doctor_reports_invalid_encrypted_file_artifact_path() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    std::fs::create_dir_all(dir.path().join(".kagi/files")).unwrap();
+    std::fs::write(
+        dir.path().join(".kagi/files/service-account.json.enc"),
+        "leak",
+    )
+    .unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.arg("doctor");
+    cmd.assert()
+        .failure()
+        .stdout(predicate::str::contains("encrypted files"))
+        .stdout(predicate::str::contains("invalid file artifacts"));
+}
+
+#[test]
 fn test_doctor_fix_requires_interactive() {
     let dir = TempDir::new().unwrap();
     let mut cmd = kagi_bin();
@@ -1321,6 +1372,252 @@ fn test_file_add_rejects_large_files_by_default() {
     cmd.assert()
         .failure()
         .stderr(predicate::str::contains("file too large"));
+}
+
+#[test]
+fn test_file_add_rejects_git_tracked_plaintext_file() {
+    let dir = TempDir::new().unwrap();
+    std::process::Command::new("git")
+        .current_dir(dir.path())
+        .args(["init"])
+        .status()
+        .unwrap();
+    std::fs::create_dir_all(dir.path().join("api")).unwrap();
+    std::fs::write(dir.path().join("api/service-account.json"), "secret").unwrap();
+    std::process::Command::new("git")
+        .current_dir(dir.path())
+        .args(["add", "api/service-account.json"])
+        .status()
+        .unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["init", "--nested", "--no-migrate"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(dir.path().join("api"));
+    cmd.args(["file", "add", "service-account.json"]);
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("already tracked by git"));
+}
+
+#[test]
+fn test_file_add_duplicate_requires_force_and_force_replaces() {
+    let dir = TempDir::new().unwrap();
+    std::fs::create_dir_all(dir.path().join("api")).unwrap();
+    std::fs::write(dir.path().join("api/service-account.json"), "old").unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["init", "--nested", "--no-migrate"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(dir.path().join("api"));
+    cmd.args(["file", "add", "service-account.json"]);
+    cmd.assert().success();
+
+    std::fs::write(dir.path().join("api/service-account.json"), "new").unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(dir.path().join("api"));
+    cmd.args(["file", "add", "service-account.json"]);
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("file already exists"));
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(dir.path().join("api"));
+    cmd.args(["file", "add", "--force", "service-account.json"]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("replaced file"));
+
+    std::fs::remove_file(dir.path().join("api/service-account.json")).unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(dir.path().join("api"));
+    cmd.args(["file", "restore", "service-account.json"]);
+    cmd.assert().success();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("api/service-account.json")).unwrap(),
+        "new"
+    );
+}
+
+#[test]
+fn test_file_show_blocks_non_interactive() {
+    let dir = TempDir::new().unwrap();
+    std::fs::create_dir_all(dir.path().join("api")).unwrap();
+    std::fs::write(dir.path().join("api/service-account.json"), "secret").unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["init", "--nested", "--no-migrate"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(dir.path().join("api"));
+    cmd.args(["file", "add", "service-account.json"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(dir.path().join("api"));
+    cmd.args(["file", "show", "service-account.json"]);
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("requires an interactive terminal"));
+}
+
+#[test]
+fn test_file_remove_requires_interactive_unless_forced() {
+    let dir = TempDir::new().unwrap();
+    std::fs::create_dir_all(dir.path().join("api")).unwrap();
+    std::fs::write(dir.path().join("api/service-account.json"), "secret").unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["init", "--nested", "--no-migrate"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(dir.path().join("api"));
+    cmd.args(["file", "add", "service-account.json"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(dir.path().join("api"));
+    cmd.args(["file", "remove", "service-account.json"]);
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("requires an interactive terminal"));
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(dir.path().join("api"));
+    cmd.args(["file", "remove", "--force", "service-account.json"]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("removed"));
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(dir.path().join("api"));
+    cmd.args(["file", "list"]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("no encrypted files found"));
+}
+
+#[test]
+fn test_file_restore_existing_target_requires_force() {
+    let dir = TempDir::new().unwrap();
+    std::fs::create_dir_all(dir.path().join("api")).unwrap();
+    std::fs::write(dir.path().join("api/service-account.json"), "encrypted").unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["init", "--nested", "--no-migrate"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(dir.path().join("api"));
+    cmd.args(["file", "add", "service-account.json"]);
+    cmd.assert().success();
+
+    std::fs::write(dir.path().join("api/service-account.json"), "local").unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(dir.path().join("api"));
+    cmd.args(["file", "restore", "service-account.json"]);
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("already exists"));
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(dir.path().join("api"));
+    cmd.args(["file", "restore", "--force", "service-account.json"]);
+    cmd.assert().success();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("api/service-account.json")).unwrap(),
+        "encrypted"
+    );
+}
+
+#[test]
+fn test_file_restore_with_out_excludes_actual_output_path() {
+    let dir = TempDir::new().unwrap();
+    std::fs::create_dir_all(dir.path().join(".git/info")).unwrap();
+    std::fs::create_dir_all(dir.path().join("api")).unwrap();
+    std::fs::write(dir.path().join("api/.env"), "KEY=val\n").unwrap();
+    std::fs::write(dir.path().join("api/service-account.json"), "secret").unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["init", "--nested"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(dir.path().join("api"));
+    cmd.args(["file", "add", "service-account.json"]);
+    cmd.assert().success();
+
+    std::fs::remove_file(dir.path().join("api/service-account.json")).unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(dir.path().join("api"));
+    cmd.args([
+        "file",
+        "restore",
+        "--out",
+        "restored/service-account.json",
+        "service-account.json",
+    ]);
+    cmd.assert().success();
+
+    let exclude = std::fs::read_to_string(dir.path().join(".git/info/exclude")).unwrap();
+    assert!(
+        exclude.contains("/api/restored/service-account.json"),
+        "exclude did not contain actual restore target: {exclude}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn test_file_restore_rejects_symlinked_output_parent() {
+    let dir = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap();
+    std::fs::create_dir_all(dir.path().join("api")).unwrap();
+    std::fs::write(dir.path().join("api/.env"), "KEY=val\n").unwrap();
+    std::fs::write(dir.path().join("api/service-account.json"), "secret").unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["init", "--nested"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(dir.path().join("api"));
+    cmd.args(["file", "add", "service-account.json"]);
+    cmd.assert().success();
+
+    std::fs::remove_file(dir.path().join("api/service-account.json")).unwrap();
+    std::os::unix::fs::symlink(outside.path(), dir.path().join("api/link-out")).unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(dir.path().join("api"));
+    cmd.args([
+        "file",
+        "restore",
+        "--out",
+        "link-out/leaked.json",
+        "service-account.json",
+    ]);
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("symlink"));
+
+    assert!(!outside.path().join("leaked.json").exists());
 }
 
 #[test]
@@ -1946,6 +2243,26 @@ fn test_nested_monorepo_mappings_are_inferred_from_env_layout() {
 
     assert_run_env(&apps_api, &[], "KEY", "apps-value");
     assert_run_env(&packages_api, &[], "KEY", "packages-value");
+}
+
+#[test]
+fn test_nested_fallback_still_works_for_unmapped_sibling_with_mappings() {
+    let dir = TempDir::new().unwrap();
+    std::fs::create_dir_all(dir.path().join("api")).unwrap();
+    std::fs::create_dir_all(dir.path().join("web")).unwrap();
+    std::fs::write(dir.path().join("api/.env"), "KEY=api\n").unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["init", "--nested"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(dir.path().join("web"));
+    cmd.args(["set", "KEY", "web-value"]);
+    cmd.assert().success();
+
+    assert_run_env(&dir.path().join("web"), &[], "KEY", "web-value");
 }
 
 #[test]

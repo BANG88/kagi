@@ -684,6 +684,74 @@ fn test_e2e_local_advanced() {
         .stdout(predicate::str::contains("staging"));
 }
 
+#[test]
+fn test_e2e_file_artifact_workflow() {
+    let home = setup_kagi_home();
+    let home_path = home.path().to_str().unwrap().to_string();
+    let project_dir = TempDir::new().unwrap();
+    let project_path = project_dir.path();
+    let api_path = project_path.join("apps/api");
+    fs::create_dir_all(&api_path).unwrap();
+    fs::write(api_path.join(".env.dev"), "API_KEY=example\n").unwrap();
+    fs::write(api_path.join("service-account.json"), "{\"ok\":true}").unwrap();
+
+    let mut cmd = kagi_bin(&home_path);
+    cmd.current_dir(project_path);
+    cmd.args(["init", "--nested", "--envs", "dev"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin(&home_path);
+    cmd.current_dir(&api_path);
+    cmd.args(["file", "add", "service-account.json"]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("added file"));
+
+    let index_path = project_path.join(".kagi/files/index.enc");
+    let content_path = project_path.join(".kagi/files");
+    assert!(index_path.exists());
+    assert!(fs::read_dir(&content_path).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("kgf_")
+    }));
+    let index_content = fs::read_to_string(&index_path).unwrap();
+    assert!(!index_content.contains("service-account.json"));
+
+    let mut cmd = kagi_bin(&home_path);
+    cmd.current_dir(&api_path);
+    cmd.args(["file", "list"]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("service-account.json"))
+        .stdout(predicate::str::contains("apps-api/dev"));
+
+    fs::remove_file(api_path.join("service-account.json")).unwrap();
+
+    let mut cmd = kagi_bin(&home_path);
+    cmd.current_dir(&api_path);
+    cmd.args(["file", "restore", "service-account.json"]);
+    cmd.assert().success();
+    assert_eq!(
+        fs::read_to_string(api_path.join("service-account.json")).unwrap(),
+        "{\"ok\":true}"
+    );
+
+    let mut cmd = kagi_bin(&home_path);
+    cmd.current_dir(&api_path);
+    cmd.args(["file", "remove", "--force", "service-account.json"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin(&home_path);
+    cmd.current_dir(&api_path);
+    cmd.args(["file", "list"]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("no encrypted files found"));
+}
+
 #[cfg(feature = "server")]
 #[test]
 fn test_e2e_server_advanced() {
