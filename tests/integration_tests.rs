@@ -447,6 +447,7 @@ fn test_status_shows_current_monorepo_inference() {
     copy_fixture_dir(Path::new("tests/fixtures/monorepo"), dir.path());
     let apps_api = dir.path().join("apps/api/src");
     std::fs::create_dir_all(&apps_api).unwrap();
+    std::fs::write(dir.path().join("apps/api/.env.dev"), "KEY=api\n").unwrap();
 
     let mut cmd = kagi_bin();
     cmd.current_dir(&dir);
@@ -1826,6 +1827,8 @@ fn test_nested_monorepo_mappings_are_inferred_from_env_layout() {
     let packages_api = dir.path().join("packages/api/src");
     std::fs::create_dir_all(&apps_api).unwrap();
     std::fs::create_dir_all(&packages_api).unwrap();
+    std::fs::write(dir.path().join("apps/api/.env.dev"), "KEY=apps\n").unwrap();
+    std::fs::write(dir.path().join("packages/api/.env.prod"), "KEY=packages\n").unwrap();
 
     let mut cmd = kagi_bin();
     cmd.current_dir(&dir);
