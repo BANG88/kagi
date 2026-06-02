@@ -90,7 +90,7 @@ when merging concurrent teammate requests.
 New member or device:
 
 ```bash
-kagi member join --name alice
+kagi member request --name alice
 git add .kagi/access.json
 git commit -m "chore: request kagi access"
 ```

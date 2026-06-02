@@ -462,7 +462,7 @@ impl KeyManager {
         }
 
         Err(DomainError::StoreCorrupted(
-            "no access entry could be decrypted by the local identity. Run `kagi join` or ask a member to approve access.".into(),
+            "no access entry could be decrypted by the local identity. Run `kagi member request` or ask a member to approve access.".into(),
         ))
     }
 

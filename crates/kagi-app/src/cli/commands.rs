@@ -1932,7 +1932,7 @@ fn load_project_key(base_path: &Path) -> anyhow::Result<zeroize::Zeroizing<Vec<u
     key_manager.load().context(
         "Failed to load project key. \
          Did you run `kagi init`? \
-         If this is a shared repository, run `kagi join` and ask an active member to approve it, \
+         If this is a shared repository, run `kagi member request` to ask an active member to approve it, \
          or set KAGI_PROJECT_KEY / KAGI_PROJECT_KEY_FILE for CI.",
     )
 }

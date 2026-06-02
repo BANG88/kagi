@@ -59,7 +59,7 @@ cargo install --path . --no-default-features
 
 ![Git 共享工作流](docs/diagram-git-backed.png)
 
-加密密钥通过 Git 提交共享。新成员使用 `kagi member join` 申请，现有成员用 `kagi member approve` 审批。
+加密密钥通过 Git 提交共享。新成员使用 `kagi member request` 申请，现有成员用 `kagi member approve` 审批。
 
 ### 服务器模式（远程同步）
 
@@ -305,7 +305,7 @@ Git 共享和自托管 server 同步使用同一份加密 project state。提交
 新设备或新成员：
 
 ```bash
-kagi member join --name alice
+kagi member request --name alice
 git add .kagi/access.json
 git commit -m "chore: request kagi access"
 ```
