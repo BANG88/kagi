@@ -155,7 +155,6 @@ impl FileArtifactService {
         location: FileArtifactLocation,
     ) -> anyhow::Result<AddedFile> {
         let input = resolve_input_path(file_path, &self.home_root)?;
-        reject_symlink_components(&input)?;
         let metadata = fs::symlink_metadata(&input)?;
         if metadata.file_type().is_symlink() {
             return Err(anyhow::anyhow!("refusing to add symlink"));
@@ -179,12 +178,14 @@ impl FileArtifactService {
         let canonical = input.canonicalize()?;
         let restore_path = match location {
             FileArtifactLocation::Repo => {
+                reject_symlink_components_except_trusted_ancestors(&input, &self.project_root)?;
                 let path = repo_relative_path(&self.project_root, &canonical)?;
                 validate_safe_repo_relative_path(&path)?;
                 reject_tracked_file(&self.project_root, &path)?;
                 path
             }
             FileArtifactLocation::Home => {
+                reject_symlink_components_except_trusted_ancestors(&input, &self.home_root)?;
                 let path = home_relative_path(&self.home_root, &canonical)?;
                 validate_safe_home_relative_path(&path)?;
                 path
@@ -579,7 +580,11 @@ impl FileArtifactService {
                 }
             }
         };
-        reject_symlink_components(&target)?;
+        let trusted_root = match entry.location {
+            FileArtifactLocation::Repo => &self.project_root,
+            FileArtifactLocation::Home => &self.home_root,
+        };
+        reject_symlink_components_except_trusted_ancestors(&target, trusted_root)?;
         let target = canonicalize_existing_path_prefix(&target)?;
         match entry.location {
             FileArtifactLocation::Repo => {
@@ -1000,13 +1005,22 @@ fn canonicalize_existing_path_prefix(path: &Path) -> anyhow::Result<PathBuf> {
     normalize_path(canonical)
 }
 
-fn reject_symlink_components(path: &Path) -> anyhow::Result<()> {
+fn reject_symlink_components_except_trusted_ancestors(
+    path: &Path,
+    trusted_root: &Path,
+) -> anyhow::Result<()> {
     let mut current = PathBuf::new();
     for component in path.components() {
         current.push(component.as_os_str());
         if let Ok(metadata) = fs::symlink_metadata(&current)
             && metadata.file_type().is_symlink()
         {
+            if let Ok(canonical) = current.canonicalize()
+                && trusted_root.starts_with(&canonical)
+                && !current.starts_with(trusted_root)
+            {
+                continue;
+            }
             return Err(anyhow::anyhow!(
                 "refusing to restore through symlink: {}",
                 current.display()

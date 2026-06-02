@@ -1421,6 +1421,31 @@ fn test_file_add_external_uses_home_relative_path_identity() {
 }
 
 #[test]
+#[cfg(unix)]
+fn test_file_add_external_allows_symlinked_home_prefix() {
+    let dir = TempDir::new().unwrap();
+    let real_home = TempDir::new().unwrap();
+    let link_parent = TempDir::new().unwrap();
+    let link_home = link_parent.path().join("home-link");
+    std::os::unix::fs::symlink(real_home.path(), &link_home).unwrap();
+    let settings = link_home.join(".pi/agent/settings.json");
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    std::fs::write(&settings, r#"{"agent":"pi"}"#).unwrap();
+
+    let mut cmd = kagi_bin_with_test_home(&link_home);
+    cmd.current_dir(&dir);
+    cmd.args(["init", "--no-migrate"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin_with_test_home(&link_home);
+    cmd.current_dir(&dir);
+    cmd.args(["file", "add", "--external", settings.to_str().unwrap()]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("home:.pi/agent/settings.json"));
+}
+
+#[test]
 fn test_file_restore_external_existing_target_creates_backup() {
     let dir = TempDir::new().unwrap();
     let home = TempDir::new().unwrap();
