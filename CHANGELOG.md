@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## Unreleased
+## 0.1.6 - 2026-06-02
 
 ### Added
 
@@ -15,6 +15,12 @@ All notable changes to this project are documented in this file.
 
 - External file restores now create a timestamped `*.kagi.bak.*` backup before overwriting an existing different file.
 - `kagi file list` now shows explicit file locators and optional aliases.
+
+### Fixed
+
+- Allow external file restores when a trusted home or temporary-directory prefix canonicalizes through a platform symlink, such as `/var` on macOS.
+- Fall back to environment-provided home directories when platform home discovery is unavailable, covering Windows CI and other constrained environments.
+- Normalize displayed restore paths on Windows so previews do not show verbatim `\\?\` path prefixes.
 
 ### Security
 
