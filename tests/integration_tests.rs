@@ -26,6 +26,20 @@ fn kagi_bin_with_test_home(home: &Path) -> Command {
     cmd
 }
 
+fn display_path_for_assert(path: &Path) -> String {
+    let display = path.display().to_string();
+    #[cfg(windows)]
+    {
+        if let Some(rest) = display.strip_prefix("\\\\?\\UNC\\") {
+            return format!("\\\\{rest}");
+        }
+        if let Some(rest) = display.strip_prefix("\\\\?\\") {
+            return rest.to_string();
+        }
+    }
+    display
+}
+
 fn kagi_bin_with_keyring(xdg_data_home: &Path) -> Command {
     let mut cmd = Command::cargo_bin("kagi").unwrap();
     cmd.env_remove("KAGI_DISABLE_KEYRING");
@@ -1506,6 +1520,13 @@ fn test_file_restore_all_dry_run_previews_external_targets_without_writing() {
     cmd.assert().success();
 
     std::fs::remove_file(&settings).unwrap();
+    let expected_target = settings
+        .parent()
+        .unwrap()
+        .canonicalize()
+        .unwrap()
+        .join(settings.file_name().unwrap());
+    let expected_target = display_path_for_assert(&expected_target);
 
     let mut cmd = kagi_bin_with_test_home(home.path());
     cmd.current_dir(&dir);
@@ -1514,7 +1535,7 @@ fn test_file_restore_all_dry_run_previews_external_targets_without_writing() {
         .success()
         .stdout(predicate::str::contains("kagi will restore 1 file(s):"))
         .stdout(predicate::str::contains("home:.pi/agent/settings.json"))
-        .stdout(predicate::str::contains(settings.display().to_string()))
+        .stdout(predicate::str::contains(expected_target))
         .stdout(predicate::str::contains("status: missing, will create"));
 
     assert!(!settings.exists());

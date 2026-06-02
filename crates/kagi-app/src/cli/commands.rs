@@ -426,6 +426,20 @@ fn normalized_relative_path(path: &Path) -> String {
         .join("/")
 }
 
+fn display_path(path: &Path) -> String {
+    let display = path.display().to_string();
+    #[cfg(windows)]
+    {
+        if let Some(rest) = display.strip_prefix("\\\\?\\UNC\\") {
+            return format!("\\\\{rest}");
+        }
+        if let Some(rest) = display.strip_prefix("\\\\?\\") {
+            return rest.to_string();
+        }
+    }
+    display
+}
+
 fn mapping_matches(relative_path: &str, mapping_path: &str) -> bool {
     let mapping_path = mapping_path
         .replace('\\', "/")
@@ -1115,7 +1129,7 @@ fn print_restore_plan(plan: &[FileRestorePlanEntry], c: &Palette) {
     for item in plan {
         println!();
         println!("  {}", c.key(&item.entry.locator()));
-        println!("    -> {}", c.accent(&item.target.display().to_string()));
+        println!("    -> {}", c.accent(&display_path(&item.target)));
         let status = match item.status {
             FileRestoreStatus::Missing => "status: missing, will create".to_string(),
             FileRestoreStatus::Same => "status: exists, same, skip".to_string(),
@@ -1129,10 +1143,7 @@ fn print_restore_plan(plan: &[FileRestorePlanEntry], c: &Palette) {
         };
         println!("    {}", c.muted(&status));
         if let Some(backup_path) = &item.backup_path {
-            println!(
-                "    backup: {}",
-                c.muted(&backup_path.display().to_string())
-            );
+            println!("    backup: {}", c.muted(&display_path(backup_path)));
         }
     }
 }
@@ -2752,14 +2763,14 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                     c.prefix(),
                     c.success("restored"),
                     c.accent(&restored.entry.locator()),
-                    c.accent(&restored.path.display().to_string())
+                    c.accent(&display_path(&restored.path))
                 );
                 if let Some(backup_path) = &restored.backup_path {
                     println!(
                         "{} {} {}",
                         c.prefix(),
                         c.muted("backup:"),
-                        c.muted(&backup_path.display().to_string())
+                        c.muted(&display_path(backup_path))
                     );
                 }
                 println!(
