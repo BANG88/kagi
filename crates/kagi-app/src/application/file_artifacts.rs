@@ -899,11 +899,34 @@ fn normalize_path(path: PathBuf) -> anyhow::Result<PathBuf> {
 }
 
 fn home_root() -> anyhow::Result<PathBuf> {
-    directories::BaseDirs::new()
-        .ok_or_else(|| anyhow::anyhow!("could not determine home directory"))?
-        .home_dir()
-        .canonicalize()
-        .context("failed to canonicalize home directory")
+    if let Some(base_dirs) = directories::BaseDirs::new() {
+        return base_dirs
+            .home_dir()
+            .canonicalize()
+            .context("failed to canonicalize home directory");
+    }
+    for key in ["USERPROFILE", "HOME"] {
+        if let Some(path) = std::env::var_os(key) {
+            return PathBuf::from(path)
+                .canonicalize()
+                .with_context(|| format!("failed to canonicalize {key}"));
+        }
+    }
+    #[cfg(windows)]
+    {
+        if let (Some(drive), Some(path)) =
+            (std::env::var_os("HOMEDRIVE"), std::env::var_os("HOMEPATH"))
+        {
+            return PathBuf::from(format!(
+                "{}{}",
+                drive.to_string_lossy(),
+                path.to_string_lossy()
+            ))
+            .canonicalize()
+            .context("failed to canonicalize HOMEDRIVE/HOMEPATH");
+        }
+    }
+    Err(anyhow::anyhow!("could not determine home directory"))
 }
 
 fn format_locator(location: FileArtifactLocation, path: &str) -> String {
