@@ -339,6 +339,14 @@ fn test_init() {
     assert!(!dir.path().join(".kagi/access").exists());
     assert!(!dir.path().join(".kagi/members").exists());
 
+    let access: Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".kagi/access.json")).unwrap(),
+    )
+    .unwrap();
+    let owner = &access["members"].as_array().unwrap()[0];
+    assert_eq!(owner["status"], "active");
+    assert_eq!(owner["role"], "owner");
+
     let config: Value =
         serde_json::from_str(&std::fs::read_to_string(dir.path().join(".kagi/kagi.json")).unwrap())
             .unwrap();
@@ -825,6 +833,7 @@ fn test_member_request_and_approve_flow() {
     let member_id = request["member_id"].as_str().unwrap().to_string();
     assert_eq!(request["name"], "alice");
     assert_eq!(request["status"], "pending");
+    assert_eq!(request["role"], "member");
 
     let mut cmd = kagi_bin();
     cmd.current_dir(&dir);
@@ -851,7 +860,31 @@ fn test_member_request_and_approve_flow() {
         .find(|member| member["member_id"] == member_id)
         .unwrap();
     assert_eq!(member["status"], "active");
+    assert_eq!(member["role"], "member");
     assert!(member["wrapped_key"].as_str().unwrap().len() > 20);
+}
+
+#[test]
+fn test_doctor_rejects_access_json_without_member_role() {
+    let dir = TempDir::new().unwrap();
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    let access_path = dir.path().join(".kagi/access.json");
+    let mut access: Value =
+        serde_json::from_str(&std::fs::read_to_string(&access_path).unwrap()).unwrap();
+    access["members"][0].as_object_mut().unwrap().remove("role");
+    std::fs::write(&access_path, serde_json::to_string_pretty(&access).unwrap()).unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.arg("doctor");
+    cmd.assert()
+        .failure()
+        .stdout(predicate::str::contains("access.json format"))
+        .stdout(predicate::str::contains("role"));
 }
 
 #[test]
@@ -889,6 +922,72 @@ fn test_multiple_member_requests_can_be_pending_together() {
 }
 
 #[test]
+fn test_member_promote_and_demote_roles() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["member", "request", "--name", "alice"]);
+    cmd.assert().success();
+
+    let access_path = dir.path().join(".kagi/access.json");
+    let access: Value =
+        serde_json::from_str(&std::fs::read_to_string(&access_path).unwrap()).unwrap();
+    let member_id = access["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|member| member["status"] == "pending")
+        .and_then(|member| member["member_id"].as_str())
+        .unwrap()
+        .to_string();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["member", "approve", &member_id]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["member", "promote", &member_id]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("promoted member"));
+
+    let access: Value =
+        serde_json::from_str(&std::fs::read_to_string(&access_path).unwrap()).unwrap();
+    let member = access["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|member| member["member_id"] == member_id)
+        .unwrap();
+    assert_eq!(member["role"], "owner");
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["member", "demote", &member_id]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("demoted member"));
+
+    let access: Value =
+        serde_json::from_str(&std::fs::read_to_string(&access_path).unwrap()).unwrap();
+    let member = access["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|member| member["member_id"] == member_id)
+        .unwrap();
+    assert_eq!(member["role"], "member");
+}
+
+#[test]
 fn test_member_remove_requires_interactive_confirmation() {
     let dir = TempDir::new().unwrap();
 
@@ -903,6 +1002,61 @@ fn test_member_remove_requires_interactive_confirmation() {
     cmd.assert()
         .failure()
         .stderr(predicate::str::contains("requires an interactive terminal"));
+}
+
+#[test]
+fn test_recover_access_restores_deleted_access_json_from_local_backup() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    let access_path = dir.path().join(".kagi/access.json");
+    let original_access = std::fs::read_to_string(&access_path).unwrap();
+    std::fs::remove_file(&access_path).unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["recover", "access", "--force"]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("restored access.json"));
+
+    let restored_access = std::fs::read_to_string(&access_path).unwrap();
+    let original: Value = serde_json::from_str(&original_access).unwrap();
+    let restored: Value = serde_json::from_str(&restored_access).unwrap();
+    assert_eq!(restored, original);
+    assert_eq!(restored["members"][0]["role"], "owner");
+}
+
+#[test]
+fn test_recover_access_restores_corrupted_access_json_from_local_backup() {
+    let dir = TempDir::new().unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.arg("init");
+    cmd.assert().success();
+
+    let access_path = dir.path().join(".kagi/access.json");
+    let mut access: Value =
+        serde_json::from_str(&std::fs::read_to_string(&access_path).unwrap()).unwrap();
+    access["members"][0].as_object_mut().unwrap().remove("role");
+    std::fs::write(&access_path, serde_json::to_string_pretty(&access).unwrap()).unwrap();
+
+    let mut cmd = kagi_bin();
+    cmd.current_dir(&dir);
+    cmd.args(["recover", "access", "--force"]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("restored access.json"));
+
+    let restored: Value =
+        serde_json::from_str(&std::fs::read_to_string(&access_path).unwrap()).unwrap();
+    assert_eq!(restored["members"][0]["status"], "active");
+    assert_eq!(restored["members"][0]["role"], "owner");
 }
 
 #[test]

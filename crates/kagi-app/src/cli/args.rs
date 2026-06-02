@@ -139,6 +139,12 @@ pub enum Commands {
         plain: bool,
     },
 
+    /// Recover local project metadata from device-local snapshots
+    Recover {
+        #[command(subcommand)]
+        command: RecoverCommands,
+    },
+
     /// Show current repository, inferred service, environments, and remote hints
     Status,
 
@@ -429,6 +435,16 @@ pub enum EnvCommands {
 }
 
 #[derive(Subcommand)]
+pub enum RecoverCommands {
+    /// Restore .kagi/access.json from the local access snapshot
+    Access {
+        /// Overwrite an existing access.json
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum MemberCommands {
     /// List active members and pending member requests
     List {
@@ -449,6 +465,18 @@ pub enum MemberCommands {
     Approve {
         /// Member id from `kagi member list`.
         member_id: Option<String>,
+    },
+
+    /// Promote an active member to owner
+    Promote {
+        /// Member id from `kagi member list`.
+        member_id: String,
+    },
+
+    /// Demote an owner to member
+    Demote {
+        /// Member id from `kagi member list`.
+        member_id: String,
     },
 
     /// Remove a member's access wrapper

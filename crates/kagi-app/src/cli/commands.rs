@@ -14,7 +14,7 @@ use crate::application::sync_service::SyncService;
 use crate::application::unset_secret::UnsetSecretService;
 #[cfg(feature = "server")]
 use crate::cli::args::RemoteCommands;
-use crate::cli::args::{Cli, Commands, EnvCommands, FileCommands, MemberCommands};
+use crate::cli::args::{Cli, Commands, EnvCommands, FileCommands, MemberCommands, RecoverCommands};
 use crate::cli::style::Palette;
 use anyhow::Context;
 #[cfg(feature = "server")]
@@ -1465,6 +1465,7 @@ async fn fetch_server_join_requests(
                 member_id: member_id.to_string(),
                 name: name.to_string(),
                 recipient: recipient.to_string(),
+                role: "member".to_string(),
                 status: "pending".to_string(),
                 wrapped_key: None,
                 wrapped_token: None,
@@ -1611,11 +1612,17 @@ pub fn collect_doctor_checks(base_path: &Path) -> anyhow::Result<(Vec<DoctorChec
         errors += 1;
     } else {
         let content = fs::read_to_string(&access_json_path)?;
-        match serde_json::from_str::<serde_json::Value>(&content) {
+        match serde_json::from_str::<serde_json::Value>(&content)
+            .map_err(anyhow::Error::from)
+            .and_then(|_| {
+                KeyManager::new(base_path.to_path_buf())
+                    .validate_access_state()
+                    .map_err(anyhow::Error::from)
+            }) {
             Ok(_) => checks.push(DoctorCheck {
                 name: "access.json format",
                 ok: true,
-                detail: "valid JSON".to_string(),
+                detail: "valid access state".to_string(),
             }),
             Err(e) => {
                 checks.push(DoctorCheck {
@@ -1853,6 +1860,30 @@ fn run_doctor(base_path: &Path, fix: bool, tty: bool, c: &Palette) -> anyhow::Re
     Ok(())
 }
 
+fn run_recover_access(base_path: &Path, force: bool, c: &Palette) -> anyhow::Result<()> {
+    let key_manager = KeyManager::new(base_path.to_path_buf());
+    let access_path = base_path.join("access.json");
+    if access_path.exists() && !force {
+        let detail = if key_manager.validate_access_state().is_ok() {
+            "already exists and is valid"
+        } else {
+            "already exists but is invalid"
+        };
+        return Err(anyhow::anyhow!(
+            "access.json {detail}. Use `kagi recover access --force` to restore from local backup."
+        ));
+    }
+
+    key_manager.restore_access_backup()?;
+    println!(
+        "{} {} {}",
+        c.prefix(),
+        c.success("restored access.json"),
+        c.muted("from local backup")
+    );
+    Ok(())
+}
+
 fn resolve_kagi_base() -> anyhow::Result<(PathBuf, Option<String>)> {
     let cwd = std::env::current_dir()?;
 
@@ -1996,6 +2027,7 @@ fn apply_rotation_journal(base_path: &Path, journal: &RotationJournal) -> anyhow
         atomic_write(&base_path.join(file), content)?;
     }
     atomic_write(&base_path.join("access.json"), &journal.access_json)?;
+    KeyManager::new(base_path.to_path_buf()).backup_access_json(&journal.access_json)?;
     Ok(())
 }
 
@@ -2264,6 +2296,14 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             #[cfg(not(feature = "tui"))]
             let _ = plain;
             run_doctor(&base_path, fix, tty, &c)?;
+        }
+        Commands::Recover { command } => {
+            let (base_path, _) = resolve_kagi_base()?;
+            match command {
+                RecoverCommands::Access { force } => {
+                    run_recover_access(&base_path, force, &c)?;
+                }
+            }
         }
         Commands::Status => {
             run_status(&c)?;
@@ -3080,9 +3120,10 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                                 c.muted(&member.status)
                             };
                             println!(
-                                "  {}  {}  {}",
+                                "  {}  {}  {}  {}",
                                 c.accent(&member.member_id),
                                 c.key(&member.name),
+                                c.accent(&member.role),
                                 status
                             );
                         }
@@ -3191,6 +3232,26 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                             c.accent(&member.member_id)
                         );
                     }
+                }
+                MemberCommands::Promote { member_id } => {
+                    let member = key_manager.promote_member(&member_id)?;
+                    println!(
+                        "{} {} {} {}",
+                        c.prefix(),
+                        c.success("promoted member"),
+                        c.accent(&member.member_id),
+                        c.muted("to owner")
+                    );
+                }
+                MemberCommands::Demote { member_id } => {
+                    let member = key_manager.demote_member(&member_id)?;
+                    println!(
+                        "{} {} {} {}",
+                        c.prefix(),
+                        c.success("demoted member"),
+                        c.accent(&member.member_id),
+                        c.muted("to member")
+                    );
                 }
                 MemberCommands::Remove { member_id } => {
                     #[cfg(feature = "tui")]
@@ -4081,8 +4142,11 @@ fn apply_pulled_state(base_path: &Path, state: &serde_json::Value) -> anyhow::Re
             ));
         }
     } else {
+        KeyManager::validate_access_json(&project_state.access_json)
+            .map_err(|e| anyhow::anyhow!("invalid remote access.json: {e}"))?;
         atomic_write(&base_path.join("kagi.json"), &project_state.kagi_json)?;
         atomic_write(&base_path.join("access.json"), &project_state.access_json)?;
+        KeyManager::new(base_path.to_path_buf()).backup_access_json(&project_state.access_json)?;
     }
 
     for file in project_state.files {
@@ -5311,6 +5375,36 @@ mod tests {
     use kagi_domain::repository::secret_repo::SecretRepository;
     use tempfile::TempDir;
 
+    fn valid_access_json() -> String {
+        serde_json::json!({
+            "version": "2",
+            "members": [
+                {
+                    "member_id": "kgm_owner",
+                    "name": "owner",
+                    "recipient": "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqp5t6t0",
+                    "role": "owner",
+                    "status": "active",
+                    "wrapped_key": "wrapped"
+                }
+            ]
+        })
+        .to_string()
+    }
+
+    fn valid_kagi_json() -> String {
+        serde_json::json!({
+            "version": "2",
+            "project_id": "kgp_test",
+            "services": {},
+            "settings": {
+                "envs": ["development"],
+                "default_env": "development"
+            }
+        })
+        .to_string()
+    }
+
     #[cfg(feature = "server")]
     fn fixed_signing_key() -> ed25519_dalek::SigningKey {
         ed25519_dalek::SigningKey::from_bytes(&[7u8; 32])
@@ -5596,7 +5690,8 @@ mod tests {
         let base = dir.path().join(".kagi");
         fs::create_dir(&base).unwrap();
         fs::write(base.join("kagi.json"), "{\"project_id\":\"kgp_test\"}").unwrap();
-        fs::write(base.join("access.json"), "{\"members\":[]}").unwrap();
+        let access_json = valid_access_json();
+        fs::write(base.join("access.json"), &access_json).unwrap();
 
         let state = serde_json::json!({
             "project_id": "kgp_test",
@@ -5613,7 +5708,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(base.join("access.json")).unwrap(),
-            "{\"members\":[]}"
+            access_json
         );
     }
 
@@ -5652,8 +5747,8 @@ mod tests {
         let state = serde_json::json!({
             "project_id": "kgp_test",
             "revision": 2,
-            "kagi_json": "{\"project_id\":\"kgp_test\"}",
-            "access_json": "{\"members\":[]}",
+            "kagi_json": valid_kagi_json(),
+            "access_json": valid_access_json(),
             "files": [
                 {
                     "path": "secrets/api/production.enc",
@@ -5728,8 +5823,8 @@ mod tests {
         let state = serde_json::json!({
             "project_id": "kgp_test",
             "revision": 2,
-            "kagi_json": "{\"project_id\":\"kgp_test\"}",
-            "access_json": "{\"members\":[]}",
+            "kagi_json": valid_kagi_json(),
+            "access_json": valid_access_json(),
             "files": [
                 {
                     "path": "files/index.enc",
