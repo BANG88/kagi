@@ -27,6 +27,7 @@ pub struct MemberMetadata {
     pub member_id: String,
     pub name: String,
     pub recipient: String,
+    pub role: String,
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wrapped_key: Option<String>,
@@ -130,6 +131,7 @@ impl KeyManager {
             member_id: member_id.to_string(),
             name: default_member_name(),
             recipient: recipient.to_string(),
+            role: "owner".to_string(),
             status: "active".to_string(),
             wrapped_key: Some(wrap_key_for_recipient(&recipient, &key)?),
             wrapped_token: None,
@@ -157,6 +159,7 @@ impl KeyManager {
                 .filter(|name| !name.is_empty())
                 .unwrap_or_else(default_member_name),
             recipient: identity.to_public().to_string(),
+            role: "member".to_string(),
             status: "pending".to_string(),
             wrapped_key: None,
             wrapped_token: None,
@@ -188,6 +191,33 @@ impl KeyManager {
             .collect();
         members.sort_by(|a, b| a.member_id.cmp(&b.member_id));
         Ok(members)
+    }
+
+    pub fn validate_access_state(&self) -> Result<(), DomainError> {
+        let _ = self.load_access_state()?;
+        Ok(())
+    }
+
+    pub fn validate_access_json(access_json: &str) -> Result<(), DomainError> {
+        let _ = parse_access_json(access_json)?;
+        Ok(())
+    }
+
+    pub fn backup_access_json(&self, access_json: &str) -> Result<(), DomainError> {
+        let state = parse_access_json(access_json)?;
+        self.backup_access_state(&state)
+    }
+
+    pub fn restore_access_backup(&self) -> Result<(), DomainError> {
+        let path = self.access_backup_path()?;
+        if !path.exists() {
+            return Err(DomainError::StoreCorrupted(
+                "no local access backup found for this project".into(),
+            ));
+        }
+        let content = fs::read_to_string(path)?;
+        let state = parse_access_json(&content)?;
+        self.write_access_state(&state)
     }
 
     #[cfg(feature = "server")]
@@ -231,6 +261,7 @@ impl KeyManager {
             member_id: member_id.to_string(),
             name: name.to_string(),
             recipient: recipient.to_string(),
+            role: "member".to_string(),
             status: "pending".to_string(),
             wrapped_key: None,
             wrapped_token: None,
@@ -258,6 +289,7 @@ impl KeyManager {
     ) -> Result<MemberMetadata, DomainError> {
         let key = self.load()?;
         let mut state = self.load_access_state()?;
+        self.require_local_owner(&state)?;
         let member = state
             .members
             .iter_mut()
@@ -272,6 +304,48 @@ impl KeyManager {
         if let Some(wrapped_token) = wrapped_token {
             member.wrapped_token = Some(wrapped_token.to_string());
         }
+        let member = member.clone();
+        self.save_access_state(&state)?;
+        Ok(member)
+    }
+
+    pub fn promote_member(&self, member_id: &str) -> Result<MemberMetadata, DomainError> {
+        let mut state = self.load_access_state()?;
+        self.require_local_owner(&state)?;
+        let member = state
+            .members
+            .iter_mut()
+            .find(|member| member.member_id == member_id && member.status == "active")
+            .ok_or_else(|| {
+                DomainError::StoreCorrupted(format!("active member not found: {member_id}"))
+            })?;
+        member.role = "owner".to_string();
+        let member = member.clone();
+        self.save_access_state(&state)?;
+        Ok(member)
+    }
+
+    pub fn demote_member(&self, member_id: &str) -> Result<MemberMetadata, DomainError> {
+        let mut state = self.load_access_state()?;
+        self.require_local_owner(&state)?;
+        let active_owner_count = state
+            .members
+            .iter()
+            .filter(|member| member.status == "active" && member.role == "owner")
+            .count();
+        let member = state
+            .members
+            .iter_mut()
+            .find(|member| member.member_id == member_id && member.status == "active")
+            .ok_or_else(|| {
+                DomainError::StoreCorrupted(format!("active member not found: {member_id}"))
+            })?;
+        if member.role == "owner" && active_owner_count <= 1 {
+            return Err(DomainError::StoreCorrupted(
+                "cannot demote the last owner".into(),
+            ));
+        }
+        member.role = "member".to_string();
         let member = member.clone();
         self.save_access_state(&state)?;
         Ok(member)
@@ -375,11 +449,12 @@ impl KeyManager {
         remove_member_id: Option<&str>,
     ) -> Result<String, DomainError> {
         let mut state = self.load_access_state()?;
+        self.require_local_owner(&state)?;
         if let Some(member_id) = remove_member_id {
-            let active_count = state
+            let active_owner_count = state
                 .members
                 .iter()
-                .filter(|member| member.status == "active")
+                .filter(|member| member.status == "active" && member.role == "owner")
                 .count();
             let member = state
                 .members
@@ -388,9 +463,9 @@ impl KeyManager {
                 .ok_or_else(|| {
                     DomainError::StoreCorrupted(format!("member not found: {member_id}"))
                 })?;
-            if member.status == "active" && active_count <= 1 {
+            if member.status == "active" && member.role == "owner" && active_owner_count <= 1 {
                 return Err(DomainError::StoreCorrupted(
-                    "cannot remove the last active member".into(),
+                    "cannot remove the last owner".into(),
                 ));
             }
             member.status = "removed".to_string();
@@ -421,20 +496,61 @@ impl KeyManager {
         Ok(serde_json::to_string_pretty(&state)?)
     }
 
+    fn require_local_owner(&self, state: &AccessState) -> Result<(), DomainError> {
+        let identity = self.load_identity().map_err(|_| {
+            DomainError::StoreCorrupted(
+                "only an owner can manage project members; local identity is missing".into(),
+            )
+        })?;
+        for member in &state.members {
+            if member.status != "active" || member.role != "owner" {
+                continue;
+            }
+            let Some(wrapped_key) = &member.wrapped_key else {
+                continue;
+            };
+            let encrypted = general_purpose::STANDARD
+                .decode(wrapped_key)
+                .map_err(|e| DomainError::StoreCorrupted(e.to_string()))?;
+            if let Ok(key) = decrypt_with_identity(&identity, &encrypted)
+                && key.len() == 32
+            {
+                return Ok(());
+            }
+        }
+        Err(DomainError::StoreCorrupted(
+            "only an owner can manage project members".into(),
+        ))
+    }
+
     fn load_access_state(&self) -> Result<AccessState, DomainError> {
         let path = self.base_path.join(ACCESS_FILE);
         if !path.exists() {
             return Ok(AccessState::default());
         }
         let content = fs::read_to_string(path)?;
-        let mut state: AccessState = serde_json::from_str(&content)?;
-        state.members.sort_by(|a, b| a.member_id.cmp(&b.member_id));
-        Ok(state)
+        parse_access_json(&content)
     }
 
     fn save_access_state(&self, state: &AccessState) -> Result<(), DomainError> {
+        validate_access_state(state)?;
+        self.write_access_state(state)?;
+        self.backup_access_state(state)?;
+        Ok(())
+    }
+
+    fn write_access_state(&self, state: &AccessState) -> Result<(), DomainError> {
         fs::create_dir_all(&self.base_path)?;
         let path = self.base_path.join(ACCESS_FILE);
+        fs::write(&path, serde_json::to_string_pretty(state)?)?;
+        set_private_file_permissions(&path)?;
+        Ok(())
+    }
+
+    fn backup_access_state(&self, state: &AccessState) -> Result<(), DomainError> {
+        let path = self.access_backup_path()?;
+        fs::create_dir_all(path.parent().unwrap())?;
+        set_private_dir_permissions(path.parent().unwrap())?;
         fs::write(&path, serde_json::to_string_pretty(state)?)?;
         set_private_file_permissions(&path)?;
         Ok(())
@@ -497,6 +613,12 @@ impl KeyManager {
         Ok(self
             .local_data_dir()?
             .join(format!("projects/{project_id}.key")))
+    }
+
+    fn access_backup_path(&self) -> Result<PathBuf, DomainError> {
+        Ok(self
+            .local_data_dir()?
+            .join(format!("projects/{}.access.json", self.project_id()?)))
     }
 
     fn load_local_project_key(
@@ -701,6 +823,67 @@ fn upsert_member(members: &mut Vec<MemberMetadata>, member: MemberMetadata) {
     }
 }
 
+fn parse_access_json(access_json: &str) -> Result<AccessState, DomainError> {
+    let mut state: AccessState = serde_json::from_str(access_json)?;
+    state.members.sort_by(|a, b| a.member_id.cmp(&b.member_id));
+    validate_access_state(&state)?;
+    Ok(state)
+}
+
+fn validate_access_state(state: &AccessState) -> Result<(), DomainError> {
+    if state.members.is_empty() {
+        return Ok(());
+    }
+
+    let mut active_owner_count = 0usize;
+    for member in &state.members {
+        match member.role.as_str() {
+            "owner" | "member" => {}
+            role => {
+                return Err(DomainError::StoreCorrupted(format!(
+                    "invalid member role for {}: {role}",
+                    member.member_id
+                )));
+            }
+        }
+        match member.status.as_str() {
+            "active" => {
+                if member.wrapped_key.is_none() {
+                    return Err(DomainError::StoreCorrupted(format!(
+                        "active member {} is missing wrapped_key",
+                        member.member_id
+                    )));
+                }
+                if member.role == "owner" {
+                    active_owner_count += 1;
+                }
+            }
+            "pending" => {
+                if member.wrapped_key.is_some() {
+                    return Err(DomainError::StoreCorrupted(format!(
+                        "pending member {} must not have wrapped_key",
+                        member.member_id
+                    )));
+                }
+            }
+            "removed" => {}
+            status => {
+                return Err(DomainError::StoreCorrupted(format!(
+                    "invalid member status for {}: {status}",
+                    member.member_id
+                )));
+            }
+        }
+    }
+
+    if active_owner_count == 0 {
+        return Err(DomainError::StoreCorrupted(
+            "access state must contain at least one active owner".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn decrypt_with_identity(
     identity: &x25519::Identity,
     encrypted: &[u8],
@@ -833,9 +1016,203 @@ mod tests {
         assert_eq!(access["members"].as_array().unwrap().len(), 1);
         assert_eq!(access["members"][0]["member_id"], "kgm_test");
         assert_eq!(access["members"][0]["status"], "active");
+        assert_eq!(access["members"][0]["role"], "owner");
         assert!(access["members"][0]["wrapped_key"].as_str().unwrap().len() > 20);
         assert!(local.path().join("projects/kgp_test.key").exists());
         assert!(local.path().join("identities/default.agekey").exists());
+    }
+
+    #[test]
+    fn test_join_request_defaults_to_member_role() {
+        let dir = TempDir::new().unwrap();
+        let local = TempDir::new().unwrap();
+        fs::create_dir(dir.path().join(".kagi")).unwrap();
+        let config = KagiConfig {
+            version: "2".into(),
+            project_id: "kgp_test".into(),
+            services: Default::default(),
+            settings: Default::default(),
+        };
+        fs::write(
+            dir.path().join(".kagi").join(KAGI_CONFIG_FILE),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
+
+        let km = KeyManager::new_with_local_data_dir(
+            dir.path().join(".kagi"),
+            local.path().to_path_buf(),
+        );
+        km.initialize_project("kgp_test", "kgm_owner").unwrap();
+        let member = km.create_join_request(Some("alice".to_string())).unwrap();
+
+        assert_eq!(member.status, "pending");
+        assert_eq!(member.role, "member");
+        assert!(member.wrapped_key.is_none());
+    }
+
+    #[test]
+    fn test_access_state_requires_member_role() {
+        let dir = TempDir::new().unwrap();
+        let local = TempDir::new().unwrap();
+        fs::create_dir(dir.path().join(".kagi")).unwrap();
+        let config = KagiConfig {
+            version: "2".into(),
+            project_id: "kgp_test".into(),
+            services: Default::default(),
+            settings: Default::default(),
+        };
+        fs::write(
+            dir.path().join(".kagi").join(KAGI_CONFIG_FILE),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join(".kagi/access.json"),
+            r#"{"version":"2","members":[{"member_id":"kgm_owner","name":"owner","recipient":"age1invalid","status":"active"}]}"#,
+        )
+        .unwrap();
+
+        let km = KeyManager::new_with_local_data_dir(
+            dir.path().join(".kagi"),
+            local.path().to_path_buf(),
+        );
+        let err = km.list_members().unwrap_err();
+        assert!(
+            err.to_string().contains("missing field `role`"),
+            "expected missing role error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_cannot_remove_last_owner_during_rotation() {
+        let dir = TempDir::new().unwrap();
+        let local = TempDir::new().unwrap();
+        fs::create_dir(dir.path().join(".kagi")).unwrap();
+        let config = KagiConfig {
+            version: "2".into(),
+            project_id: "kgp_test".into(),
+            services: Default::default(),
+            settings: Default::default(),
+        };
+        fs::write(
+            dir.path().join(".kagi").join(KAGI_CONFIG_FILE),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
+
+        let km = KeyManager::new_with_local_data_dir(
+            dir.path().join(".kagi"),
+            local.path().to_path_buf(),
+        );
+        km.initialize_project("kgp_test", "kgm_owner").unwrap();
+
+        let err = km
+            .rotated_access_json(&[9_u8; 32], Some("kgm_owner"))
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("last owner"),
+            "expected last owner protection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_non_owner_cannot_approve_join_request() {
+        let dir = TempDir::new().unwrap();
+        let local = TempDir::new().unwrap();
+        fs::create_dir(dir.path().join(".kagi")).unwrap();
+        let config = KagiConfig {
+            version: "2".into(),
+            project_id: "kgp_test".into(),
+            services: Default::default(),
+            settings: Default::default(),
+        };
+        fs::write(
+            dir.path().join(".kagi").join(KAGI_CONFIG_FILE),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
+
+        let km = KeyManager::new_with_local_data_dir(
+            dir.path().join(".kagi"),
+            local.path().to_path_buf(),
+        );
+        km.initialize_project("kgp_test", "kgm_owner").unwrap();
+        let pending = km.create_join_request(Some("alice".to_string())).unwrap();
+
+        let access_path = dir.path().join(".kagi/access.json");
+        let mut access: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&access_path).unwrap()).unwrap();
+        access["members"][0]["role"] = serde_json::json!("member");
+        fs::write(&access_path, serde_json::to_string_pretty(&access).unwrap()).unwrap();
+
+        let err = km.approve_join_request(&pending.member_id).unwrap_err();
+        assert!(
+            err.to_string().contains("owner"),
+            "expected owner permission error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_promote_and_demote_member_roles() {
+        let dir = TempDir::new().unwrap();
+        let local = TempDir::new().unwrap();
+        fs::create_dir(dir.path().join(".kagi")).unwrap();
+        let config = KagiConfig {
+            version: "2".into(),
+            project_id: "kgp_test".into(),
+            services: Default::default(),
+            settings: Default::default(),
+        };
+        fs::write(
+            dir.path().join(".kagi").join(KAGI_CONFIG_FILE),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
+
+        let km = KeyManager::new_with_local_data_dir(
+            dir.path().join(".kagi"),
+            local.path().to_path_buf(),
+        );
+        km.initialize_project("kgp_test", "kgm_owner").unwrap();
+        let pending = km.create_join_request(Some("alice".to_string())).unwrap();
+        km.approve_join_request(&pending.member_id).unwrap();
+
+        let promoted = km.promote_member(&pending.member_id).unwrap();
+        assert_eq!(promoted.role, "owner");
+
+        let demoted = km.demote_member(&pending.member_id).unwrap();
+        assert_eq!(demoted.role, "member");
+    }
+
+    #[test]
+    fn test_cannot_demote_last_owner() {
+        let dir = TempDir::new().unwrap();
+        let local = TempDir::new().unwrap();
+        fs::create_dir(dir.path().join(".kagi")).unwrap();
+        let config = KagiConfig {
+            version: "2".into(),
+            project_id: "kgp_test".into(),
+            services: Default::default(),
+            settings: Default::default(),
+        };
+        fs::write(
+            dir.path().join(".kagi").join(KAGI_CONFIG_FILE),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
+
+        let km = KeyManager::new_with_local_data_dir(
+            dir.path().join(".kagi"),
+            local.path().to_path_buf(),
+        );
+        km.initialize_project("kgp_test", "kgm_owner").unwrap();
+
+        let err = km.demote_member("kgm_owner").unwrap_err();
+        assert!(
+            err.to_string().contains("last owner"),
+            "expected last owner protection, got: {err}"
+        );
     }
 
     #[test]
