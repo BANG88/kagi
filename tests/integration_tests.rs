@@ -19,6 +19,13 @@ fn kagi_bin() -> Command {
     cmd
 }
 
+fn kagi_bin_with_test_home(home: &Path) -> Command {
+    let mut cmd = kagi_bin();
+    cmd.env("HOME", home);
+    cmd.env("USERPROFILE", home);
+    cmd
+}
+
 fn kagi_bin_with_keyring(xdg_data_home: &Path) -> Command {
     let mut cmd = Command::cargo_bin("kagi").unwrap();
     cmd.env_remove("KAGI_DISABLE_KEYRING");
@@ -1350,6 +1357,174 @@ fn test_file_add_list_and_restore_follow_inferred_scope() {
         std::fs::read_to_string(apps_api.join("service-account.json")).unwrap(),
         r#"{"project_id":"demo"}"#
     );
+}
+
+#[test]
+fn test_file_add_external_uses_home_relative_path_identity() {
+    let dir = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let pi_settings = home.path().join(".pi/agent/settings.json");
+    let codex_settings = home.path().join(".codex/agent/settings.json");
+    std::fs::create_dir_all(pi_settings.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(codex_settings.parent().unwrap()).unwrap();
+    std::fs::write(&pi_settings, r#"{"agent":"pi"}"#).unwrap();
+    std::fs::write(&codex_settings, r#"{"agent":"codex"}"#).unwrap();
+
+    let mut cmd = kagi_bin_with_test_home(home.path());
+    cmd.current_dir(&dir);
+    cmd.args(["init", "--no-migrate"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin_with_test_home(home.path());
+    cmd.current_dir(&dir);
+    cmd.args(["file", "add", "--external", pi_settings.to_str().unwrap()]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("home:.pi/agent/settings.json"));
+
+    let mut cmd = kagi_bin_with_test_home(home.path());
+    cmd.current_dir(&dir);
+    cmd.args([
+        "file",
+        "add",
+        "--external",
+        codex_settings.to_str().unwrap(),
+    ]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("home:.codex/agent/settings.json"));
+
+    let mut cmd = kagi_bin_with_test_home(home.path());
+    cmd.current_dir(&dir);
+    cmd.args(["file", "list"]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("home:.pi/agent/settings.json"))
+        .stdout(predicate::str::contains("home:.codex/agent/settings.json"));
+
+    std::fs::remove_file(&pi_settings).unwrap();
+    std::fs::remove_file(&codex_settings).unwrap();
+
+    let mut cmd = kagi_bin_with_test_home(home.path());
+    cmd.current_dir(&dir);
+    cmd.args(["file", "restore", pi_settings.to_str().unwrap()]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("restored"))
+        .stdout(predicate::str::contains("home:.pi/agent/settings.json"));
+
+    assert_eq!(
+        std::fs::read_to_string(&pi_settings).unwrap(),
+        r#"{"agent":"pi"}"#
+    );
+    assert!(!codex_settings.exists());
+}
+
+#[test]
+fn test_file_restore_external_existing_target_creates_backup() {
+    let dir = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let settings = home.path().join(".pi/agent/settings.json");
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    std::fs::write(&settings, "encrypted").unwrap();
+
+    let mut cmd = kagi_bin_with_test_home(home.path());
+    cmd.current_dir(&dir);
+    cmd.args(["init", "--no-migrate"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin_with_test_home(home.path());
+    cmd.current_dir(&dir);
+    cmd.args(["file", "add", "--external", settings.to_str().unwrap()]);
+    cmd.assert().success();
+
+    std::fs::write(&settings, "local").unwrap();
+
+    let mut cmd = kagi_bin_with_test_home(home.path());
+    cmd.current_dir(&dir);
+    cmd.args(["file", "restore", settings.to_str().unwrap()]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("backup:"));
+
+    assert_eq!(std::fs::read_to_string(&settings).unwrap(), "encrypted");
+    let backups: Vec<_> = std::fs::read_dir(settings.parent().unwrap())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("settings.json.kagi.bak.")
+        })
+        .collect();
+    assert_eq!(backups.len(), 1);
+    assert_eq!(std::fs::read_to_string(backups[0].path()).unwrap(), "local");
+}
+
+#[test]
+fn test_file_restore_all_dry_run_previews_external_targets_without_writing() {
+    let dir = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let settings = home.path().join(".pi/agent/settings.json");
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    std::fs::write(&settings, "secret").unwrap();
+
+    let mut cmd = kagi_bin_with_test_home(home.path());
+    cmd.current_dir(&dir);
+    cmd.args(["init", "--no-migrate"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin_with_test_home(home.path());
+    cmd.current_dir(&dir);
+    cmd.args(["file", "add", "--external", settings.to_str().unwrap()]);
+    cmd.assert().success();
+
+    std::fs::remove_file(&settings).unwrap();
+
+    let mut cmd = kagi_bin_with_test_home(home.path());
+    cmd.current_dir(&dir);
+    cmd.args(["file", "restore", "--all", "--dry-run"]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("kagi will restore 1 file(s):"))
+        .stdout(predicate::str::contains("home:.pi/agent/settings.json"))
+        .stdout(predicate::str::contains(settings.display().to_string()))
+        .stdout(predicate::str::contains("status: missing, will create"));
+
+    assert!(!settings.exists());
+}
+
+#[test]
+fn test_file_restore_all_non_interactive_prints_preview_then_requires_confirmation() {
+    let dir = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let settings = home.path().join(".pi/agent/settings.json");
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    std::fs::write(&settings, "secret").unwrap();
+
+    let mut cmd = kagi_bin_with_test_home(home.path());
+    cmd.current_dir(&dir);
+    cmd.args(["init", "--no-migrate"]);
+    cmd.assert().success();
+
+    let mut cmd = kagi_bin_with_test_home(home.path());
+    cmd.current_dir(&dir);
+    cmd.args(["file", "add", "--external", settings.to_str().unwrap()]);
+    cmd.assert().success();
+
+    std::fs::remove_file(&settings).unwrap();
+
+    let mut cmd = kagi_bin_with_test_home(home.path());
+    cmd.current_dir(&dir);
+    cmd.args(["file", "restore", "--all"]);
+    cmd.assert()
+        .failure()
+        .stdout(predicate::str::contains("kagi will restore 1 file(s):"))
+        .stdout(predicate::str::contains("home:.pi/agent/settings.json"))
+        .stderr(predicate::str::contains("requires an interactive terminal"));
+
+    assert!(!settings.exists());
 }
 
 #[test]

@@ -315,6 +315,10 @@ pub enum FileCommands {
         #[arg(long)]
         allow_large: bool,
 
+        /// Manage a file outside the repository, limited to the current user's home directory
+        #[arg(long)]
+        external: bool,
+
         /// [service] [env] <path>, or [env] <path> when service is inferred
         #[arg(required = true)]
         args: Vec<String>,
@@ -359,8 +363,15 @@ pub enum FileCommands {
         #[arg(long)]
         force: bool,
 
+        /// Restore every encrypted file in the selected scope
+        #[arg(long)]
+        all: bool,
+
+        /// Preview restore targets without writing files
+        #[arg(long)]
+        dry_run: bool,
+
         /// [service] [env] <name>, or [env] <name> when service is inferred
-        #[arg(required = true)]
         args: Vec<String>,
     },
 

@@ -1,5 +1,8 @@
 use crate::application::export_env::ExportEnvService;
-use crate::application::file_artifacts::FileArtifactService;
+use crate::application::file_artifacts::{
+    FileArtifactEntry, FileArtifactLocation, FileArtifactService, FileRestorePlanEntry,
+    FileRestoreStatus,
+};
 use crate::application::get_secret::GetSecretService;
 use crate::application::import_env_file::ImportReport;
 use crate::application::init_service::InitService;
@@ -711,6 +714,9 @@ fn parse_file_scope_parts(
             "Too many scope arguments. Use [service] [env] or [env] when service is inferred."
         ));
     }
+    if service_flag.is_none() && inferred_service.is_none() && scope_parts.is_empty() {
+        return Ok(default_env.to_string());
+    }
     parse_scope_args(
         default_envs,
         default_env,
@@ -1077,7 +1083,7 @@ fn print_import_dry_run(report: &ImportReport, service_name: &str, file: &str, c
     }
 }
 
-fn print_file_list(files: &[crate::application::file_artifacts::FileArtifactEntry], c: &Palette) {
+fn print_file_list(files: &[FileArtifactEntry], c: &Palette) {
     if files.is_empty() {
         println!("{} {}", c.prefix(), c.muted("no encrypted files found"));
         return;
@@ -1089,12 +1095,62 @@ fn print_file_list(files: &[crate::application::file_artifacts::FileArtifactEntr
             current_scope = Some(&file.scope);
             println!("{}", c.accent(&file.scope));
         }
+        let alias = file
+            .alias
+            .as_deref()
+            .map(|alias| format!(" alias:{alias}"))
+            .unwrap_or_default();
         println!(
-            "  {} {} {}",
-            c.key(&file.name),
+            "  {} {} {}{}",
+            c.key(&file.locator()),
             c.muted(&format!("{} bytes", file.size)),
-            c.muted(&file.restore_path)
+            c.muted(file.display_name()),
+            c.muted(&alias)
         );
+    }
+}
+
+fn print_restore_plan(plan: &[FileRestorePlanEntry], c: &Palette) {
+    println!("{} kagi will restore {} file(s):", c.prefix(), plan.len());
+    for item in plan {
+        println!();
+        println!("  {}", c.key(&item.entry.locator()));
+        println!("    -> {}", c.accent(&item.target.display().to_string()));
+        let status = match item.status {
+            FileRestoreStatus::Missing => "status: missing, will create".to_string(),
+            FileRestoreStatus::Same => "status: exists, same, skip".to_string(),
+            FileRestoreStatus::Different if item.backup_path.is_some() => {
+                "status: exists, different, backup will be created".to_string()
+            }
+            FileRestoreStatus::Different => "status: exists, different, will overwrite".to_string(),
+            FileRestoreStatus::BlockedExisting => {
+                "status: exists, different, requires --force".to_string()
+            }
+        };
+        println!("    {}", c.muted(&status));
+        if let Some(backup_path) = &item.backup_path {
+            println!(
+                "    backup: {}",
+                c.muted(&backup_path.display().to_string())
+            );
+        }
+    }
+}
+
+fn confirm_restore_all(tty: bool, c: &Palette) -> anyhow::Result<()> {
+    if !tty || !io::stdin().is_terminal() {
+        return Err(anyhow::anyhow!(
+            "kagi file restore --all requires an interactive terminal after preview. Run `kagi file restore --all --dry-run` to review without writing."
+        ));
+    }
+
+    eprint!("{} {} Continue? [y/N]: ", c.prefix(), c.warning("warning:"));
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    if input.trim().eq_ignore_ascii_case("y") {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("aborted"))
     }
 }
 
@@ -2595,6 +2651,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 name,
                 force,
                 allow_large,
+                external,
                 args,
             } => {
                 let (scope_parts, path) = split_file_item_args(args, "path")?;
@@ -2605,6 +2662,11 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                     name.as_deref(),
                     force,
                     allow_large,
+                    if external {
+                        FileArtifactLocation::Home
+                    } else {
+                        FileArtifactLocation::Repo
+                    },
                 )?;
                 println!(
                     "{} {} {} to {}",
@@ -2614,14 +2676,14 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                     } else {
                         c.success("added file")
                     },
-                    c.accent(&added.entry.name),
+                    c.accent(&added.entry.locator()),
                     c.accent(&added.entry.scope)
                 );
                 println!(
                     "{} {} {}",
                     c.prefix(),
                     c.muted("restore path:"),
-                    c.muted(&added.entry.restore_path)
+                    c.muted(&added.entry.locator())
                 );
             }
             FileCommands::List { service, all, args } => {
@@ -2640,8 +2702,43 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 service,
                 out,
                 force,
+                all,
+                dry_run,
                 args,
             } => {
+                if all {
+                    if out.is_some() {
+                        return Err(anyhow::anyhow!(
+                            "kagi file restore --all cannot be combined with --out"
+                        ));
+                    }
+                    let (file_service, scope) =
+                        resolve_file_service_for_list(service, args, false)?;
+                    let plan = file_service.plan_restore_files(scope.as_deref(), force)?;
+                    print_restore_plan(&plan, &c);
+                    if dry_run {
+                        return Ok(());
+                    }
+                    if plan.iter().any(|entry| !entry.can_apply()) {
+                        return Err(anyhow::anyhow!(
+                            "restore plan contains files that require --force"
+                        ));
+                    }
+                    confirm_restore_all(tty, &c)?;
+                    let restored = file_service.restore_planned_files(&plan)?;
+                    let changed = restored.iter().filter(|file| file.changed).count();
+                    println!(
+                        "{} {}",
+                        c.prefix(),
+                        c.success(&format!("restored {changed} file(s)"))
+                    );
+                    return Ok(());
+                }
+                if dry_run {
+                    return Err(anyhow::anyhow!(
+                        "kagi file restore --dry-run is only supported with --all"
+                    ));
+                }
                 let (scope_parts, name) = split_file_item_args(args, "name")?;
                 let (file_service, scope) = resolve_file_service_and_scope(service, scope_parts)?;
                 let restored = file_service.restore_file(
@@ -2654,9 +2751,17 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                     "{} {} {} to {}",
                     c.prefix(),
                     c.success("restored"),
-                    c.accent(&restored.entry.name),
+                    c.accent(&restored.entry.locator()),
                     c.accent(&restored.path.display().to_string())
                 );
+                if let Some(backup_path) = &restored.backup_path {
+                    println!(
+                        "{} {} {}",
+                        c.prefix(),
+                        c.muted("backup:"),
+                        c.muted(&backup_path.display().to_string())
+                    );
+                }
                 println!(
                     "{} {}",
                     c.prefix(),

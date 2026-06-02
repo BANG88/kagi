@@ -17,11 +17,42 @@ pub struct FileArtifactEntry {
     pub id: String,
     pub scope: String,
     pub name: String,
+    #[serde(default)]
+    pub location: FileArtifactLocation,
     pub restore_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
     pub size: u64,
     pub sha256: String,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum FileArtifactLocation {
+    #[default]
+    Repo,
+    Home,
+}
+
+impl FileArtifactLocation {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Repo => "repo",
+            Self::Home => "home",
+        }
+    }
+}
+
+impl FileArtifactEntry {
+    pub fn locator(&self) -> String {
+        format!("{}:{}", self.location.label(), self.restore_path)
+    }
+
+    pub fn display_name(&self) -> &str {
+        self.alias.as_deref().unwrap_or(&self.name)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -58,11 +89,36 @@ pub struct AddedFile {
 pub struct RestoredFile {
     pub entry: FileArtifactEntry,
     pub path: PathBuf,
+    pub backup_path: Option<PathBuf>,
+    pub changed: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct FileRestorePlanEntry {
+    pub entry: FileArtifactEntry,
+    pub target: PathBuf,
+    pub status: FileRestoreStatus,
+    pub backup_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileRestoreStatus {
+    Missing,
+    Same,
+    Different,
+    BlockedExisting,
+}
+
+impl FileRestorePlanEntry {
+    pub fn can_apply(&self) -> bool {
+        self.status != FileRestoreStatus::BlockedExisting
+    }
 }
 
 pub struct FileArtifactService {
     base_path: PathBuf,
     project_root: PathBuf,
+    home_root: PathBuf,
     project_id: String,
     encryptor: XChaChaEncryptor,
 }
@@ -79,9 +135,11 @@ impl FileArtifactService {
             .parent()
             .ok_or_else(|| anyhow::anyhow!("invalid .kagi path"))?
             .canonicalize()?;
+        let home_root = home_root()?;
         Ok(Self {
             base_path,
             project_root,
+            home_root,
             project_id: config.project_id,
             encryptor: XChaChaEncryptor::new(key),
         })
@@ -94,8 +152,10 @@ impl FileArtifactService {
         name: Option<&str>,
         force: bool,
         allow_large: bool,
+        location: FileArtifactLocation,
     ) -> anyhow::Result<AddedFile> {
-        let input = resolve_input_path(file_path)?;
+        let input = resolve_input_path(file_path, &self.home_root)?;
+        reject_symlink_components(&input)?;
         let metadata = fs::symlink_metadata(&input)?;
         if metadata.file_type().is_symlink() {
             return Err(anyhow::anyhow!("refusing to add symlink"));
@@ -117,13 +177,31 @@ impl FileArtifactService {
         }
 
         let canonical = input.canonicalize()?;
-        let restore_path = repo_relative_path(&self.project_root, &canonical)?;
-        validate_safe_relative_path(&restore_path)?;
-        reject_tracked_file(&self.project_root, &restore_path)?;
+        let restore_path = match location {
+            FileArtifactLocation::Repo => {
+                let path = repo_relative_path(&self.project_root, &canonical)?;
+                validate_safe_repo_relative_path(&path)?;
+                reject_tracked_file(&self.project_root, &path)?;
+                path
+            }
+            FileArtifactLocation::Home => {
+                let path = home_relative_path(&self.home_root, &canonical)?;
+                validate_safe_home_relative_path(&path)?;
+                path
+            }
+        };
 
-        let logical_name = match name {
-            Some(name) if !name.trim().is_empty() => name.trim().to_string(),
+        let alias = match name {
+            Some(name) if !name.trim().is_empty() => {
+                let alias = name.trim().to_string();
+                validate_logical_name(&alias)?;
+                Some(alias)
+            }
             Some(_) => return Err(anyhow::anyhow!("file name cannot be empty")),
+            None => None,
+        };
+        let logical_name = match &alias {
+            Some(alias) => alias.clone(),
             None => canonical
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -136,13 +214,24 @@ impl FileArtifactService {
         let sha256 = sha256_hex(&plaintext);
         let now = now_string();
         let mut index = self.load_index()?;
-        let existing_position = index
-            .files
-            .iter()
-            .position(|entry| entry.scope == scope && entry.name == logical_name);
+        let existing_position = index.files.iter().position(|entry| {
+            entry.scope == scope && entry.location == location && entry.restore_path == restore_path
+        });
         if existing_position.is_some() && !force {
             return Err(anyhow::anyhow!(
-                "file already exists in {scope}: {logical_name}. Use --force to replace it."
+                "file already exists in {scope}: {}. Use --force to replace it.",
+                format_locator(location, &restore_path)
+            ));
+        }
+        if let Some(alias) = &alias
+            && index.files.iter().enumerate().any(|(position, entry)| {
+                Some(position) != existing_position
+                    && entry.scope == scope
+                    && entry.alias.as_deref().unwrap_or(&entry.name) == alias
+            })
+        {
+            return Err(anyhow::anyhow!(
+                "file name already exists in {scope}: {alias}. Choose a different --name."
             ));
         }
 
@@ -161,18 +250,20 @@ impl FileArtifactService {
             id,
             scope: scope.to_string(),
             name: logical_name,
+            location,
             restore_path,
+            alias,
             size: metadata.len(),
             sha256,
             created_at,
             updated_at: now,
         };
         index.files.push(entry.clone());
-        index
-            .files
-            .sort_by(|a, b| (&a.scope, &a.name).cmp(&(&b.scope, &b.name)));
+        sort_file_entries(&mut index.files);
         self.save_index(&index)?;
-        self.ensure_local_git_exclude(&entry.restore_path)?;
+        if entry.location == FileArtifactLocation::Repo {
+            self.ensure_local_git_exclude(&entry.restore_path)?;
+        }
         Ok(AddedFile { entry, replaced })
     }
 
@@ -181,7 +272,7 @@ impl FileArtifactService {
         if let Some(scope) = scope {
             files.retain(|entry| entry.scope == scope);
         }
-        files.sort_by(|a, b| (&a.scope, &a.name).cmp(&(&b.scope, &b.name)));
+        sort_file_entries(&mut files);
         Ok(files)
     }
 
@@ -193,25 +284,47 @@ impl FileArtifactService {
         force: bool,
     ) -> anyhow::Result<RestoredFile> {
         let entry = self.find_entry(scope, name)?;
-        let blob = self.read_encrypted_blob(&self.content_path(&entry.id))?;
-        let plaintext = self.decrypt_blob("file", &entry.id, &blob)?;
-        let target = self.resolve_output_path(&entry, out)?;
-        if target.exists() && !force {
+        let plan = self.plan_restore_entry(entry, out, force)?;
+        if !plan.can_apply() {
             return Err(anyhow::anyhow!(
                 "output file already exists: {}. Use --force to overwrite it.",
-                target.display()
+                plan.target.display()
             ));
         }
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent)?;
+        self.apply_restore_plan_entry(&plan)
+    }
+
+    pub fn plan_restore_files(
+        &self,
+        scope: Option<&str>,
+        force: bool,
+    ) -> anyhow::Result<Vec<FileRestorePlanEntry>> {
+        let mut entries = self.load_index()?.files;
+        if let Some(scope) = scope {
+            entries.retain(|entry| entry.scope == scope);
         }
-        write_private_file(&target, &plaintext)?;
-        let actual_restore_path = repo_relative_path(&self.project_root, &target)?;
-        self.ensure_local_git_exclude(&actual_restore_path)?;
-        Ok(RestoredFile {
-            entry,
-            path: target,
-        })
+        sort_file_entries(&mut entries);
+        entries
+            .into_iter()
+            .map(|entry| self.plan_restore_entry(entry, None, force))
+            .collect()
+    }
+
+    pub fn restore_planned_files(
+        &self,
+        plan: &[FileRestorePlanEntry],
+    ) -> anyhow::Result<Vec<RestoredFile>> {
+        let mut restored = Vec::new();
+        for entry in plan {
+            if !entry.can_apply() {
+                return Err(anyhow::anyhow!(
+                    "restore plan contains blocked file: {}",
+                    entry.entry.locator()
+                ));
+            }
+            restored.push(self.apply_restore_plan_entry(entry)?);
+        }
+        Ok(restored)
     }
 
     pub fn read_file(&self, scope: &str, name: &str) -> anyhow::Result<Vec<u8>> {
@@ -222,11 +335,7 @@ impl FileArtifactService {
 
     pub fn remove_file(&self, scope: &str, name: &str) -> anyhow::Result<FileArtifactEntry> {
         let mut index = self.load_index()?;
-        let position = index
-            .files
-            .iter()
-            .position(|entry| entry.scope == scope && entry.name == name)
-            .ok_or_else(|| anyhow::anyhow!("file not found in {scope}: {name}"))?;
+        let position = self.find_entry_position(&index.files, scope, name)?;
         let entry = index.files.remove(position);
         let _ = fs::remove_file(self.content_path(&entry.id));
         self.save_index(&index)?;
@@ -234,11 +343,47 @@ impl FileArtifactService {
     }
 
     fn find_entry(&self, scope: &str, name: &str) -> anyhow::Result<FileArtifactEntry> {
-        self.load_index()?
-            .files
-            .into_iter()
-            .find(|entry| entry.scope == scope && entry.name == name)
-            .ok_or_else(|| anyhow::anyhow!("file not found in {scope}: {name}"))
+        let index = self.load_index()?;
+        let position = self.find_entry_position(&index.files, scope, name)?;
+        Ok(index.files[position].clone())
+    }
+
+    fn find_entry_position(
+        &self,
+        files: &[FileArtifactEntry],
+        scope: &str,
+        selector: &str,
+    ) -> anyhow::Result<usize> {
+        if let Some((location, restore_path)) = self.parse_file_selector(selector)? {
+            return files
+                .iter()
+                .position(|entry| {
+                    entry.scope == scope
+                        && entry.location == location
+                        && entry.restore_path == restore_path
+                })
+                .ok_or_else(|| anyhow::anyhow!("file not found in {scope}: {selector}"));
+        }
+
+        let matches: Vec<usize> = files
+            .iter()
+            .enumerate()
+            .filter_map(|(position, entry)| {
+                if entry.scope == scope && entry.alias.as_deref().unwrap_or(&entry.name) == selector
+                {
+                    Some(position)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        match matches.as_slice() {
+            [position] => Ok(*position),
+            [] => Err(anyhow::anyhow!("file not found in {scope}: {selector}")),
+            _ => Err(anyhow::anyhow!(
+                "file selector is ambiguous in {scope}: {selector}. Use the restore path instead."
+            )),
+        }
     }
 
     fn files_dir(&self) -> PathBuf {
@@ -340,6 +485,79 @@ impl FileArtifactService {
         set_private_file_permissions(path)
     }
 
+    fn plan_restore_entry(
+        &self,
+        entry: FileArtifactEntry,
+        out: Option<&Path>,
+        force: bool,
+    ) -> anyhow::Result<FileRestorePlanEntry> {
+        let target = self.resolve_output_path(&entry, out)?;
+        let (status, backup_path) = if target.exists() {
+            let metadata = fs::symlink_metadata(&target)?;
+            if metadata.file_type().is_symlink() {
+                return Err(anyhow::anyhow!("refusing to restore over symlink"));
+            }
+            if !metadata.file_type().is_file() {
+                return Err(anyhow::anyhow!("refusing to restore over non-regular file"));
+            }
+            let existing = fs::read(&target)?;
+            if sha256_hex(&existing) == entry.sha256 {
+                (FileRestoreStatus::Same, None)
+            } else if entry.location == FileArtifactLocation::Home {
+                (
+                    FileRestoreStatus::Different,
+                    Some(next_backup_path(&target)?),
+                )
+            } else if force {
+                (FileRestoreStatus::Different, None)
+            } else {
+                (FileRestoreStatus::BlockedExisting, None)
+            }
+        } else {
+            (FileRestoreStatus::Missing, None)
+        };
+        Ok(FileRestorePlanEntry {
+            entry,
+            target,
+            status,
+            backup_path,
+        })
+    }
+
+    fn apply_restore_plan_entry(
+        &self,
+        plan: &FileRestorePlanEntry,
+    ) -> anyhow::Result<RestoredFile> {
+        if plan.status == FileRestoreStatus::Same {
+            return Ok(RestoredFile {
+                entry: plan.entry.clone(),
+                path: plan.target.clone(),
+                backup_path: None,
+                changed: false,
+            });
+        }
+        let blob = self.read_encrypted_blob(&self.content_path(&plan.entry.id))?;
+        let plaintext = self.decrypt_blob("file", &plan.entry.id, &blob)?;
+        if let Some(parent) = plan.target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        if let Some(backup_path) = &plan.backup_path {
+            fs::copy(&plan.target, backup_path)?;
+            set_private_file_permissions(backup_path)?;
+        }
+        write_private_file(&plan.target, &plaintext)?;
+        if plan.entry.location == FileArtifactLocation::Repo {
+            let actual_restore_path = repo_relative_path(&self.project_root, &plan.target)?;
+            self.ensure_local_git_exclude(&actual_restore_path)?;
+        }
+        Ok(RestoredFile {
+            entry: plan.entry.clone(),
+            path: plan.target.clone(),
+            backup_path: plan.backup_path.clone(),
+            changed: true,
+        })
+    }
+
     fn resolve_output_path(
         &self,
         entry: &FileArtifactEntry,
@@ -352,14 +570,66 @@ impl FileArtifactService {
                 normalize_path(std::env::current_dir()?.join(out))?
             }
         } else {
-            normalize_path(self.project_root.join(&entry.restore_path))?
+            match entry.location {
+                FileArtifactLocation::Repo => {
+                    normalize_path(self.project_root.join(&entry.restore_path))?
+                }
+                FileArtifactLocation::Home => {
+                    normalize_path(self.home_root.join(&entry.restore_path))?
+                }
+            }
         };
         reject_symlink_components(&target)?;
         let target = canonicalize_existing_path_prefix(&target)?;
-        let relative = repo_relative_path(&self.project_root, &target)
-            .map_err(|_| anyhow::anyhow!("output path must stay inside the repository"))?;
-        validate_safe_relative_path(&relative)?;
+        match entry.location {
+            FileArtifactLocation::Repo => {
+                let relative = repo_relative_path(&self.project_root, &target)
+                    .map_err(|_| anyhow::anyhow!("output path must stay inside the repository"))?;
+                validate_safe_repo_relative_path(&relative)?;
+            }
+            FileArtifactLocation::Home => {
+                let relative = home_relative_path(&self.home_root, &target).map_err(|_| {
+                    anyhow::anyhow!("output path must stay inside the home directory")
+                })?;
+                validate_safe_home_relative_path(&relative)?;
+            }
+        }
         Ok(target)
+    }
+
+    fn parse_file_selector(
+        &self,
+        selector: &str,
+    ) -> anyhow::Result<Option<(FileArtifactLocation, String)>> {
+        if let Some(path) = selector.strip_prefix("home:") {
+            validate_safe_home_relative_path(path)?;
+            return Ok(Some((FileArtifactLocation::Home, path.to_string())));
+        }
+        if let Some(path) = selector.strip_prefix("repo:") {
+            validate_safe_repo_relative_path(path)?;
+            return Ok(Some((FileArtifactLocation::Repo, path.to_string())));
+        }
+        if !looks_like_path(selector) {
+            return Ok(None);
+        }
+        let path = expand_tilde_path(selector, &self.home_root);
+        let absolute = if path.is_absolute() {
+            path
+        } else {
+            std::env::current_dir()?.join(path)
+        };
+        let target = canonicalize_existing_path_prefix(&absolute)?;
+        if let Ok(relative) = repo_relative_path(&self.project_root, &target) {
+            validate_safe_repo_relative_path(&relative)?;
+            return Ok(Some((FileArtifactLocation::Repo, relative)));
+        }
+        if let Ok(relative) = home_relative_path(&self.home_root, &target) {
+            validate_safe_home_relative_path(&relative)?;
+            return Ok(Some((FileArtifactLocation::Home, relative)));
+        }
+        Err(anyhow::anyhow!(
+            "file selector path must stay inside the repository or home directory"
+        ))
     }
 
     fn ensure_local_git_exclude(&self, restore_path: &str) -> anyhow::Result<()> {
@@ -454,7 +724,13 @@ pub fn validate_file_artifacts(base_path: &Path, project_key: &[u8]) -> anyhow::
     for entry in &index.files {
         validate_artifact_id(&entry.id)?;
         validate_logical_name(&entry.name)?;
-        validate_safe_relative_path(&entry.restore_path)?;
+        if let Some(alias) = &entry.alias {
+            validate_logical_name(alias)?;
+        }
+        match entry.location {
+            FileArtifactLocation::Repo => validate_safe_repo_relative_path(&entry.restore_path)?,
+            FileArtifactLocation::Home => validate_safe_home_relative_path(&entry.restore_path)?,
+        }
         let content_path = service.content_path(&entry.id);
         if !content_path.is_file() {
             return Err(anyhow::anyhow!(
@@ -491,7 +767,12 @@ fn validate_artifact_id(id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn resolve_input_path(path: &Path) -> anyhow::Result<PathBuf> {
+fn resolve_input_path(path: &Path, home_root: &Path) -> anyhow::Result<PathBuf> {
+    if let Some(path) = path.to_str()
+        && path.starts_with('~')
+    {
+        return Ok(expand_tilde_path(path, home_root));
+    }
     Ok(if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -507,7 +788,28 @@ fn repo_relative_path(project_root: &Path, path: &Path) -> anyhow::Result<String
         .replace('\\', "/"))
 }
 
-fn validate_safe_relative_path(path: &str) -> anyhow::Result<()> {
+fn home_relative_path(home_root: &Path, path: &Path) -> anyhow::Result<String> {
+    Ok(path
+        .strip_prefix(home_root)
+        .map_err(|_| anyhow::anyhow!("file must be inside the home directory"))?
+        .to_string_lossy()
+        .replace('\\', "/"))
+}
+
+fn validate_relative_path_shape(path: &str) -> anyhow::Result<()> {
+    if path.is_empty()
+        || path.starts_with('/')
+        || path.contains('\\')
+        || path
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return Err(anyhow::anyhow!("invalid relative file path"));
+    }
+    Ok(())
+}
+
+fn validate_safe_repo_relative_path(path: &str) -> anyhow::Result<()> {
     let blocked = [
         ".git",
         ".kagi",
@@ -519,18 +821,23 @@ fn validate_safe_relative_path(path: &str) -> anyhow::Result<()> {
         "out",
         "vendor",
     ];
-    if path.is_empty()
-        || path.starts_with('/')
-        || path.contains('\\')
-        || path
-            .split('/')
-            .any(|part| part.is_empty() || part == "." || part == "..")
-    {
-        return Err(anyhow::anyhow!("invalid repository-relative file path"));
-    }
+    validate_relative_path_shape(path)
+        .map_err(|_| anyhow::anyhow!("invalid repository-relative file path"))?;
     if path.split('/').any(|part| blocked.contains(&part)) {
         return Err(anyhow::anyhow!(
             "refusing to use file inside ignored or internal directory"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_safe_home_relative_path(path: &str) -> anyhow::Result<()> {
+    let blocked = [".git", ".kagi", ".ssh", ".gnupg"];
+    validate_relative_path_shape(path)
+        .map_err(|_| anyhow::anyhow!("invalid home-relative file path"))?;
+    if path.split('/').any(|part| blocked.contains(&part)) {
+        return Err(anyhow::anyhow!(
+            "refusing to use file inside sensitive or internal home directory"
         ));
     }
     Ok(())
@@ -584,6 +891,83 @@ fn normalize_path(path: PathBuf) -> anyhow::Result<PathBuf> {
         }
     }
     Ok(normalized)
+}
+
+fn home_root() -> anyhow::Result<PathBuf> {
+    directories::BaseDirs::new()
+        .ok_or_else(|| anyhow::anyhow!("could not determine home directory"))?
+        .home_dir()
+        .canonicalize()
+        .context("failed to canonicalize home directory")
+}
+
+fn format_locator(location: FileArtifactLocation, path: &str) -> String {
+    format!("{}:{path}", location.label())
+}
+
+fn looks_like_path(selector: &str) -> bool {
+    selector.starts_with('~')
+        || selector.contains('/')
+        || selector.contains('\\')
+        || Path::new(selector).is_absolute()
+}
+
+fn expand_tilde_path(path: &str, home_root: &Path) -> PathBuf {
+    if path == "~" {
+        return home_root.to_path_buf();
+    }
+    if let Some(rest) = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\")) {
+        return home_root.join(rest);
+    }
+    PathBuf::from(path)
+}
+
+fn sort_file_entries(files: &mut [FileArtifactEntry]) {
+    files.sort_by(|a, b| {
+        (
+            &a.scope,
+            a.location.label(),
+            &a.restore_path,
+            a.display_name(),
+        )
+            .cmp(&(
+                &b.scope,
+                b.location.label(),
+                &b.restore_path,
+                b.display_name(),
+            ))
+    });
+}
+
+fn next_backup_path(target: &Path) -> anyhow::Result<PathBuf> {
+    let file_name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow::anyhow!("backup file name must be valid UTF-8"))?;
+    let parent = target
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("backup path has no parent"))?;
+    let stamp = compact_now_string();
+    let mut candidate = parent.join(format!("{file_name}.kagi.bak.{stamp}"));
+    let mut counter = 1_u32;
+    while candidate.exists() {
+        candidate = parent.join(format!("{file_name}.kagi.bak.{stamp}.{counter}"));
+        counter += 1;
+    }
+    Ok(candidate)
+}
+
+fn compact_now_string() -> String {
+    let now = time::OffsetDateTime::now_utc();
+    format!(
+        "{:04}{:02}{:02}T{:02}{:02}{:02}Z",
+        now.year(),
+        u8::from(now.month()),
+        now.day(),
+        now.hour(),
+        now.minute(),
+        now.second()
+    )
 }
 
 fn canonicalize_existing_path_prefix(path: &Path) -> anyhow::Result<PathBuf> {
@@ -645,7 +1029,21 @@ fn now_string() -> String {
 }
 
 fn write_private_file(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
-    fs::write(path, bytes)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("output path has no parent"))?;
+    fs::create_dir_all(parent)?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow::anyhow!("output file name must be valid UTF-8"))?;
+    let tmp = parent.join(format!(".{file_name}.kagi.tmp.{}", nanoid::nanoid!(8)));
+    fs::write(&tmp, bytes)?;
+    set_private_file_permissions(&tmp)?;
+    if path.exists() {
+        fs::remove_file(path)?;
+    }
+    fs::rename(&tmp, path)?;
     set_private_file_permissions(path)
 }
 
