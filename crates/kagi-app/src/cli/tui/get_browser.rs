@@ -115,7 +115,7 @@ pub fn run_tui_get(store: FileStore, _show_values: bool) -> anyhow::Result<()> {
         copy_message: String::new(),
         all_keys_filtered: Vec::new(),
         show_confirm: false,
-        confirmed_reveal: false,
+        confirmed_reveal: _show_values,
     };
     app.all_keys_filtered = app.filtered_keys();
 
@@ -151,9 +151,6 @@ fn run_app(
                 match key.code {
                     KeyCode::Char('y') | KeyCode::Char('Y') => {
                         app.confirmed_reveal = true;
-                        let si = app.current_scope_index();
-                        let ki = app.current_key_index();
-                        app.revealed.insert((si, ki));
                     }
                     _ => {}
                 }
@@ -250,7 +247,17 @@ fn run_app(
                     app.selected_scope -= 1;
                     app.selected_key = 0;
                 }
+                KeyCode::BackTab if app.search_query.is_empty() && app.selected_scope > 0 => {
+                    app.selected_scope -= 1;
+                    app.selected_key = 0;
+                }
                 KeyCode::Right
+                    if app.search_query.is_empty() && app.selected_scope + 1 < app.scopes.len() =>
+                {
+                    app.selected_scope += 1;
+                    app.selected_key = 0;
+                }
+                KeyCode::Tab
                     if app.search_query.is_empty() && app.selected_scope + 1 < app.scopes.len() =>
                 {
                     app.selected_scope += 1;
@@ -355,7 +362,7 @@ fn draw_ui(f: &mut ratatui::Frame, app: &App, theme: &Theme) {
         f,
         theme,
         "Secret Browser",
-        "s/Enter=reveal  c=copy  /=search  q=quit",
+        "Tab=scope  s/Enter=reveal all  c=copy  /=search  q=quit",
     );
 
     let body = Layout::default()
@@ -406,6 +413,7 @@ fn draw_ui(f: &mut ratatui::Frame, app: &App, theme: &Theme) {
             .map(|(ki, (key, value, desc))| {
                 let is_selected = ki == app.current_key_index();
                 let is_revealed = app.revealed.contains(&(si, ki));
+                let is_revealed = app.confirmed_reveal || is_revealed;
                 let value_display = if is_revealed {
                     value.clone()
                 } else {

@@ -87,11 +87,18 @@ fn classify_env_file(file_name: &str, configured_envs: &[String]) -> Option<(Str
         return Some((kagi_domain::config::DEFAULT_ENV_NAME.to_string(), true));
     }
 
-    if configured_envs.iter().any(|env| env == suffix) {
+    if configured_envs.iter().any(|env| env == suffix) || is_env_suffix(suffix) {
         return Some((suffix.to_string(), false));
     }
 
     None
+}
+
+fn is_env_suffix(suffix: &str) -> bool {
+    !suffix.is_empty()
+        && suffix
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
 }
 
 fn infer_service_path(file_path: &Path, root_dir: &Path) -> Option<String> {
@@ -211,8 +218,26 @@ mod tests {
         fs::write(dir.path().join(".env.example"), "KEY=\n").unwrap();
         fs::write(dir.path().join(".env.local"), "KEY=val\n").unwrap();
         let found = scan_env_files(dir.path(), &["development".to_string()]);
-        assert_eq!(found.len(), 2);
+        assert_eq!(found.len(), 3);
         assert!(found.iter().any(|candidate| candidate.is_template));
+        assert!(found.iter().any(|candidate| candidate.env_name == "local"));
+    }
+
+    #[test]
+    fn test_scan_infers_env_from_suffix_without_preconfigured_env() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join(".env.production"), "KEY=prod\n").unwrap();
+        fs::write(dir.path().join(".env.local"), "KEY=local\n").unwrap();
+        let found = scan_env_files(dir.path(), &["development".to_string()]);
+        let envs: Vec<_> = found
+            .iter()
+            .map(|candidate| candidate.env_name.as_str())
+            .collect();
+        assert!(
+            envs.contains(&"production"),
+            "expected production: {found:?}"
+        );
+        assert!(envs.contains(&"local"), "expected local: {found:?}");
     }
 
     #[test]

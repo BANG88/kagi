@@ -516,6 +516,25 @@ fn write_monorepo_mappings(
     Ok(mapping_count)
 }
 
+fn env_migration_scope(candidate: &crate::application::env_migration::EnvFileCandidate) -> String {
+    match &candidate.service_name {
+        Some(service) => scope_name(Some(service), &candidate.env_name),
+        None => candidate.env_name.clone(),
+    }
+}
+
+fn sorted_env_migration_candidates(
+    mut candidates: Vec<crate::application::env_migration::EnvFileCandidate>,
+) -> Vec<crate::application::env_migration::EnvFileCandidate> {
+    candidates.sort_by(|a, b| {
+        env_migration_scope(a)
+            .cmp(&env_migration_scope(b))
+            .then_with(|| b.is_template.cmp(&a.is_template))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    candidates
+}
+
 fn disambiguate_monorepo_service_names(
     mappings: std::collections::BTreeMap<String, String>,
 ) -> std::collections::BTreeMap<String, String> {
@@ -943,6 +962,28 @@ fn confirm_secret_output(tty: bool, operation: &str, c: &Palette) -> anyhow::Res
         c.prefix(),
         c.warning("warning:"),
         c.info(&format!("{operation} will print decrypted secrets."))
+    );
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    if input.trim().eq_ignore_ascii_case("y") {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("aborted"))
+    }
+}
+
+fn confirm_destructive_action(tty: bool, action: &str, c: &Palette) -> anyhow::Result<()> {
+    if !tty || !io::stdin().is_terminal() {
+        return Err(anyhow::anyhow!(
+            "Refusing to {action} without an interactive terminal. Re-run with --force to confirm non-interactively."
+        ));
+    }
+
+    eprint!(
+        "{} {} {} [y/N]: ",
+        c.prefix(),
+        c.warning("warning:"),
+        c.info(&format!("this will {action}."))
     );
     let mut input = String::new();
     std::io::stdin().read_line(&mut input)?;
@@ -2187,8 +2228,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             if !no_migrate {
                 let config_path = local.join(kagi_domain::config::KAGI_CONFIG_FILE);
                 let config: KagiConfig = serde_json::from_str(&fs::read_to_string(&config_path)?)?;
-                let candidates =
-                    crate::application::env_migration::scan_env_files(&cwd, &config.settings.envs);
+                let candidates = sorted_env_migration_candidates(
+                    crate::application::env_migration::scan_env_files(&cwd, &config.settings.envs),
+                );
                 let mapping_count = write_monorepo_mappings(&config_path, &candidates)?;
                 if mapping_count > 0 {
                     eprintln!(
@@ -2199,93 +2241,100 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                     );
                 }
                 if !candidates.is_empty() {
-                    if tty && io::stdin().is_terminal() {
-                        eprintln!(
-                            "{} {} {}",
-                            c.prefix(),
-                            c.warning("note:"),
-                            c.info(&format!(
-                                "found {} .env file(s). Run migration? [y/N]",
-                                candidates.len()
-                            ))
+                    eprintln!(
+                        "{} {} {}",
+                        c.prefix(),
+                        c.warning("note:"),
+                        c.info(&format!(
+                            "found {} .env file(s). Run migration? [y/N]",
+                            candidates.len()
+                        ))
+                    );
+                    for candidate in &candidates {
+                        let label = format!(
+                            "{} -> {}{}",
+                            candidate.path.display(),
+                            env_migration_scope(candidate),
+                            if candidate.is_template {
+                                " (template, lowest priority)"
+                            } else {
+                                ""
+                            }
                         );
-                        for candidate in &candidates {
-                            let label = match &candidate.service_name {
-                                Some(s) => {
-                                    format!(
-                                        "{} -> service '{}' env '{}'",
-                                        candidate.path.display(),
-                                        s,
-                                        candidate.env_name
-                                    )
-                                }
-                                None => {
-                                    format!(
-                                        "{} -> root env '{}'",
-                                        candidate.path.display(),
-                                        candidate.env_name
-                                    )
-                                }
-                            };
-                            eprintln!("  {}", c.muted(&label));
-                        }
-                        eprint!("{} {} ", c.prefix(), c.prompt("migrate?"));
-                        let mut input = String::new();
-                        std::io::stdin().read_line(&mut input)?;
-                        if input.trim().eq_ignore_ascii_case("y") {
-                            let project_key = load_project_key(&local)?;
-                            let store = store_from_project_key(local.clone(), &project_key)?;
-                            let import_service =
-                                crate::application::import_env_file::ImportEnvFileService::new(
-                                    store,
+                        eprintln!("  {}", c.muted(&label));
+                    }
+                    if !tty || !io::stdin().is_terminal() {
+                        eprintln!(
+                            "{} {}",
+                            c.prefix(),
+                            c.info(
+                                "Run `kagi init` in an interactive terminal to migrate, or use `kagi import`."
+                            )
+                        );
+                        return Ok(());
+                    }
+                    eprint!("{} {} ", c.prefix(), c.prompt("migrate?"));
+                    let mut input = String::new();
+                    std::io::stdin().read_line(&mut input)?;
+                    if !input.trim().eq_ignore_ascii_case("y") {
+                        return Ok(());
+                    }
+                    let project_key = load_project_key(&local)?;
+                    let store = store_from_project_key(local.clone(), &project_key)?;
+                    let import_service =
+                        crate::application::import_env_file::ImportEnvFileService::new(store);
+                    for candidate in &candidates {
+                        let scope = env_migration_scope(candidate);
+                        let result = if candidate.is_template {
+                            import_service.execute_missing_with_options(
+                                &scope,
+                                candidate.path.to_str().unwrap(),
+                                crate::application::import_env_file::ImportOptions::default(),
+                            )
+                        } else {
+                            import_service.execute(&scope, candidate.path.to_str().unwrap(), true)
+                        };
+                        match result {
+                            Ok(report) => {
+                                println!(
+                                    "{} {} {} {} {}",
+                                    c.prefix(),
+                                    c.success("migrated"),
+                                    c.accent(&report.imported.len().to_string()),
+                                    c.muted("keys from"),
+                                    c.muted(&format!("{} -> {}", candidate.path.display(), scope))
                                 );
-                            for candidate in &candidates {
-                                let scope = match &candidate.service_name {
-                                    Some(s) => format!("{}/{}", s, candidate.env_name),
-                                    None => candidate.env_name.clone(),
-                                };
-                                match import_service.execute(
-                                    &scope,
-                                    candidate.path.to_str().unwrap(),
-                                    true,
-                                ) {
-                                    Ok(report) => {
-                                        println!(
-                                            "{} {} {} {}",
-                                            c.prefix(),
-                                            c.success("migrated"),
-                                            c.accent(&report.imported.len().to_string()),
-                                            c.muted(&format!(
-                                                "keys from {}",
-                                                candidate.path.display()
-                                            ))
-                                        );
-                                    }
-                                    Err(e) => {
-                                        eprintln!(
-                                            "{} {} failed to migrate {}: {}",
-                                            c.prefix(),
-                                            c.warning("warning:"),
-                                            candidate.path.display(),
-                                            e
-                                        );
-                                    }
-                                }
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "{} {} failed to migrate {}: {}",
+                                    c.prefix(),
+                                    c.warning("warning:"),
+                                    candidate.path.display(),
+                                    e
+                                );
                             }
                         }
-                    } else {
-                        eprintln!(
-                            "{} {} {}",
-                            c.prefix(),
-                            c.warning("note:"),
-                            c.info(&format!(
-                                "found {} .env file(s). Run `kagi init` in an interactive terminal to migrate, or use `kagi import`.",
-                                candidates.len()
-                            ))
-                        );
                     }
                 }
             }
+        }
+        Commands::Uninit { force } => {
+            let cwd = std::env::current_dir()?;
+            let local = cwd.join(".kagi");
+            if !local.exists() {
+                println!("{} {}", c.prefix(), c.muted("no .kagi/ directory found"));
+                return Ok(());
+            }
+            if !force {
+                confirm_destructive_action(
+                    tty,
+                    "remove .kagi/ and all local encrypted metadata",
+                    &c,
+                )?;
+            }
+            fs::remove_dir_all(&local)?;
+            println!("{} {}", c.prefix(), c.success("removed .kagi/"));
         }
         Commands::Doctor { fix, plain } => {
             let (base_path, _inferred) = resolve_kagi_base()?;

@@ -37,6 +37,13 @@ pub enum Commands {
         no_migrate: bool,
     },
 
+    /// Remove kagi metadata from the current repository
+    Uninit {
+        /// Remove .kagi/ without prompting
+        #[arg(long)]
+        force: bool,
+    },
+
     /// Store an encrypted secret for an environment
     Set {
         /// Optional service scope (e.g., api, web). Defaults to the inferred nested directory.

@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Added
+
+- Add `kagi uninit` for removing local `.kagi/` metadata with confirmation.
+
+### Changed
+
+- Keep `kagi init` migration interactive while showing inferred migration targets and template priority.
+- Treat `.env.<name>` files as their own environments during init migration discovery, even when the environment was not preconfigured.
+- Make `kagi get` TUI reveal all values after a single confirmation and add `Tab` / `Shift-Tab` scope switching.
+
+### Fixed
+
+- Prevent `.env.example`, `.env.sample`, and `.env.template` migration from overwriting real `.env` values by importing templates as missing-key defaults only.
+
 ## 0.1.6 - 2026-06-02
 
 ### Added

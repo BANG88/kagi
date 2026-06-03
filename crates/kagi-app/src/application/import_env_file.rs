@@ -91,6 +91,41 @@ impl<R: SecretRepository> ImportEnvFileService<R> {
         Ok(plan.report)
     }
 
+    pub fn execute_missing_with_options(
+        &self,
+        service_name: &str,
+        file_path: &str,
+        options: ImportOptions,
+    ) -> Result<ImportReport, DomainError> {
+        let plan = self.prepare_import(service_name, file_path, options)?;
+        let overwritten: HashSet<String> = plan.report.overwritten.iter().cloned().collect();
+        let mut imported = Vec::new();
+
+        for (key, value, desc) in plan.vars {
+            if overwritten.contains(&key) {
+                continue;
+            }
+            let mut service = match self.repo.load(service_name) {
+                Ok(s) => s,
+                Err(DomainError::ServiceNotFound(_)) => Service::new(service_name),
+                Err(e) => return Err(e),
+            };
+            let secret = if let Some(desc) = desc {
+                Secret::with_description(&key, &value, desc)
+            } else {
+                Secret::new(&key, &value)
+            };
+            service.set_secret(secret);
+            self.repo.save(&service)?;
+            imported.push(key);
+        }
+
+        Ok(ImportReport {
+            imported,
+            overwritten: plan.report.overwritten,
+        })
+    }
+
     fn prepare_import(
         &self,
         service_name: &str,
@@ -247,5 +282,31 @@ mod tests {
         // Verify value IS overwritten (force=true)
         let loaded = svc.repo.load("api").unwrap();
         assert_eq!(loaded.get_secret("KEY1").unwrap().value, "newval");
+    }
+
+    #[test]
+    fn test_import_missing_does_not_overwrite_existing_keys() {
+        let dir = TempDir::new().unwrap();
+        let svc = setup(&dir);
+        let real_env = dir.path().join(".env");
+        std::fs::write(&real_env, "KEY1=real\n").unwrap();
+        svc.execute("development", real_env.to_str().unwrap(), false)
+            .unwrap();
+
+        let template_env = dir.path().join(".env.example");
+        std::fs::write(&template_env, "KEY1=example\nKEY2=default\n").unwrap();
+        let report = svc
+            .execute_missing_with_options(
+                "development",
+                template_env.to_str().unwrap(),
+                ImportOptions::default(),
+            )
+            .unwrap();
+
+        assert_eq!(report.imported, vec!["KEY2"]);
+        assert_eq!(report.overwritten, vec!["KEY1"]);
+        let loaded = svc.repo.load("development").unwrap();
+        assert_eq!(loaded.get_secret("KEY1").unwrap().value, "real");
+        assert_eq!(loaded.get_secret("KEY2").unwrap().value, "default");
     }
 }

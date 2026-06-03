@@ -3278,6 +3278,16 @@ fn test_init_detects_env_files_in_non_interactive() {
         stderr.contains("found 2 .env file(s)"),
         "expected note about found .env files in non-interactive mode, got: {stderr}"
     );
+    assert!(
+        !dir.path().join(".kagi/secrets/development.enc").exists(),
+        "non-interactive init must not migrate without explicit confirmation"
+    );
+    assert!(
+        !dir.path()
+            .join(".kagi/secrets/api/development.enc")
+            .exists(),
+        "non-interactive init must not migrate nested env files without explicit confirmation"
+    );
 }
 
 #[test]
