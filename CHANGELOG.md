@@ -6,6 +6,7 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Add `kagi-store` vault config constructors for embedding vault config in a caller-managed project config without changing Kagi CLI defaults.
 - Add `kagi uninit` for removing local `.kagi/` metadata with confirmation.
 
 ### Changed

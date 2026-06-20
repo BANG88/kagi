@@ -54,6 +54,7 @@ impl Default for AccessState {
 
 pub struct KeyManager {
     base_path: PathBuf,
+    project_id: Option<String>,
     #[cfg(any(test, feature = "test-utils"))]
     local_data_dir: Option<PathBuf>,
 }
@@ -62,6 +63,16 @@ impl KeyManager {
     pub fn new(base_path: PathBuf) -> Self {
         Self {
             base_path,
+            project_id: None,
+            #[cfg(any(test, feature = "test-utils"))]
+            local_data_dir: None,
+        }
+    }
+
+    pub fn new_with_project_id(base_path: PathBuf, project_id: String) -> Self {
+        Self {
+            base_path,
+            project_id: Some(project_id),
             #[cfg(any(test, feature = "test-utils"))]
             local_data_dir: None,
         }
@@ -71,6 +82,20 @@ impl KeyManager {
     pub fn new_with_local_data_dir(base_path: PathBuf, local_data_dir: PathBuf) -> Self {
         Self {
             base_path,
+            project_id: None,
+            local_data_dir: Some(local_data_dir),
+        }
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn new_with_project_id_and_local_data_dir(
+        base_path: PathBuf,
+        project_id: String,
+        local_data_dir: PathBuf,
+    ) -> Self {
+        Self {
+            base_path,
+            project_id: Some(project_id),
             local_data_dir: Some(local_data_dir),
         }
     }
@@ -352,6 +377,13 @@ impl KeyManager {
     }
 
     pub fn project_id(&self) -> Result<String, DomainError> {
+        if let Some(project_id) = &self.project_id {
+            if project_id.trim().is_empty() {
+                return Err(DomainError::StoreCorrupted("missing project_id".into()));
+            }
+            return Ok(project_id.clone());
+        }
+
         let content = fs::read_to_string(self.base_path.join(KAGI_CONFIG_FILE))?;
         let config: KagiConfig = serde_json::from_str(&content)?;
         if config.project_id.trim().is_empty() {
@@ -1020,6 +1052,29 @@ mod tests {
         assert!(access["members"][0]["wrapped_key"].as_str().unwrap().len() > 20);
         assert!(local.path().join("projects/kgp_test.key").exists());
         assert!(local.path().join("identities/default.agekey").exists());
+    }
+
+    #[test]
+    fn test_supplied_project_id_does_not_require_kagi_config_file() {
+        let dir = TempDir::new().unwrap();
+        let local = TempDir::new().unwrap();
+        let base = dir.path().join(".osuki/vault");
+        fs::create_dir_all(&base).unwrap();
+
+        let km = KeyManager::new_with_project_id_and_local_data_dir(
+            base.clone(),
+            "kgp_osuki".to_string(),
+            local.path().to_path_buf(),
+        );
+
+        assert_eq!(km.project_id().unwrap(), "kgp_osuki");
+        let key = km.initialize_project("kgp_osuki", "kgm_owner").unwrap();
+        let loaded = km.load().unwrap();
+
+        assert_eq!(key.to_vec(), loaded.to_vec());
+        assert!(base.join("access.json").exists());
+        assert!(local.path().join("projects/kgp_osuki.key").exists());
+        assert!(!base.join(KAGI_CONFIG_FILE).exists());
     }
 
     #[test]

@@ -7,7 +7,7 @@ use kagi_domain::error::DomainError;
 use kagi_domain::repository::secret_repo::SecretRepository;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Serialize, Deserialize)]
 struct EncryptedService {
@@ -25,18 +25,67 @@ struct EncryptedService {
 pub struct FileStore {
     base_path: PathBuf,
     encryptor: Box<dyn Encryptor>,
+    vault_config_repository: Box<dyn VaultConfigRepository>,
+}
+
+pub trait VaultConfigRepository: Send + Sync {
+    fn load_config(&self) -> Result<KagiConfig, DomainError>;
+    fn save_config(&self, config: &KagiConfig) -> Result<(), DomainError>;
+}
+
+pub struct FileVaultConfigRepository {
+    path: PathBuf,
+}
+
+impl FileVaultConfigRepository {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+impl VaultConfigRepository for FileVaultConfigRepository {
+    fn load_config(&self) -> Result<KagiConfig, DomainError> {
+        let content = fs::read_to_string(&self.path)?;
+        let config: KagiConfig = serde_json::from_str(&content)?;
+        Ok(config)
+    }
+
+    fn save_config(&self, config: &KagiConfig) -> Result<(), DomainError> {
+        let content = serde_json::to_string_pretty(config)?;
+        fs::write(&self.path, content)?;
+        set_private_file_permissions(&self.path)?;
+        Ok(())
+    }
 }
 
 impl FileStore {
     pub fn new(base_path: PathBuf, encryptor: Box<dyn Encryptor>) -> Self {
+        let config_path = base_path.join(kagi_domain::config::KAGI_CONFIG_FILE);
+        Self::new_with_vault_config_path(base_path, config_path, encryptor)
+    }
+
+    pub fn new_with_vault_config_path(
+        base_path: PathBuf,
+        config_path: PathBuf,
+        encryptor: Box<dyn Encryptor>,
+    ) -> Self {
+        Self::new_with_vault_config_repository(
+            base_path,
+            encryptor,
+            Box::new(FileVaultConfigRepository::new(config_path)),
+        )
+    }
+
+    pub fn new_with_vault_config_repository(
+        base_path: PathBuf,
+        encryptor: Box<dyn Encryptor>,
+        vault_config_repository: Box<dyn VaultConfigRepository>,
+    ) -> Self {
         Self {
             base_path,
             encryptor,
+            vault_config_repository,
         }
-    }
-
-    fn config_path(&self) -> PathBuf {
-        self.base_path.join(kagi_domain::config::KAGI_CONFIG_FILE)
     }
 
     fn service_path(&self, file: &str) -> PathBuf {
@@ -92,36 +141,12 @@ impl FileStore {
         format!("kagi:v1:{XCHACHA20_POLY1305}:{service_name}").into_bytes()
     }
 
-    fn set_private_file_permissions(_path: &std::path::Path) -> Result<(), DomainError> {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(_path, fs::Permissions::from_mode(0o600))?;
-        }
-        Ok(())
-    }
-
-    fn set_private_dir_permissions(_path: &std::path::Path) -> Result<(), DomainError> {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(_path, fs::Permissions::from_mode(0o700))?;
-        }
-        Ok(())
-    }
-
     fn load_config(&self) -> Result<KagiConfig, DomainError> {
-        let content = fs::read_to_string(self.config_path())?;
-        let config: KagiConfig = serde_json::from_str(&content)?;
-        Ok(config)
+        self.vault_config_repository.load_config()
     }
 
     fn save_config(&self, config: &KagiConfig) -> Result<(), DomainError> {
-        let content = serde_json::to_string_pretty(config)?;
-        let path = self.config_path();
-        fs::write(&path, content)?;
-        Self::set_private_file_permissions(&path)?;
-        Ok(())
+        self.vault_config_repository.save_config(config)
     }
 
     pub fn default_envs(&self) -> Result<Vec<String>, DomainError> {
@@ -387,9 +412,9 @@ impl SecretRepository for FileStore {
         let (file_name, content) = self.encrypted_service_content(service)?;
         let service_file = self.service_path(&file_name);
         fs::create_dir_all(service_file.parent().unwrap())?;
-        Self::set_private_dir_permissions(service_file.parent().unwrap())?;
+        set_private_dir_permissions(service_file.parent().unwrap())?;
         fs::write(&service_file, content)?;
-        Self::set_private_file_permissions(&service_file)?;
+        set_private_file_permissions(&service_file)?;
         config
             .services
             .insert(service.name.clone(), ServiceConfig { file: file_name });
@@ -403,12 +428,57 @@ impl SecretRepository for FileStore {
     }
 }
 
+fn set_private_file_permissions(_path: &Path) -> Result<(), DomainError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(_path, fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+fn set_private_dir_permissions(_path: &Path) -> Result<(), DomainError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(_path, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use kagi_domain::crypto::encryptor::mock::XorEncryptor;
     use kagi_domain::entity::secret::Secret;
     use tempfile::TempDir;
+
+    #[derive(Serialize, Deserialize)]
+    struct OsukiLikeConfig {
+        name: String,
+        vault: KagiConfig,
+    }
+
+    struct OsukiLikeVaultConfigRepository {
+        path: PathBuf,
+    }
+
+    impl VaultConfigRepository for OsukiLikeVaultConfigRepository {
+        fn load_config(&self) -> Result<KagiConfig, DomainError> {
+            let content = fs::read_to_string(&self.path)?;
+            let config: OsukiLikeConfig = serde_json::from_str(&content)?;
+            Ok(config.vault)
+        }
+
+        fn save_config(&self, config: &KagiConfig) -> Result<(), DomainError> {
+            let content = OsukiLikeConfig {
+                name: "osuki".to_string(),
+                vault: config.clone(),
+            };
+            fs::write(&self.path, serde_json::to_string_pretty(&content)?)?;
+            Ok(())
+        }
+    }
 
     fn create_store(dir: &TempDir) -> FileStore {
         let base = dir.path().join(".kagi");
@@ -451,5 +521,85 @@ mod tests {
         let store = create_store(&dir);
         let result = store.load("missing");
         assert!(matches!(result, Err(DomainError::ServiceNotFound(_))));
+    }
+
+    #[test]
+    fn test_custom_vault_config_path_does_not_create_default_kagi_config() {
+        let dir = TempDir::new().unwrap();
+        let base = dir.path().join(".osuki/vault");
+        fs::create_dir_all(&base).unwrap();
+        let config_path = dir.path().join(".osuki/osuki-vault.json");
+        fs::write(
+            &config_path,
+            serde_json::to_string(&KagiConfig::new("2", "kgp_osuki")).unwrap(),
+        )
+        .unwrap();
+
+        let store = FileStore::new_with_vault_config_path(
+            base.clone(),
+            config_path.clone(),
+            Box::new(XorEncryptor::new(0xAB)),
+        );
+        let mut svc = Service::new("api/development");
+        svc.set_secret(Secret::new("DATABASE_URL", "postgres://local"));
+        store.save(&svc).unwrap();
+
+        assert!(!base.join(kagi_domain::config::KAGI_CONFIG_FILE).exists());
+        let config: KagiConfig =
+            serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+        assert_eq!(
+            config.services["api/development"].file,
+            "secrets/api/development.enc"
+        );
+    }
+
+    #[test]
+    fn test_custom_vault_config_repository_can_embed_kagi_config_in_parent_config() {
+        let dir = TempDir::new().unwrap();
+        let base = dir.path().join(".osuki/vault");
+        fs::create_dir_all(&base).unwrap();
+        let config_path = dir.path().join(".osuki/osuki.json");
+        let initial = OsukiLikeConfig {
+            name: "osuki".to_string(),
+            vault: KagiConfig::new("2", "kgp_osuki"),
+        };
+        fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&initial).unwrap(),
+        )
+        .unwrap();
+
+        let store = FileStore::new_with_vault_config_repository(
+            base.clone(),
+            Box::new(XorEncryptor::new(0xAB)),
+            Box::new(OsukiLikeVaultConfigRepository {
+                path: config_path.clone(),
+            }),
+        );
+        let mut svc = Service::new("api/development");
+        svc.set_secret(Secret::new("DATABASE_URL", "postgres://local"));
+        store.save(&svc).unwrap();
+
+        let reloaded = FileStore::new_with_vault_config_repository(
+            base.clone(),
+            Box::new(XorEncryptor::new(0xAB)),
+            Box::new(OsukiLikeVaultConfigRepository {
+                path: config_path.clone(),
+            }),
+        )
+        .load("api/development")
+        .unwrap();
+
+        assert_eq!(
+            reloaded.get_secret("DATABASE_URL").unwrap().value,
+            "postgres://local"
+        );
+        assert!(!base.join(kagi_domain::config::KAGI_CONFIG_FILE).exists());
+        let parent: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+        assert_eq!(
+            parent["vault"]["services"]["api/development"]["file"],
+            "secrets/api/development.enc"
+        );
     }
 }
