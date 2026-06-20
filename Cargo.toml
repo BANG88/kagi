@@ -18,7 +18,7 @@ time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
 base64 = "0.22.1"
 hex = "0.4.3"
 nanoid = "0.5.0"
-zeroize = { version = "1.8.2", features = ["derive"] }
+zeroize = { version = "1.9.0", features = ["derive"] }
 rand = "0.10.1"
 ed25519-dalek = "2.2.0"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
@@ -27,14 +27,14 @@ hmac = "0.13.0"
 sha2 = "0.11.0"
 age = "0.11.3"
 directories = "6.0.0"
-ignore = "0.4.23"
-keyring = "4.0.1"
+ignore = "0.4.26"
+keyring = { version = "4.1.1", features = ["cli"] }
 keyring-core = "1.0.0"
 chacha20poly1305 = "0.10.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4.6.1", features = ["derive", "color"] }
-clap_complete = "4.5.46"
+clap_complete = "4.6.5"
 owo-colors = "4.3.0"
 axum = { version = "0.8" }
 tower = { version = "0.5" }
