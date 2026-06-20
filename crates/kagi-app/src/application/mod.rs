@@ -5,6 +5,8 @@ pub mod get_secret;
 pub mod import_env_file;
 pub mod init_service;
 pub mod list_services;
+#[cfg(feature = "server")]
+pub mod remote_service;
 pub mod run_command;
 pub mod search_secrets;
 pub mod set_secret;

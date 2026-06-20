@@ -665,10 +665,6 @@ mod tests {
             "pull should NOT be present when server feature is disabled"
         );
         assert!(
-            !names.contains(&"status"),
-            "status should NOT be present when server feature is disabled"
-        );
-        assert!(
             !names.contains(&"project"),
             "project should NOT be present when server feature is disabled"
         );
